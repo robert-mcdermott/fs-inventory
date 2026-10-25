@@ -88,3 +88,34 @@ fn verify_reports_a_missing_scan() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("manifest.json"));
 }
+
+#[test]
+fn probe_suggests_a_thread_count() {
+    let tmp = std::env::temp_dir().join(format!("fsinv-probe-{}", std::process::id()));
+    std::fs::create_dir_all(tmp.join("a/b")).unwrap();
+    for i in 0..50 {
+        std::fs::write(tmp.join(format!("a/f{i}")), "x").unwrap();
+    }
+    let out = fs_inventory(&[
+        "probe",
+        tmp.to_str().unwrap(),
+        "--threads",
+        "1,2",
+        "--duration",
+        "1s",
+    ]);
+    std::fs::remove_dir_all(&tmp).unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Suggested: --threads"), "{stdout}");
+    assert!(stdout.contains("read the whole tree"), "{stdout}");
+    assert_eq!(
+        fs_inventory(&["probe", "/nonexistent/dir"]).status.code(),
+        Some(2)
+    );
+}

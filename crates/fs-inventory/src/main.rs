@@ -7,6 +7,7 @@ mod cli;
 mod exit;
 mod output;
 mod parse;
+mod probe;
 mod progress;
 mod rollup;
 mod scan;
@@ -54,7 +55,7 @@ fn run(command: &Command) -> Exit {
         Command::Verify(args) => return verify::run(&args.scan_dir),
         Command::Schema(args) => return schema(args.format),
         Command::Rollup(args) => return rollup::run(args),
-        Command::Probe(_) => ("probe", "M3"),
+        Command::Probe(args) => return probe::run(args),
         Command::Resume(_) => ("resume", "M4"),
         Command::Convert(_) => ("convert", "M5"),
     };

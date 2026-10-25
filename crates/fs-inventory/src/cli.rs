@@ -36,7 +36,7 @@ pub enum Command {
     Verify(ScanDirArgs),
     /// Print the inventory schema.
     Schema(SchemaArgs),
-    /// Sample crawl throughput at several thread counts and suggest a setting.
+    /// Time crawls at several thread counts and suggest `--threads`.
     Probe(ProbeArgs),
 }
 
@@ -283,7 +283,6 @@ pub struct SchemaArgs {
 }
 
 #[derive(Debug, Args)]
-#[allow(dead_code, reason = "consumed when probe is implemented")]
 pub struct ProbeArgs {
     /// Directory to sample.
     #[arg(value_name = "PATH")]
@@ -301,6 +300,11 @@ pub struct ProbeArgs {
     /// How long to sample each thread count.
     #[arg(long, value_parser = parse_duration, default_value = "30s", value_name = "DURATION")]
     pub duration: Duration,
+
+    /// Drop the page, dentry, and inode caches before each run, so every
+    /// run reads from the storage (Linux, root).
+    #[arg(long)]
+    pub drop_caches: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
