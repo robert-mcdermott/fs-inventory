@@ -72,6 +72,7 @@ pub fn run(args: &ScanArgs) -> Exit {
 fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
     reject_unimplemented(args)?;
     let selection = Selection::parse(&args.output.columns).map_err(SetupError::usage)?;
+    let fields = args.metadata.fields.unwrap_or_default();
     let compression = args.output.compression.unwrap_or(match args.output.format {
         Format::Parquet => Compression::Zstd(3),
         Format::Csv | Format::Jsonl => Compression::None,
@@ -127,6 +128,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
                 TimeFormat::Epoch => TimeStyle::Epoch,
             },
             selection,
+            fields,
         })),
         Format::Parquet => OutputFormat::Parquet {
             arrow: ArrowOptions {
@@ -135,6 +137,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
                     TimeUnit::Ns => arrow_schema::TimeUnit::Nanosecond,
                 },
                 raw_paths_always,
+                fields,
             },
             settings: ParquetSettings {
                 compression,
@@ -230,6 +233,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
 
     let backend = NativeBackend::new(BackendOptions {
         statx_dont_sync: args.metadata.statx_dont_sync,
+        fields,
         ..BackendOptions::default()
     });
     let walk_options = WalkOptions {
@@ -301,8 +305,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
 /// Options that parse but do nothing yet. Accepting them silently would be
 /// worse than refusing them.
 fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 8] = [
-        (args.metadata.fields.is_some(), "--fields", "M3"),
+    let pending: [(bool, &str, &str); 7] = [
         (args.traversal.detect_cycles, "--detect-cycles", "M3"),
         (
             args.robustness.stall_timeout.is_some(),
@@ -494,6 +497,10 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<&'static str, s
         ),
         ("include_snapshots", json!(args.traversal.include_snapshots)),
         ("statx_dont_sync", json!(args.metadata.statx_dont_sync)),
+        (
+            "fields",
+            json!(args.metadata.fields.unwrap_or_default().names()),
+        ),
         ("raw_paths", json!(enum_name(&args.encoding.raw_paths))),
         ("csv_raw_controls", json!(args.encoding.csv_raw_controls)),
         ("time_unit", json!(enum_name(&args.encoding.time_unit))),

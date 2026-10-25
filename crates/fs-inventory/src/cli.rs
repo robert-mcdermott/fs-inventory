@@ -142,9 +142,18 @@ pub struct TraversalOptions {
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Metadata")]
 pub struct MetadataOptions {
-    /// Metadata fields to collect, for example "default,+btime,-size".
-    #[arg(long, value_name = "SPEC")]
-    pub fields: Option<String>,
+    /// Optional metadata to read: size, blocks, atime, mtime, ctime, btime,
+    /// or times (all four). `-size,-blocks` reads everything but those;
+    /// `mtime,ctime` reads only those. Skipped fields are written as null.
+    /// On Linux, skipping size and blocks avoids a round trip per file to
+    /// Lustre's storage servers [default: all].
+    #[arg(
+        long,
+        value_name = "LIST",
+        allow_hyphen_values = true,
+        value_parser = fs_inventory_core::model::Fields::parse
+    )]
+    pub fields: Option<fs_inventory_core::model::Fields>,
 
     /// Accept cached attributes on network file systems (faster, possibly stale).
     #[arg(long)]

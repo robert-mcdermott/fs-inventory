@@ -789,3 +789,87 @@ fn rollup_totals_match_the_tree() {
     assert_eq!(out.status.code(), Some(4));
     assert!(String::from_utf8_lossy(&out.stderr).contains("Parquet"));
 }
+
+#[test]
+fn skipped_fields_are_null() {
+    use arrow_array::Array as _;
+
+    let (tmp, root, _) = tree();
+    let out_dir = tmp.path().join("scan");
+    let out = scan(&root, &out_dir, &["--fields", "-size,-blocks,-atime"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let batches = read_parquet(&out_dir, "entries");
+    for batch in &batches {
+        for name in [
+            "size",
+            "alloc_bytes",
+            "atime",
+            "dir_bytes",
+            "dir_alloc_bytes",
+        ] {
+            let column = batch.column_by_name(name).unwrap();
+            assert_eq!(
+                column.null_count(),
+                batch.num_rows(),
+                "{name} should be null"
+            );
+        }
+        assert_eq!(batch.column_by_name("mtime").unwrap().null_count(), 0);
+    }
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(out_dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["options"]["fields"],
+        serde_json::json!(["mtime", "ctime", "btime"])
+    );
+    // Rollup still works; sizes count as zero.
+    let out = fs_inventory(&[OsStr::new("rollup"), out_dir.as_os_str()]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let csv_dir = tmp.path().join("csv");
+    let out = scan(
+        &root,
+        &csv_dir,
+        &[
+            "-f",
+            "csv",
+            "--fields",
+            "mtime",
+            "--columns",
+            "name,size,mtime,atime",
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let part = fs::read_dir(csv_dir.join("entries"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    for line in fs::read_to_string(part).unwrap().lines().skip(1) {
+        // Columns keep schema order (name, size, atime, mtime), and names may
+        // contain commas, so split from the right.
+        let fields: Vec<&str> = line.rsplitn(4, ',').collect();
+        assert!(fields[0].ends_with('Z'), "mtime should be set: {line}");
+        assert_eq!(fields[1], "", "atime should be empty: {line}");
+        assert_eq!(fields[2], "", "size should be empty: {line}");
+    }
+
+    let out = scan(&root, &tmp.path().join("bad"), &["--fields", "sizes"]);
+    assert_eq!(out.status.code(), Some(2));
+}

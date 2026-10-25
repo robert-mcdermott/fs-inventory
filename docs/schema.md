@@ -30,12 +30,12 @@ One row per file, directory, or other entry.
 | `uid` | BIGINT |  | Owner user ID. |
 | `gid` | BIGINT |  | Owner group ID. |
 | `mode` | INTEGER |  | Full `st_mode`: file type and permission bits. |
-| `size` | BIGINT |  | Logical size in bytes. |
-| `alloc_bytes` | BIGINT |  | Space allocated on disk (`st_blocks` × 512). Smaller than `size` for sparse, compressed, or tiered files. |
-| `atime` | TIMESTAMPTZ |  | Last access. |
-| `mtime` | TIMESTAMPTZ |  | Last change to the contents. Copies and restores often preserve it. |
-| `ctime` | TIMESTAMPTZ |  | Last change to the contents or metadata. Not creation time. Users can't set it, so it's the reliable signal of recent change. |
-| `btime` | TIMESTAMPTZ | yes | Creation (birth) time, when the platform and file system provide it. |
+| `size` | BIGINT | yes | Logical size in bytes. Null when skipped with `--fields`. |
+| `alloc_bytes` | BIGINT | yes | Space allocated on disk (`st_blocks` × 512). Smaller than `size` for sparse, compressed, or tiered files. Null when skipped with `--fields`. |
+| `atime` | TIMESTAMPTZ | yes | Last access. Null when skipped with `--fields`. |
+| `mtime` | TIMESTAMPTZ | yes | Last change to the contents. Copies and restores often preserve it. Null when skipped with `--fields`. |
+| `ctime` | TIMESTAMPTZ | yes | Last change to the contents or metadata. Not creation time. Users can't set it, so it's the reliable signal of recent change. Null when skipped with `--fields`. |
+| `btime` | TIMESTAMPTZ | yes | Creation (birth) time, when the platform and file system provide it and it isn't skipped with `--fields`. |
 | `rdev` | UBIGINT | yes | Device number, for character and block devices. |
 | `dir_entries` | BIGINT | yes | For directories that were read: number of immediate children. |
 | `dir_files` | BIGINT | yes | For directories that were read: immediate children that aren't directories. |

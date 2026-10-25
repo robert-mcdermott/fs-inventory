@@ -12,21 +12,42 @@ use rustix::fs::{AtFlags, CWD, RawDir, Statx, StatxFlags, StatxTimestamp};
 use rustix::io::Errno;
 
 use super::{Backend, BackendOptions, DirOpener, NameBatch};
-use crate::model::{Stat, Timestamp};
+use crate::model::{Fields, Stat, Timestamp};
 
 /// The native backend for Linux.
 #[derive(Debug)]
 pub struct NativeBackend {
     options: BackendOptions,
     opener: DirOpener,
+    /// The statx fields requested for every entry.
+    mask: StatxFlags,
 }
 
 impl NativeBackend {
     /// Creates a backend with the given options.
     pub fn new(options: BackendOptions) -> Self {
+        let mut mask = StatxFlags::TYPE
+            | StatxFlags::MODE
+            | StatxFlags::NLINK
+            | StatxFlags::UID
+            | StatxFlags::GID
+            | StatxFlags::INO;
+        for (field, flag) in [
+            (Fields::SIZE, StatxFlags::SIZE),
+            (Fields::BLOCKS, StatxFlags::BLOCKS),
+            (Fields::ATIME, StatxFlags::ATIME),
+            (Fields::MTIME, StatxFlags::MTIME),
+            (Fields::CTIME, StatxFlags::CTIME),
+            (Fields::BTIME, StatxFlags::BTIME),
+        ] {
+            if options.fields.contains(field) {
+                mask |= flag;
+            }
+        }
         Self {
             options,
             opener: DirOpener::new(),
+            mask,
         }
     }
 
@@ -35,7 +56,7 @@ impl NativeBackend {
         if self.options.statx_dont_sync {
             flags |= AtFlags::STATX_DONT_SYNC;
         }
-        let mask = StatxFlags::BASIC_STATS | StatxFlags::BTIME;
+        let mask = self.mask;
         match rustix::fs::statx(dirfd.as_fd(), path, flags, mask) {
             Ok(x) => Ok(from_statx(&x)),
             Err(Errno::NOSYS) => {

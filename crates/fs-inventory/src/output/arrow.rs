@@ -12,7 +12,7 @@ use arrow_array::builder::{
 use arrow_array::types::{TimestampMicrosecondType, TimestampNanosecondType};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
 use arrow_schema::{Schema, TimeUnit};
-use fs_inventory_core::model::{Entry, EntryKind, ErrorRecord, Timestamp};
+use fs_inventory_core::model::{Entry, EntryKind, ErrorRecord, Fields, Timestamp};
 use fs_inventory_core::names::{self, Controls};
 
 use super::encode::error_summary;
@@ -23,6 +23,8 @@ use super::schema::{ENTRY_COLUMNS, ERROR_COLUMNS, Selection, arrow_schema, signe
 pub struct ArrowOptions {
     pub unit: TimeUnit,
     pub raw_paths_always: bool,
+    /// Fields that were read; the others are written as null.
+    pub fields: Fields,
 }
 
 /// Converts a timestamp to the unit, clamping values the unit can't hold.
@@ -176,14 +178,28 @@ impl EntryBatchBuilder {
         let depth = i32::try_from(e.depth).unwrap_or(i32::MAX);
         let stat = e.stat;
         let unit = self.options.unit;
-        let atime = to_unit(stat.atime, unit);
-        let mtime = to_unit(stat.mtime, unit);
-        let ctime = to_unit(stat.ctime, unit);
-        let btime = stat.btime.map(|t| to_unit(t, unit));
-        let time_flags = i32::from(atime.1)
-            | i32::from(mtime.1) << 1
-            | i32::from(ctime.1) << 2
-            | i32::from(btime.is_some_and(|b| b.1)) << 3;
+        let fields = self.options.fields;
+        let read = |field: Fields| fields.contains(field);
+        let size = read(Fields::SIZE).then_some(stat.size);
+        let alloc_bytes = read(Fields::BLOCKS).then(|| signed(stat.alloc_bytes()));
+        let atime = read(Fields::ATIME).then(|| to_unit(stat.atime, unit));
+        let mtime = read(Fields::MTIME).then(|| to_unit(stat.mtime, unit));
+        let ctime = read(Fields::CTIME).then(|| to_unit(stat.ctime, unit));
+        let btime = stat
+            .btime
+            .filter(|_| read(Fields::BTIME))
+            .map(|t| to_unit(t, unit));
+        let clamped = |t: Option<(i64, bool)>| i32::from(t.is_some_and(|t| t.1));
+        let time_flags =
+            clamped(atime) | clamped(mtime) << 1 | clamped(ctime) << 2 | clamped(btime) << 3;
+        let dir_bytes = e
+            .totals
+            .filter(|_| read(Fields::SIZE))
+            .map(|t| signed(t.bytes));
+        let dir_alloc_bytes = e
+            .totals
+            .filter(|_| read(Fields::BLOCKS))
+            .map(|t| signed(t.alloc_bytes));
         let is_device = matches!(e.kind(), EntryKind::CharDevice | EntryKind::BlockDevice);
         let totals = e.totals;
         let error = e.error.map(error_summary);
@@ -205,12 +221,12 @@ impl EntryBatchBuilder {
         self.uid.append_value(i64::from(stat.uid));
         self.gid.append_value(i64::from(stat.gid));
         self.mode.append_value(mode);
-        self.size.append_value(stat.size);
-        self.alloc_bytes.append_value(signed(stat.alloc_bytes()));
-        self.atime.append_value(atime.0);
-        self.mtime.append_value(mtime.0);
-        self.ctime.append_value(ctime.0);
-        self.btime.append_option(btime.map(|b| b.0));
+        self.size.append_option(size);
+        self.alloc_bytes.append_option(alloc_bytes);
+        self.atime.append_option(atime.map(|t| t.0));
+        self.mtime.append_option(mtime.map(|t| t.0));
+        self.ctime.append_option(ctime.map(|t| t.0));
+        self.btime.append_option(btime.map(|t| t.0));
         self.rdev.append_option(is_device.then_some(stat.rdev));
         self.dir_entries
             .append_option(totals.map(|t| signed(t.entries)));
@@ -218,10 +234,8 @@ impl EntryBatchBuilder {
             .append_option(totals.map(|t| signed(t.files)));
         self.dir_subdirs
             .append_option(totals.map(|t| signed(t.subdirs)));
-        self.dir_bytes
-            .append_option(totals.map(|t| signed(t.bytes)));
-        self.dir_alloc_bytes
-            .append_option(totals.map(|t| signed(t.alloc_bytes)));
+        self.dir_bytes.append_option(dir_bytes);
+        self.dir_alloc_bytes.append_option(dir_alloc_bytes);
         self.is_mount_point.append_value(e.is_mount_point);
         self.time_flags.append_value(time_flags);
         self.error.append_option(error.as_deref());
@@ -354,6 +368,7 @@ mod tests {
         ArrowOptions {
             unit: TimeUnit::Microsecond,
             raw_paths_always: false,
+            fields: Fields::ALL,
         }
     }
 

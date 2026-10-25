@@ -87,6 +87,94 @@ impl Timestamp {
     }
 }
 
+/// Optional metadata fields: which ones a scan asks the file system for.
+/// Type, mode, inode, link count, and ownership are always read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Fields(u8);
+
+impl Fields {
+    /// Logical size (`size`, `dir_bytes`).
+    pub const SIZE: Self = Self(1 << 0);
+    /// Allocated blocks (`alloc_bytes`, `dir_alloc_bytes`).
+    pub const BLOCKS: Self = Self(1 << 1);
+    /// Last access time.
+    pub const ATIME: Self = Self(1 << 2);
+    /// Last modification time.
+    pub const MTIME: Self = Self(1 << 3);
+    /// Last status change time.
+    pub const CTIME: Self = Self(1 << 4);
+    /// Creation (birth) time.
+    pub const BTIME: Self = Self(1 << 5);
+    /// Every optional field (the default).
+    pub const ALL: Self = Self(0b11_1111);
+
+    /// Field names, as used by [`Fields::parse`].
+    pub const NAMES: [(Self, &'static str); 6] = [
+        (Self::SIZE, "size"),
+        (Self::BLOCKS, "blocks"),
+        (Self::ATIME, "atime"),
+        (Self::MTIME, "mtime"),
+        (Self::CTIME, "ctime"),
+        (Self::BTIME, "btime"),
+    ];
+
+    /// Whether every field in `other` is included.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Parses a field list such as `-size,-blocks` (everything but those),
+    /// `mtime,ctime` (only those), or `all,-atime`. `times` means all four
+    /// timestamps.
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let tokens: Vec<&str> = spec
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .collect();
+        let starts_relative = tokens.first().is_some_and(|t| t.starts_with(['+', '-']));
+        let mut fields = if starts_relative { Self::ALL } else { Self(0) };
+        for token in tokens {
+            let (remove, name) = match token.strip_prefix('-') {
+                Some(name) => (true, name),
+                None => (false, token.strip_prefix('+').unwrap_or(token)),
+            };
+            let bits = match name {
+                "all" | "default" => Self::ALL.0,
+                "times" => Self::ATIME.0 | Self::MTIME.0 | Self::CTIME.0 | Self::BTIME.0,
+                _ => Self::NAMES
+                    .iter()
+                    .find(|(_, n)| *n == name)
+                    .map(|(f, _)| f.0)
+                    .ok_or_else(|| {
+                        format!("unknown field `{name}` (expected size, blocks, atime, mtime, ctime, btime, times, or all)")
+                    })?,
+            };
+            if remove {
+                fields.0 &= !bits;
+            } else {
+                fields.0 |= bits;
+            }
+        }
+        Ok(fields)
+    }
+
+    /// Names of the included fields.
+    pub fn names(self) -> Vec<&'static str> {
+        Self::NAMES
+            .iter()
+            .filter(|(f, _)| self.contains(*f))
+            .map(|(_, n)| *n)
+            .collect()
+    }
+}
+
+impl Default for Fields {
+    fn default() -> Self {
+        Self::ALL
+    }
+}
+
 /// Metadata for one entry, normalized across platforms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Stat {
@@ -300,6 +388,22 @@ mod tests {
         assert_eq!(EntryKind::from_mode(0o020666), EntryKind::CharDevice);
         assert_eq!(EntryKind::from_mode(0o060660), EntryKind::BlockDevice);
         assert_eq!(EntryKind::from_mode(0o150000), EntryKind::Unknown);
+    }
+
+    #[test]
+    fn field_lists() {
+        assert_eq!(Fields::parse("all").unwrap(), Fields::ALL);
+        let no_size = Fields::parse("-size,-blocks").unwrap();
+        assert!(!no_size.contains(Fields::SIZE) && !no_size.contains(Fields::BLOCKS));
+        assert!(no_size.contains(Fields::MTIME) && no_size.contains(Fields::BTIME));
+        let only = Fields::parse("mtime, ctime").unwrap();
+        assert_eq!(only.names(), ["mtime", "ctime"]);
+        assert_eq!(
+            Fields::parse("all,-times").unwrap().names(),
+            ["size", "blocks"]
+        );
+        assert_eq!(Fields::parse("+btime").unwrap(), Fields::ALL);
+        assert!(Fields::parse("sizes").is_err());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::borrow::Cow;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use fs_inventory_core::model::{Entry, EntryKind, ErrorInfo, ErrorRecord, Timestamp};
+use fs_inventory_core::model::{Entry, EntryKind, ErrorInfo, ErrorRecord, Fields, Timestamp};
 use fs_inventory_core::names::{self, Controls};
 
 use super::schema::{Column, ENTRY_COLUMNS, ERROR_COLUMNS, Selection, signed};
@@ -54,6 +54,8 @@ pub struct EncodeOptions {
     pub time_style: TimeStyle,
     /// Entry columns to write.
     pub selection: Selection,
+    /// Fields that were read; the others are written as null.
+    pub fields: Fields,
 }
 
 /// Encodes rows into a byte buffer.
@@ -128,12 +130,17 @@ impl Encoder {
         let stat = e.stat;
         let is_device = matches!(e.kind(), EntryKind::CharDevice | EntryKind::BlockDevice);
 
+        let read = |field: Fields| self.options.fields.contains(field);
+        let atime = read(Fields::ATIME).then_some(stat.atime);
+        let mtime = read(Fields::MTIME).then_some(stat.mtime);
+        let ctime = read(Fields::CTIME).then_some(stat.ctime);
+        let btime = stat.btime.filter(|_| read(Fields::BTIME));
         let mut time_flags = 0;
         for (time, clamped) in [
-            (Some(stat.atime), ATIME_CLAMPED),
-            (Some(stat.mtime), MTIME_CLAMPED),
-            (Some(stat.ctime), CTIME_CLAMPED),
-            (stat.btime, BTIME_CLAMPED),
+            (atime, ATIME_CLAMPED),
+            (mtime, MTIME_CLAMPED),
+            (ctime, CTIME_CLAMPED),
+            (btime, BTIME_CLAMPED),
         ] {
             if self.clamped(time) {
                 time_flags |= clamped;
@@ -157,19 +164,32 @@ impl Encoder {
         row.int("uid", i64::from(stat.uid));
         row.int("gid", i64::from(stat.gid));
         row.int("mode", i64::from(stat.mode));
-        row.int("size", stat.size);
-        row.int("alloc_bytes", signed(stat.alloc_bytes()));
-        row.time("atime", Some(stat.atime), self.options);
-        row.time("mtime", Some(stat.mtime), self.options);
-        row.time("ctime", Some(stat.ctime), self.options);
-        row.time("btime", stat.btime, self.options);
+        row.opt_int("size", read(Fields::SIZE).then_some(stat.size));
+        row.opt_int(
+            "alloc_bytes",
+            read(Fields::BLOCKS).then(|| signed(stat.alloc_bytes())),
+        );
+        row.time("atime", atime, self.options);
+        row.time("mtime", mtime, self.options);
+        row.time("ctime", ctime, self.options);
+        row.time("btime", btime, self.options);
         row.opt_uint("rdev", is_device.then_some(stat.rdev));
         let totals = e.totals;
         row.opt_int("dir_entries", totals.map(|t| signed(t.entries)));
         row.opt_int("dir_files", totals.map(|t| signed(t.files)));
         row.opt_int("dir_subdirs", totals.map(|t| signed(t.subdirs)));
-        row.opt_int("dir_bytes", totals.map(|t| signed(t.bytes)));
-        row.opt_int("dir_alloc_bytes", totals.map(|t| signed(t.alloc_bytes)));
+        row.opt_int(
+            "dir_bytes",
+            totals
+                .filter(|_| read(Fields::SIZE))
+                .map(|t| signed(t.bytes)),
+        );
+        row.opt_int(
+            "dir_alloc_bytes",
+            totals
+                .filter(|_| read(Fields::BLOCKS))
+                .map(|t| signed(t.alloc_bytes)),
+        );
         row.bool("is_mount_point", e.is_mount_point);
         row.uint("time_flags", u64::from(time_flags));
         let error = e.error.map(error_summary);
@@ -399,6 +419,7 @@ mod tests {
             precision: Precision::Micros,
             time_style: TimeStyle::Iso,
             selection: Selection::ALL,
+            fields: Fields::ALL,
         }
     }
 

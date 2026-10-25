@@ -14,7 +14,7 @@ use rustix::fd::OwnedFd;
 use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 
-use crate::model::Stat;
+use crate::model::{Fields, Stat};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -34,6 +34,10 @@ pub struct BackendOptions {
     pub statx_dont_sync: bool,
     /// Size in bytes of each worker's directory-read buffer.
     pub readdir_buffer: usize,
+    /// Optional fields to request. On Linux, fields left out aren't asked
+    /// for at all, which on Lustre avoids a round trip to the storage
+    /// servers for sizes. Elsewhere, every field is read regardless.
+    pub fields: Fields,
 }
 
 impl Default for BackendOptions {
@@ -41,6 +45,7 @@ impl Default for BackendOptions {
         Self {
             statx_dont_sync: false,
             readdir_buffer: 256 * 1024,
+            fields: Fields::ALL,
         }
     }
 }
