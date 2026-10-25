@@ -50,27 +50,41 @@ fn usage_errors_exit_2() {
 
 #[test]
 fn unimplemented_commands_exit_4() {
-    let out = fs_inventory(&["verify", "/scans/x"]);
+    let out = fs_inventory(&["rollup", "/scans/x"]);
     assert_eq!(out.status.code(), Some(4));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("not implemented yet"), "{stderr}");
 }
 
 #[test]
-fn unimplemented_scan_options_are_refused() {
-    // Parquet (the default format) arrives in M2.
-    let out = fs_inventory(&["scan", "/data", "-o", "out"]);
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("Parquet"));
-    let out = fs_inventory(&[
-        "scan",
-        "/data",
-        "-o",
-        "out",
-        "-f",
-        "csv",
-        "--symlink-targets",
-    ]);
+fn unimplemented_or_invalid_scan_options_are_refused() {
+    let out = fs_inventory(&["scan", "/data", "-o", "out", "--symlink-targets"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("--symlink-targets"));
+    let out = fs_inventory(&["scan", "/data", "-o", "out", "--columns", "path,bogus"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("bogus"));
+}
+
+#[test]
+fn schema_describes_every_format() {
+    for format in ["sql", "json", "markdown"] {
+        let out = fs_inventory(&["schema", "--format", format]);
+        assert_eq!(out.status.code(), Some(0), "{format}");
+        let text = String::from_utf8(out.stdout).unwrap();
+        assert!(
+            text.contains("path_raw") && text.contains("name_flags"),
+            "{format}"
+        );
+    }
+    let json: serde_json::Value =
+        serde_json::from_slice(&fs_inventory(&["schema", "--format", "json"]).stdout).unwrap();
+    assert_eq!(json["entries"].as_array().unwrap().len(), 31);
+}
+
+#[test]
+fn verify_reports_a_missing_scan() {
+    let out = fs_inventory(&["verify", "/nonexistent/scan"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("manifest.json"));
 }

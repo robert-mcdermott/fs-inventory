@@ -32,7 +32,7 @@ pub enum Command {
     Rollup(ScanDirArgs),
     /// Re-export a Parquet scan as CSV or JSON Lines.
     Convert(ConvertArgs),
-    /// Check a scan's manifest, part files, and row counts.
+    /// Check that a scan is complete and its manifest matches its part files.
     Verify(ScanDirArgs),
     /// Print the inventory schema.
     Schema(SchemaArgs),
@@ -212,7 +212,6 @@ pub struct ProgressOptions {
 }
 
 #[derive(Debug, Args)]
-#[allow(dead_code, reason = "consumed when the subcommands are implemented")]
 pub struct ScanDirArgs {
     /// Scan output directory.
     #[arg(value_name = "SCAN_DIR")]
@@ -241,7 +240,6 @@ pub struct ConvertArgs {
 }
 
 #[derive(Debug, Args)]
-#[allow(dead_code, reason = "consumed when schema is implemented")]
 pub struct SchemaArgs {
     /// Schema description format.
     #[arg(long, value_enum, default_value_t = SchemaFormat::Sql)]
@@ -320,10 +318,12 @@ pub enum Progress {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SchemaFormat {
-    /// DuckDB `CREATE TABLE` statement.
+    /// DuckDB `CREATE TABLE` statements.
     Sql,
     /// JSON description of each column.
     Json,
+    /// Markdown reference (docs/schema.md).
+    Markdown,
 }
 
 impl ScanArgs {

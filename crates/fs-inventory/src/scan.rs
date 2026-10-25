@@ -26,13 +26,14 @@ use serde_json::json;
 
 use crate::cli::{Format, Progress, RawPaths, ScanArgs, TimeFormat, TimeUnit};
 use crate::exit::Exit;
-use crate::output::encode::{
-    ENTRY_COLUMNS, ERROR_COLUMNS, EncodeOptions, Encoder, TextFormat, TimeStyle,
-};
+use crate::output::arrow::ArrowOptions;
+use crate::output::encode::{EncodeOptions, Encoder, TextFormat, TimeStyle};
 use crate::output::manifest::{ErrorSummary, Manifest, Parts, Root, Status, Totals};
+use crate::output::parquet::ParquetSettings;
 use crate::output::parts::{RollLimits, sync_dir};
+use crate::output::schema::{ENTRY_COLUMNS, ERROR_COLUMNS, Selection};
 use crate::output::timefmt::{self, Precision};
-use crate::output::{Destination, Output, OutputConfig, OutputReport, now};
+use crate::output::{Destination, Format as OutputFormat, Output, OutputConfig, OutputReport, now};
 use crate::parse::Compression;
 use crate::progress::{self, Reporter, Snapshot, Style};
 
@@ -70,12 +71,11 @@ pub fn run(args: &ScanArgs) -> Exit {
 
 fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
     reject_unimplemented(args)?;
-    let format = match args.output.format {
-        Format::Csv => TextFormat::Csv,
-        Format::Jsonl => TextFormat::Jsonl,
-        Format::Parquet => unreachable_parquet(),
-    };
-    let compression = args.output.compression.unwrap_or(Compression::None);
+    let selection = Selection::parse(&args.output.columns).map_err(SetupError::usage)?;
+    let compression = args.output.compression.unwrap_or(match args.output.format {
+        Format::Parquet => Compression::Zstd(3),
+        Format::Csv | Format::Jsonl => Compression::None,
+    });
     let roots = args
         .roots
         .iter()
@@ -105,33 +105,89 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         .traversal
         .writers
         .map_or_else(default_writers, usize::from);
-    let encoder = Encoder::new(EncodeOptions {
-        format,
-        raw_paths_always: args.encoding.raw_paths == RawPaths::Always,
-        csv_raw_controls: args.encoding.csv_raw_controls,
-        precision: match args.encoding.time_unit {
-            TimeUnit::Us => Precision::Micros,
-            TimeUnit::Ns => Precision::Nanos,
+    let scan_id = new_scan_id();
+    let host = hostname();
+    let root_records: Vec<Root> = roots.iter().map(|r| root_record(r)).collect();
+    let raw_paths_always = args.encoding.raw_paths == RawPaths::Always;
+    let format = match args.output.format {
+        Format::Csv | Format::Jsonl => OutputFormat::Text(Encoder::new(EncodeOptions {
+            format: if args.output.format == Format::Csv {
+                TextFormat::Csv
+            } else {
+                TextFormat::Jsonl
+            },
+            raw_paths_always,
+            csv_raw_controls: args.encoding.csv_raw_controls,
+            precision: match args.encoding.time_unit {
+                TimeUnit::Us => Precision::Micros,
+                TimeUnit::Ns => Precision::Nanos,
+            },
+            time_style: match args.encoding.time_format {
+                TimeFormat::Iso => TimeStyle::Iso,
+                TimeFormat::Epoch => TimeStyle::Epoch,
+            },
+            selection,
+        })),
+        Format::Parquet => OutputFormat::Parquet {
+            arrow: ArrowOptions {
+                unit: match args.encoding.time_unit {
+                    TimeUnit::Us => arrow_schema::TimeUnit::Microsecond,
+                    TimeUnit::Ns => arrow_schema::TimeUnit::Nanosecond,
+                },
+                raw_paths_always,
+            },
+            settings: ParquetSettings {
+                compression,
+                row_group_rows: usize::try_from(args.output.row_group_rows).unwrap_or(usize::MAX),
+                metadata: vec![
+                    (
+                        "fs_inventory.schema_version".into(),
+                        fs_inventory_core::SCHEMA_VERSION.to_string(),
+                    ),
+                    (
+                        "fs_inventory.tool_version".into(),
+                        env!("CARGO_PKG_VERSION").into(),
+                    ),
+                    ("fs_inventory.scan_id".into(), scan_id.clone()),
+                    ("fs_inventory.host".into(), host.clone()),
+                    (
+                        "fs_inventory.roots".into(),
+                        serde_json::to_string(&root_records).unwrap_or_default(),
+                    ),
+                ],
+            },
         },
-        time_style: match args.encoding.time_format {
-            TimeFormat::Iso => TimeStyle::Iso,
-            TimeFormat::Epoch => TimeStyle::Epoch,
-        },
-    });
+    };
+    let (format_name, columns, error_columns) = match &format {
+        OutputFormat::Text(encoder) => (
+            encoder.format().extension(),
+            encoder.entry_columns(),
+            encoder.error_columns(),
+        ),
+        OutputFormat::Parquet { .. } => (
+            "parquet",
+            selection
+                .indices()
+                .into_iter()
+                .map(|i| ENTRY_COLUMNS[i].name)
+                .collect(),
+            ERROR_COLUMNS.iter().map(|c| c.name).collect(),
+        ),
+    };
     let started_at = now();
     let started = Instant::now();
     let mut manifest = Manifest {
         tool: "fs-inventory",
         tool_version: env!("CARGO_PKG_VERSION"),
         schema_version: fs_inventory_core::SCHEMA_VERSION,
-        scan_id: new_scan_id(),
+        scan_id,
         status: Status::Running,
-        host: hostname(),
-        roots: roots.iter().map(|r| root_record(r)).collect(),
-        format: format.extension(),
+        host,
+        roots: root_records,
+        format: format_name,
         compression: describe_compression(compression),
-        columns: ENTRY_COLUMNS.to_vec(),
-        error_columns: ERROR_COLUMNS.to_vec(),
+        columns,
+        error_columns,
         options: manifest_options(args, writers),
         started_at: iso(started_at),
         finished_at: None,
@@ -149,7 +205,8 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
     let output = Output::start(
         OutputConfig {
             destination: destination.clone(),
-            encoder,
+            format,
+            selection,
             compression,
             writers,
             crawl_threads: usize::from(args.traversal.threads),
@@ -244,13 +301,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
 /// Options that parse but do nothing yet. Accepting them silently would be
 /// worse than refusing them.
 fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 10] = [
-        (
-            args.output.format == Format::Parquet,
-            "Parquet output (the default format)",
-            "M2",
-        ),
-        (!args.output.columns.is_empty(), "--columns", "M2"),
+    let pending: [(bool, &str, &str); 8] = [
         (args.metadata.fields.is_some(), "--fields", "M3"),
         (args.traversal.detect_cycles, "--detect-cycles", "M3"),
         (
@@ -269,21 +320,11 @@ fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
         (args.encoding.guess_encoding, "--guess-encoding", "M5"),
     ];
     match pending.iter().find(|(set, _, _)| *set) {
-        Some((_, what, milestone)) if *milestone == "M2" && what.starts_with("Parquet") => {
-            Err(SetupError::usage(
-                "Parquet output arrives in milestone M2; use `--format csv` or `--format jsonl` for now",
-            ))
-        }
         Some((_, what, milestone)) => Err(SetupError::usage(format!(
             "{what} is not implemented yet (planned for milestone {milestone})"
         ))),
         None => Ok(()),
     }
-}
-
-fn unreachable_parquet() -> TextFormat {
-    // `reject_unimplemented` refuses Parquet before this point.
-    TextFormat::Csv
 }
 
 /// Makes a root absolute and canonical in form (no `.`, `//`, or trailing
@@ -459,6 +500,7 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<&'static str, s
         ("time_format", json!(enum_name(&args.encoding.time_format))),
         ("part_max_bytes", json!(args.output.part_max_bytes)),
         ("part_max_rows", json!(args.output.part_max_rows)),
+        ("row_group_rows", json!(args.output.row_group_rows)),
     ])
 }
 

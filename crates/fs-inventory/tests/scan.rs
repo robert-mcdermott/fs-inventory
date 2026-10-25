@@ -477,3 +477,185 @@ fn parts_roll_and_never_split_rows() {
     // Every part parses on its own, and the rows add up.
     assert_eq!(read_jsonl(&out_dir, "entries").len(), oracle(&root).len());
 }
+
+/// Every batch of a Parquet table, read with the parquet crate.
+fn read_parquet(dir: &Path, table: &str) -> Vec<arrow_array::RecordBatch> {
+    use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+    let mut batches = Vec::new();
+    for part in fs::read_dir(dir.join(table)).unwrap() {
+        let path = part.unwrap().path();
+        assert_eq!(path.extension().unwrap(), "parquet", "unexpected {path:?}");
+        let reader = ParquetRecordBatchReaderBuilder::try_new(File::open(&path).unwrap())
+            .unwrap()
+            .build()
+            .unwrap();
+        batches.extend(reader.map(Result::unwrap));
+    }
+    batches
+}
+
+/// Exact path bytes of every row: `path_raw` when present, else `path`.
+fn parquet_paths(batches: &[arrow_array::RecordBatch]) -> Vec<Vec<u8>> {
+    use arrow_array::Array as _;
+    use arrow_array::cast::AsArray as _;
+    let mut paths = Vec::new();
+    for batch in batches {
+        let text = batch.column_by_name("path").unwrap().as_string::<i32>();
+        let raw = batch.column_by_name("path_raw").unwrap().as_binary::<i32>();
+        for i in 0..batch.num_rows() {
+            paths.push(if raw.is_null(i) {
+                text.value(i).as_bytes().to_vec()
+            } else {
+                raw.value(i).to_vec()
+            });
+        }
+    }
+    paths
+}
+
+fn verify(dir: &Path) -> Output {
+    fs_inventory(&[OsStr::new("verify"), dir.as_os_str()])
+}
+
+#[test]
+fn parquet_is_the_default_and_matches_std_exactly() {
+    let (tmp, root, _) = tree();
+    let out_dir = tmp.path().join("scan");
+    let out = scan(&root, &out_dir, &["-t", "8"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let batches = read_parquet(&out_dir, "entries");
+    let schema = batches[0].schema();
+    assert_eq!(schema.fields().len(), 31);
+    assert_eq!(
+        schema.field_with_name("mtime").unwrap().data_type(),
+        &arrow_schema::DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()))
+    );
+    assert_eq!(
+        schema.field_with_name("path_raw").unwrap().data_type(),
+        &arrow_schema::DataType::Binary
+    );
+
+    let mut paths = parquet_paths(&batches);
+    let total = paths.len();
+    paths.sort();
+    paths.dedup();
+    assert_eq!(paths.len(), total, "duplicate rows");
+    let expected: Vec<Vec<u8>> = oracle(&root).into_keys().collect();
+    assert_eq!(paths, expected);
+
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(out_dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest["format"], "parquet");
+    assert_eq!(manifest["compression"], "zstd:3");
+    let out = verify(&out_dir);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).ends_with("ok\n"));
+}
+
+#[test]
+fn selected_columns_only() {
+    let (tmp, root, _) = tree();
+    let parquet_dir = tmp.path().join("parquet");
+    let out = scan(&root, &parquet_dir, &["--columns", "size,path,mtime"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let batches = read_parquet(&parquet_dir, "entries");
+    let names: Vec<String> = batches[0]
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
+    assert_eq!(names, ["path", "size", "mtime"]);
+    assert_eq!(verify(&parquet_dir).status.code(), Some(0));
+
+    let csv_dir = tmp.path().join("csv");
+    let out = scan(
+        &root,
+        &csv_dir,
+        &["-f", "csv", "--columns", "path,path_b64,kind"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let part = fs::read_dir(csv_dir.join("entries"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let text = fs::read_to_string(part).unwrap();
+    assert_eq!(text.lines().next(), Some("path,path_b64,kind"));
+    assert_eq!(verify(&csv_dir).status.code(), Some(0));
+}
+
+#[test]
+fn verify_catches_damaged_scans() {
+    let (tmp, root, _) = tree();
+    let fresh = |name: &str| {
+        let dir = tmp.path().join(name);
+        let out = scan(
+            &root,
+            &dir,
+            &["--part-max-rows", "1", "-t", "1", "--writers", "1"],
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(verify(&dir).status.code(), Some(0));
+        dir
+    };
+    let problems = |dir: &Path| {
+        let out = verify(dir);
+        assert_eq!(out.status.code(), Some(1));
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    };
+
+    let stray = fresh("stray");
+    fs::write(stray.join("entries/part-w00-999999.parquet.tmp"), "junk").unwrap();
+    assert!(problems(&stray).contains("not listed in the manifest"));
+
+    let missing = fresh("missing");
+    fs::remove_file(missing.join("entries/part-w00-000000.parquet")).unwrap();
+    assert!(problems(&missing).contains("part-w00-000000.parquet"));
+
+    let swapped = fresh("swapped");
+    let other = fresh("other");
+    fs::copy(
+        other.join("entries/part-w00-000000.parquet"),
+        swapped.join("entries/part-w00-000000.parquet"),
+    )
+    .unwrap();
+    assert!(problems(&swapped).contains("belongs to scan"));
+
+    let interrupted = fresh("interrupted");
+    let manifest_path = interrupted.join("manifest.json");
+    let manifest = fs::read_to_string(&manifest_path).unwrap();
+    fs::write(
+        &manifest_path,
+        manifest.replace("\"complete\"", "\"interrupted\""),
+    )
+    .unwrap();
+    assert!(problems(&interrupted).contains("interrupted"));
+}

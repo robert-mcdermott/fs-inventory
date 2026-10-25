@@ -27,7 +27,7 @@ pub enum Status {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct Root {
     /// The root path as text.
     pub path: String,

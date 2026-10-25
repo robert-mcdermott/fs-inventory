@@ -6,6 +6,12 @@ All notable changes to this project are documented in this file. The format foll
 
 ### Added
 
+- Parquet output, now the default format: zstd level 3, row groups of up to 1,048,576 rows, page statistics, column encodings chosen by measurement (about 25 bytes per entry on real data), and scan ID, schema version, host, and roots in every file's footer.
+- `--columns` writes a subset of entry columns in any format.
+- `fs-inventory schema` describes the schema as DuckDB SQL, JSON, or Markdown. `docs/schema.md` is generated from it.
+- `fs-inventory verify` checks a scan before ingestion: status, schema version, every part's size and row count, each Parquet part's scan ID, totals, and stray or leftover files.
+- DuckDB macros `fs_entries` and `fs_errors` for Parquet scans, and example queries in `sql/examples.sql`.
+- mimalloc as the memory allocator. The static musl build no longer slows down as crawl threads are added.
 - `scan` writes CSV or JSON Lines (Parquet arrives in M2), as rolling part files that are committed atomically, or as one stream to stdout. Optional zstd or gzip compression.
 - Parallel work-stealing walker with a configurable thread count. On Linux it uses `getdents64` and `statx` relative to the open directory, falls back to `fstatat` on kernels without `statx`, avoids directory atime updates, and never triggers automounts.
 - Lossless file names: text columns are always valid UTF-8, exact bytes go in `path_b64` when they differ, and `name_flags` marks invalid UTF-8, control characters, non-NFC names, Windows-reserved names, and long names or paths.
