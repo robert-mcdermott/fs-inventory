@@ -99,7 +99,7 @@ impl Backend for NativeBackend {
 
     fn read_names(
         &self,
-        dir: &mut LinuxDir,
+        dir: &LinuxDir,
         scratch: &mut Self::Scratch,
         names: &mut NameBatch,
     ) -> io::Result<bool> {

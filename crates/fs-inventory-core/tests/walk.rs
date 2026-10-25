@@ -430,7 +430,7 @@ impl Backend for FaultyBackend {
 
     fn read_names(
         &self,
-        dir: &mut Self::Dir,
+        dir: &Self::Dir,
         scratch: &mut Self::Scratch,
         names: &mut NameBatch,
     ) -> io::Result<bool> {
@@ -439,7 +439,7 @@ impl Backend for FaultyBackend {
                 rustix::io::Errno::IO.raw_os_error(),
             ));
         }
-        self.0.read_names(&mut dir.0, scratch, names)
+        self.0.read_names(&dir.0, scratch, names)
     }
 
     fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
@@ -570,4 +570,115 @@ fn detect_cycles_never_reads_a_directory_twice() {
         got.rows.iter().filter(|r| r.path == bytes(&leaf)).count(),
         2
     );
+}
+
+/// Records which threads stat entries named `h-*`, slowing each slightly so
+/// sharing is visible, and panics on `h-panic`.
+struct TracingBackend {
+    inner: NativeBackend,
+    threads: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl Backend for TracingBackend {
+    type Dir = <NativeBackend as Backend>::Dir;
+    type Scratch = <NativeBackend as Backend>::Scratch;
+
+    fn new_scratch(&self) -> Self::Scratch {
+        self.inner.new_scratch()
+    }
+
+    fn stat_root(&self, path: &[u8]) -> io::Result<Stat> {
+        self.inner.stat_root(path)
+    }
+
+    fn open_dir(&self, path: &[u8], follow: bool) -> io::Result<Self::Dir> {
+        self.inner.open_dir(path, follow)
+    }
+
+    fn dir_stat(&self, dir: &Self::Dir) -> io::Result<Stat> {
+        self.inner.dir_stat(dir)
+    }
+
+    fn read_names(
+        &self,
+        dir: &Self::Dir,
+        scratch: &mut Self::Scratch,
+        names: &mut NameBatch,
+    ) -> io::Result<bool> {
+        self.inner.read_names(dir, scratch, names)
+    }
+
+    fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
+        if name.starts_with(b"h-") {
+            assert!(name != b"h-panic", "injected panic");
+            let thread = format!("{:?}", std::thread::current().id());
+            self.threads.lock().unwrap().insert(thread);
+            std::thread::sleep(Duration::from_micros(20));
+        }
+        self.inner.stat_at(dir, name)
+    }
+}
+
+#[test]
+fn huge_directories_are_read_by_several_workers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let huge = root.join("huge");
+    fs::create_dir(&huge).unwrap();
+    const FILES: usize = 20_000;
+    for i in 0..FILES {
+        fs::write(huge.join(format!("h-{i:05}")), "x").unwrap();
+    }
+    fs::write(huge.join("h-panic"), "x").unwrap();
+    fs::create_dir(huge.join("h-subdir")).unwrap();
+    fs::write(huge.join("h-subdir").join("inner"), "x").unwrap();
+
+    let threads = Arc::new(Mutex::new(BTreeSet::new()));
+    let backend = TracingBackend {
+        inner: NativeBackend::new(BackendOptions::default()),
+        threads: Arc::clone(&threads),
+    };
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let (got, result) = run_walk(vec![bytes(&root)], options(8), backend, false);
+    std::panic::set_hook(hook);
+
+    assert!(result.complete);
+    assert!(
+        threads.lock().unwrap().len() > 1,
+        "only one thread read metadata in a {FILES}-entry directory"
+    );
+    let children: BTreeSet<&Vec<u8>> = got
+        .rows
+        .iter()
+        .filter(|r| r.parent_path == bytes(&huge))
+        .map(|r| &r.path)
+        .collect();
+    // Every entry once, except the one that panicked.
+    assert_eq!(children.len(), FILES + 1);
+    assert_eq!(
+        got.rows
+            .iter()
+            .filter(|r| r.parent_path == bytes(&huge))
+            .count(),
+        FILES + 1
+    );
+    assert!(
+        got.rows
+            .iter()
+            .any(|r| r.path == bytes(&huge.join("h-subdir").join("inner")))
+    );
+    let internal: Vec<_> = got
+        .errors
+        .iter()
+        .filter(|(_, op, _)| *op == Op::Internal)
+        .collect();
+    assert_eq!(internal.len(), 1);
+    assert!(internal[0].0.ends_with(b"h-panic"));
+    // The directory's totals include the batches other workers read.
+    let dir = got.rows.iter().find(|r| r.path == bytes(&huge)).unwrap();
+    let totals = dir.totals.unwrap();
+    assert_eq!(totals.entries as usize, FILES + 1);
+    assert_eq!((totals.files as usize, totals.subdirs), (FILES, 1));
+    assert_eq!(totals.bytes as usize, FILES);
 }

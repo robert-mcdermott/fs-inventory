@@ -6,17 +6,20 @@
 //! Each worker owns a LIFO deque of directories, so it walks depth-first and
 //! keeps its queue small. Idle workers steal from the other end of a peer's
 //! deque, which holds directories nearest the root: the biggest pieces of
-//! remaining work. A directory is always processed by one worker, and all of
-//! its rows (ending with its own row) reach that worker's [`Sink`] before
-//! [`Sink::end_dir`] is called.
+//! remaining work. A directory is read by one worker, and its rows (ending
+//! with its own row) reach that worker's [`Sink`] before [`Sink::end_dir`]
+//! is called, with one exception: past [`SHARE_AFTER`] entries, the reading
+//! worker publishes each further batch of names for any idle worker to stat,
+//! so huge directories don't serialize the scan on one thread's metadata
+//! calls. Those rows reach the helping workers' sinks.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
@@ -25,6 +28,9 @@ use globset::GlobSet;
 
 use crate::backend::{Backend, NameBatch};
 use crate::model::{DirTotals, Entry, EntryKind, ErrorInfo, ErrorRecord, Op, Stat};
+
+/// Entries a worker reads from one directory before sharing the rest.
+pub const SHARE_AFTER: usize = 10_000;
 
 /// Names of snapshot directories, skipped unless
 /// [`WalkOptions::include_snapshots`] is set.
@@ -143,6 +149,51 @@ impl DirTask {
     }
 }
 
+/// What processing a directory's children needs to know about it.
+struct DirCtx {
+    path: Box<[u8]>,
+    dir_id: u64,
+    depth: u32,
+    dev: u64,
+}
+
+impl DirCtx {
+    fn of(task: &DirTask) -> Self {
+        Self {
+            path: task.path.clone(),
+            dir_id: task.dir_id,
+            depth: task.depth,
+            dev: task.stat.dev,
+        }
+    }
+}
+
+/// An open directory that several workers may stat entries of at once.
+struct SharedDir<D> {
+    ctx: DirCtx,
+    dir: D,
+    /// Totals from shared batches; the reading worker adds its own at the end.
+    totals: Mutex<DirTotals>,
+    /// Batches published and not yet finished.
+    outstanding: AtomicUsize,
+}
+
+/// A batch of a huge directory's names, for any worker to stat.
+struct StatChunk<D> {
+    dir: Arc<SharedDir<D>>,
+    names: NameBatch,
+}
+
+/// Marks a batch finished when dropped, even if processing it panicked, so
+/// the reading worker never waits forever.
+struct Finished<'a>(&'a AtomicUsize);
+
+impl Drop for Finished<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Splits a path into the index where its final component starts.
 fn name_start(path: &[u8]) -> usize {
     if path == b"/" {
@@ -254,6 +305,7 @@ where
         sinks[0].end_dir();
     }
 
+    let chunks: Injector<StatChunk<B::Dir>> = Injector::new();
     let deques: Vec<Worker<DirTask>> = (0..threads).map(|_| Worker::new_lifo()).collect();
     let stealers: Vec<Stealer<DirTask>> = deques.iter().map(Worker::stealer).collect();
 
@@ -273,6 +325,7 @@ where
                     visited: visited.as_ref(),
                     deque,
                     injector: &injector,
+                    chunks: &chunks,
                     stealers: &stealers,
                     sink,
                     scratch: backend.new_scratch(),
@@ -385,6 +438,7 @@ struct WorkerState<'a, B: Backend, S: Sink> {
     visited: Option<&'a Visited>,
     deque: Worker<DirTask>,
     injector: &'a Injector<DirTask>,
+    chunks: &'a Injector<StatChunk<B::Dir>>,
     stealers: &'a [Stealer<DirTask>],
     sink: S,
     scratch: B::Scratch,
@@ -397,16 +451,20 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
     fn run(mut self, stop: &AtomicBool) -> HashMap<(Op, Option<i32>), u64> {
         let backoff = Backoff::new();
         while !stop.load(Ordering::Relaxed) {
-            if let Some(task) = self.find_task() {
+            // Own subtree first, then help with huge directories, then steal.
+            if let Some(task) = self.deque.pop() {
                 backoff.reset();
-                let path = task.path.clone();
-                let outcome = catch_unwind(AssertUnwindSafe(|| self.process(task)));
-                if outcome.is_err() {
-                    self.record_internal_error(&path);
-                }
-                self.sink.end_dir();
-                self.tally.flush(self.counters);
-                self.counters.pending.fetch_sub(1, Ordering::AcqRel);
+                self.run_task(task);
+                continue;
+            }
+            if let Some(chunk) = self.steal_chunk() {
+                backoff.reset();
+                self.run_chunk(chunk);
+                continue;
+            }
+            if let Some(task) = self.steal_task() {
+                backoff.reset();
+                self.run_task(task);
                 continue;
             }
             if self.counters.pending.load(Ordering::Acquire) == 0 {
@@ -433,10 +491,41 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
         self.tally.record_error(&info);
     }
 
-    fn find_task(&self) -> Option<DirTask> {
-        if let Some(task) = self.deque.pop() {
-            return Some(task);
+    fn run_task(&mut self, task: DirTask) {
+        let path = task.path.clone();
+        let outcome = catch_unwind(AssertUnwindSafe(|| self.process(task)));
+        if outcome.is_err() {
+            self.record_internal_error(&path);
         }
+        self.sink.end_dir();
+        self.tally.flush(self.counters);
+        self.counters.pending.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    /// Stats one batch of a huge directory's names.
+    fn run_chunk(&mut self, chunk: StatChunk<B::Dir>) {
+        let shared = chunk.dir;
+        let _finished = Finished(&shared.outstanding);
+        let mut totals = DirTotals::default();
+        self.stat_names(&shared.ctx, &shared.dir, &chunk.names, &mut totals);
+        if let Ok(mut all) = shared.totals.lock() {
+            all.merge(&totals);
+        }
+        self.sink.end_dir();
+        self.tally.flush(self.counters);
+    }
+
+    fn steal_chunk(&self) -> Option<StatChunk<B::Dir>> {
+        loop {
+            match self.chunks.steal() {
+                Steal::Success(chunk) => return Some(chunk),
+                Steal::Empty => return None,
+                Steal::Retry => {}
+            }
+        }
+    }
+
+    fn steal_task(&self) -> Option<DirTask> {
         let n = self.stealers.len();
         loop {
             let mut steal = self.injector.steal_batch_and_pop(&self.deque);
@@ -467,10 +556,10 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
                 return;
             }
             Err(e) => Some(ErrorInfo::from_io(Op::Open, &e)),
-            Ok(mut dir) => match self.backend.dir_stat(&dir) {
+            Ok(dir) => match self.backend.dir_stat(&dir) {
                 Ok(s) if (s.dev, s.ino) == (task.stat.dev, task.stat.ino) => {
                     self.tally.dirs += 1;
-                    self.read_entries(&task, &mut dir, &mut totals)
+                    self.read_entries(&task, dir, &mut totals)
                 }
                 Ok(_) => Some(ErrorInfo {
                     op: Op::Verify,
@@ -514,67 +603,112 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
     fn read_entries(
         &mut self,
         task: &DirTask,
-        dir: &mut B::Dir,
+        dir: B::Dir,
         totals: &mut DirTotals,
     ) -> Option<ErrorInfo> {
+        let shared = Arc::new(SharedDir {
+            ctx: DirCtx::of(task),
+            dir,
+            totals: Mutex::default(),
+            outstanding: AtomicUsize::new(0),
+        });
         let mut names = std::mem::take(&mut self.names);
-        let mut child_path = std::mem::take(&mut self.child_path);
-        child_path.clear();
-        child_path.extend_from_slice(&task.path);
-        if &*task.path != b"/" {
-            child_path.push(b'/');
-        }
-        let base_len = child_path.len();
-
+        let mut read = 0;
         let mut error = None;
         loop {
             names.clear();
-            let more = match self.backend.read_names(dir, &mut self.scratch, &mut names) {
+            let more = match self
+                .backend
+                .read_names(&shared.dir, &mut self.scratch, &mut names)
+            {
                 Ok(more) => more,
                 Err(e) => {
                     error = Some(ErrorInfo::from_io(Op::ReadDir, &e));
                     false
                 }
             };
-            for name in names.iter() {
-                child_path.truncate(base_len);
-                child_path.extend_from_slice(name);
-                // Contain a bug triggered by one entry to that entry, so the
-                // rest of the directory is still read.
-                let outcome =
-                    catch_unwind(AssertUnwindSafe(|| match self.backend.stat_at(dir, name) {
-                        Ok(stat) => self.child(task, &child_path, base_len, stat, totals),
-                        Err(e)
-                            if e.raw_os_error()
-                                == Some(rustix::io::Errno::NOENT.raw_os_error()) =>
-                        {
-                            self.tally.vanished += 1;
-                        }
-                        Err(e) => {
-                            let info = ErrorInfo::from_io(Op::Stat, &e);
-                            self.sink.error(&ErrorRecord {
-                                path: &child_path,
-                                info: &info,
-                            });
-                            self.tally.record_error(&info);
-                        }
-                    }));
-                if outcome.is_err() {
-                    self.record_internal_error(&child_path);
-                }
+            read += names.len();
+            if read > SHARE_AFTER && !names.is_empty() {
+                // A huge directory: let idle workers stat this batch while
+                // this worker keeps reading names.
+                shared.outstanding.fetch_add(1, Ordering::AcqRel);
+                self.chunks.push(StatChunk {
+                    dir: Arc::clone(&shared),
+                    names: std::mem::take(&mut names),
+                });
+            } else {
+                self.stat_names(&shared.ctx, &shared.dir, &names, totals);
             }
             if !more {
                 break;
             }
         }
         self.names = names;
-        self.child_path = child_path;
+
+        // Help with the shared batches (this directory's or any other) until
+        // this directory's are all done.
+        let backoff = Backoff::new();
+        while shared.outstanding.load(Ordering::Acquire) > 0 {
+            if let Some(chunk) = self.steal_chunk() {
+                self.run_chunk(chunk);
+                backoff.reset();
+            } else if backoff.is_completed() {
+                std::thread::sleep(Duration::from_micros(50));
+            } else {
+                backoff.snooze();
+            }
+        }
+        if let Ok(shared_totals) = shared.totals.lock() {
+            totals.merge(&shared_totals);
+        }
         error
+    }
+
+    /// Stats a batch of names in one directory and emits their rows.
+    fn stat_names(
+        &mut self,
+        ctx: &DirCtx,
+        dir: &B::Dir,
+        names: &NameBatch,
+        totals: &mut DirTotals,
+    ) {
+        let mut child_path = std::mem::take(&mut self.child_path);
+        child_path.clear();
+        child_path.extend_from_slice(&ctx.path);
+        if &*ctx.path != b"/" {
+            child_path.push(b'/');
+        }
+        let base_len = child_path.len();
+        for name in names.iter() {
+            child_path.truncate(base_len);
+            child_path.extend_from_slice(name);
+            // Contain a bug triggered by one entry to that entry, so the
+            // rest of the directory is still read.
+            let outcome =
+                catch_unwind(AssertUnwindSafe(|| match self.backend.stat_at(dir, name) {
+                    Ok(stat) => self.child(ctx, &child_path, base_len, stat, totals),
+                    Err(e) if e.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => {
+                        self.tally.vanished += 1;
+                    }
+                    Err(e) => {
+                        let info = ErrorInfo::from_io(Op::Stat, &e);
+                        self.sink.error(&ErrorRecord {
+                            path: &child_path,
+                            info: &info,
+                        });
+                        self.tally.record_error(&info);
+                    }
+                }));
+            if outcome.is_err() {
+                self.record_internal_error(&child_path);
+            }
+        }
+        self.child_path = child_path;
     }
 
     fn child(
         &mut self,
-        task: &DirTask,
+        dir: &DirCtx,
         path: &[u8],
         name_start: usize,
         stat: Stat,
@@ -594,10 +728,10 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
             return;
         }
         totals.add(&stat);
-        let depth = task.depth + 1;
+        let depth = dir.depth + 1;
 
         if is_dir {
-            let is_mount_point = stat.dev != task.stat.dev;
+            let is_mount_point = stat.dev != dir.dev;
             let within_depth = self.options.max_depth.is_none_or(|max| depth < max);
             let descend = within_depth && (self.options.cross_mounts || !is_mount_point);
             let dir_id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -611,7 +745,7 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
                     path: path.into(),
                     name_start,
                     dir_id,
-                    parent_id: task.dir_id,
+                    parent_id: dir.dir_id,
                     depth,
                     stat,
                     is_mount_point,
@@ -625,7 +759,7 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
                 name_start,
                 depth,
                 Some(dir_id),
-                task.dir_id,
+                dir.dir_id,
                 &stat,
                 is_mount_point,
                 error.as_ref(),
@@ -633,14 +767,7 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
         } else {
             self.tally.bytes += stat.size.max(0) as u64;
             self.emit(
-                path,
-                name_start,
-                depth,
-                None,
-                task.dir_id,
-                &stat,
-                false,
-                None,
+                path, name_start, depth, None, dir.dir_id, &stat, false, None,
             );
         }
     }

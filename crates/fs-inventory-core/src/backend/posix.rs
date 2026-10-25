@@ -5,6 +5,7 @@
 //! the open directory.
 
 use std::io;
+use std::sync::Mutex;
 
 use rustix::fd::OwnedFd;
 use rustix::fs::{AtFlags, CWD, Dir};
@@ -30,10 +31,11 @@ impl NativeBackend {
     }
 }
 
-/// An open directory.
+/// An open directory. Only the reading worker uses `entries`; the lock
+/// just makes the directory shareable with workers reading metadata.
 pub struct PosixDir {
     fd: OwnedFd,
-    entries: Dir,
+    entries: Mutex<Dir>,
 }
 
 impl Backend for NativeBackend {
@@ -48,7 +50,7 @@ impl Backend for NativeBackend {
 
     fn open_dir(&self, path: &[u8], follow: bool) -> io::Result<PosixDir> {
         let fd = self.opener.open(path, follow)?;
-        let entries = Dir::read_from(&fd)?;
+        let entries = Mutex::new(Dir::read_from(&fd)?);
         Ok(PosixDir { fd, entries })
     }
 
@@ -58,12 +60,16 @@ impl Backend for NativeBackend {
 
     fn read_names(
         &self,
-        dir: &mut PosixDir,
+        dir: &PosixDir,
         _scratch: &mut (),
         names: &mut NameBatch,
     ) -> io::Result<bool> {
+        let mut entries = dir
+            .entries
+            .lock()
+            .map_err(|_| io::Error::other("directory reader poisoned"))?;
         for _ in 0..NAMES_PER_READ {
-            match dir.entries.read() {
+            match entries.read() {
                 None => return Ok(false),
                 Some(Err(e)) => return Err(e.into()),
                 Some(Ok(entry)) => {

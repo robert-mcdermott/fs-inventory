@@ -235,6 +235,15 @@ pub struct DirTotals {
 }
 
 impl DirTotals {
+    /// Adds totals counted separately, such as by another worker.
+    pub fn merge(&mut self, other: &Self) {
+        self.entries += other.entries;
+        self.files += other.files;
+        self.subdirs += other.subdirs;
+        self.bytes = self.bytes.saturating_add(other.bytes);
+        self.alloc_bytes = self.alloc_bytes.saturating_add(other.alloc_bytes);
+    }
+
     /// Adds one child.
     pub fn add(&mut self, stat: &Stat) {
         self.entries += 1;

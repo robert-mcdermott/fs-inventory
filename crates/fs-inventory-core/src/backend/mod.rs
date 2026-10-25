@@ -53,8 +53,9 @@ impl Default for BackendOptions {
 /// Access to a file system: opening directories, listing them, and reading
 /// metadata. Implementations must never modify the file system.
 pub trait Backend: Send + Sync {
-    /// An open directory.
-    type Dir: Send;
+    /// An open directory. Several workers may read metadata from one open
+    /// directory at once, so it must be shareable.
+    type Dir: Send + Sync;
     /// Per-worker scratch space, such as a directory-read buffer.
     type Scratch: Send;
 
@@ -75,7 +76,7 @@ pub trait Backend: Send + Sync {
     /// Returns `false` once the directory is exhausted.
     fn read_names(
         &self,
-        dir: &mut Self::Dir,
+        dir: &Self::Dir,
         scratch: &mut Self::Scratch,
         names: &mut NameBatch,
     ) -> io::Result<bool>;
