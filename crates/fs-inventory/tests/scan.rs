@@ -540,6 +540,11 @@ fn parquet_is_the_default_and_matches_std_exactly() {
         schema.field_with_name("path_raw").unwrap().data_type(),
         &arrow_schema::DataType::Binary
     );
+    let type_of = |name: &str| schema.field_with_name(name).unwrap().data_type().clone();
+    assert_eq!(type_of("alloc_bytes"), arrow_schema::DataType::Int64);
+    assert_eq!(type_of("uid"), arrow_schema::DataType::Int64);
+    assert_eq!(type_of("mode"), arrow_schema::DataType::Int32);
+    assert_eq!(type_of("ino"), arrow_schema::DataType::UInt64);
 
     let mut paths = parquet_paths(&batches);
     let total = paths.len();

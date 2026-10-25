@@ -7,8 +7,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use arrow_array::builder::{
-    BinaryBuilder, BooleanBuilder, Int32Builder, Int64Builder, StringBuilder, UInt8Builder,
-    UInt32Builder, UInt64Builder,
+    BinaryBuilder, BooleanBuilder, Int32Builder, Int64Builder, StringBuilder, UInt64Builder,
 };
 use arrow_array::types::{TimestampMicrosecondType, TimestampNanosecondType};
 use arrow_array::{ArrayRef, Int64Array, RecordBatch};
@@ -17,7 +16,7 @@ use fs_inventory_core::model::{Entry, EntryKind, ErrorRecord, Timestamp};
 use fs_inventory_core::names::{self, Controls};
 
 use super::encode::error_summary;
-use super::schema::{ENTRY_COLUMNS, ERROR_COLUMNS, Selection, arrow_schema};
+use super::schema::{ENTRY_COLUMNS, ERROR_COLUMNS, Selection, arrow_schema, signed};
 
 /// How times and paths are stored.
 #[derive(Debug, Clone, Copy)]
@@ -82,31 +81,31 @@ pub struct EntryBatchBuilder {
     name: StringBuilder,
     extension: StringBuilder,
     path_raw: BinaryBuilder,
-    name_flags: UInt32Builder,
+    name_flags: Int32Builder,
     kind: StringBuilder,
-    depth: UInt32Builder,
-    dir_id: UInt64Builder,
-    parent_id: UInt64Builder,
+    depth: Int32Builder,
+    dir_id: Int64Builder,
+    parent_id: Int64Builder,
     dev: UInt64Builder,
     ino: UInt64Builder,
-    nlink: UInt64Builder,
-    uid: UInt32Builder,
-    gid: UInt32Builder,
-    mode: UInt32Builder,
+    nlink: Int64Builder,
+    uid: Int64Builder,
+    gid: Int64Builder,
+    mode: Int32Builder,
     size: Int64Builder,
-    alloc_bytes: UInt64Builder,
+    alloc_bytes: Int64Builder,
     atime: Int64Builder,
     mtime: Int64Builder,
     ctime: Int64Builder,
     btime: Int64Builder,
     rdev: UInt64Builder,
-    dir_entries: UInt64Builder,
-    dir_files: UInt64Builder,
-    dir_subdirs: UInt64Builder,
-    dir_bytes: UInt64Builder,
-    dir_alloc_bytes: UInt64Builder,
+    dir_entries: Int64Builder,
+    dir_files: Int64Builder,
+    dir_subdirs: Int64Builder,
+    dir_bytes: Int64Builder,
+    dir_alloc_bytes: Int64Builder,
     is_mount_point: BooleanBuilder,
-    time_flags: UInt8Builder,
+    time_flags: Int32Builder,
     error: StringBuilder,
 }
 
@@ -122,31 +121,31 @@ impl EntryBatchBuilder {
             name: StringBuilder::new(),
             extension: StringBuilder::new(),
             path_raw: BinaryBuilder::new(),
-            name_flags: UInt32Builder::new(),
+            name_flags: Int32Builder::new(),
             kind: StringBuilder::new(),
-            depth: UInt32Builder::new(),
-            dir_id: UInt64Builder::new(),
-            parent_id: UInt64Builder::new(),
+            depth: Int32Builder::new(),
+            dir_id: Int64Builder::new(),
+            parent_id: Int64Builder::new(),
             dev: UInt64Builder::new(),
             ino: UInt64Builder::new(),
-            nlink: UInt64Builder::new(),
-            uid: UInt32Builder::new(),
-            gid: UInt32Builder::new(),
-            mode: UInt32Builder::new(),
+            nlink: Int64Builder::new(),
+            uid: Int64Builder::new(),
+            gid: Int64Builder::new(),
+            mode: Int32Builder::new(),
             size: Int64Builder::new(),
-            alloc_bytes: UInt64Builder::new(),
+            alloc_bytes: Int64Builder::new(),
             atime: Int64Builder::new(),
             mtime: Int64Builder::new(),
             ctime: Int64Builder::new(),
             btime: Int64Builder::new(),
             rdev: UInt64Builder::new(),
-            dir_entries: UInt64Builder::new(),
-            dir_files: UInt64Builder::new(),
-            dir_subdirs: UInt64Builder::new(),
-            dir_bytes: UInt64Builder::new(),
-            dir_alloc_bytes: UInt64Builder::new(),
+            dir_entries: Int64Builder::new(),
+            dir_files: Int64Builder::new(),
+            dir_subdirs: Int64Builder::new(),
+            dir_bytes: Int64Builder::new(),
+            dir_alloc_bytes: Int64Builder::new(),
             is_mount_point: BooleanBuilder::new(),
-            time_flags: UInt8Builder::new(),
+            time_flags: Int32Builder::new(),
             error: StringBuilder::new(),
         }
     }
@@ -170,17 +169,21 @@ impl EntryBatchBuilder {
             .as_deref()
             .map(|ext| names::to_text(ext, Controls::Keep).into_owned());
         let raw = raw_path(e.path, &path, self.options.raw_paths_always);
-        let flags = names::name_flags(e.name, e.path.len()).bits();
+        // Name flags use 12 bits and modes 16, so both fit an i32.
+        let flags =
+            i32::try_from(names::name_flags(e.name, e.path.len()).bits()).unwrap_or(i32::MAX);
+        let mode = i32::try_from(e.stat.mode).unwrap_or(i32::MAX);
+        let depth = i32::try_from(e.depth).unwrap_or(i32::MAX);
         let stat = e.stat;
         let unit = self.options.unit;
         let atime = to_unit(stat.atime, unit);
         let mtime = to_unit(stat.mtime, unit);
         let ctime = to_unit(stat.ctime, unit);
         let btime = stat.btime.map(|t| to_unit(t, unit));
-        let time_flags = u8::from(atime.1)
-            | u8::from(mtime.1) << 1
-            | u8::from(ctime.1) << 2
-            | u8::from(btime.is_some_and(|b| b.1)) << 3;
+        let time_flags = i32::from(atime.1)
+            | i32::from(mtime.1) << 1
+            | i32::from(ctime.1) << 2
+            | i32::from(btime.is_some_and(|b| b.1)) << 3;
         let is_device = matches!(e.kind(), EntryKind::CharDevice | EntryKind::BlockDevice);
         let totals = e.totals;
         let error = e.error.map(error_summary);
@@ -193,28 +196,32 @@ impl EntryBatchBuilder {
         self.path_raw.append_option(raw);
         self.name_flags.append_value(flags);
         self.kind.append_value(e.kind().as_str());
-        self.depth.append_value(e.depth);
-        self.dir_id.append_option(e.dir_id);
-        self.parent_id.append_value(e.parent_id);
+        self.depth.append_value(depth);
+        self.dir_id.append_option(e.dir_id.map(signed));
+        self.parent_id.append_value(signed(e.parent_id));
         self.dev.append_value(stat.dev);
         self.ino.append_value(stat.ino);
-        self.nlink.append_value(stat.nlink);
-        self.uid.append_value(stat.uid);
-        self.gid.append_value(stat.gid);
-        self.mode.append_value(stat.mode);
+        self.nlink.append_value(signed(stat.nlink));
+        self.uid.append_value(i64::from(stat.uid));
+        self.gid.append_value(i64::from(stat.gid));
+        self.mode.append_value(mode);
         self.size.append_value(stat.size);
-        self.alloc_bytes.append_value(stat.alloc_bytes());
+        self.alloc_bytes.append_value(signed(stat.alloc_bytes()));
         self.atime.append_value(atime.0);
         self.mtime.append_value(mtime.0);
         self.ctime.append_value(ctime.0);
         self.btime.append_option(btime.map(|b| b.0));
         self.rdev.append_option(is_device.then_some(stat.rdev));
-        self.dir_entries.append_option(totals.map(|t| t.entries));
-        self.dir_files.append_option(totals.map(|t| t.files));
-        self.dir_subdirs.append_option(totals.map(|t| t.subdirs));
-        self.dir_bytes.append_option(totals.map(|t| t.bytes));
+        self.dir_entries
+            .append_option(totals.map(|t| signed(t.entries)));
+        self.dir_files
+            .append_option(totals.map(|t| signed(t.files)));
+        self.dir_subdirs
+            .append_option(totals.map(|t| signed(t.subdirs)));
+        self.dir_bytes
+            .append_option(totals.map(|t| signed(t.bytes)));
         self.dir_alloc_bytes
-            .append_option(totals.map(|t| t.alloc_bytes));
+            .append_option(totals.map(|t| signed(t.alloc_bytes)));
         self.is_mount_point.append_value(e.is_mount_point);
         self.time_flags.append_value(time_flags);
         self.error.append_option(error.as_deref());

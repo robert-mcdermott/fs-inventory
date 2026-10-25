@@ -176,6 +176,7 @@ Main points:
 
 - **`entries`** has 31 columns: path text, `path_raw` exact bytes, name flags, kind, depth, crawl IDs, the full `stat` (unsigned 64-bit `dev`/`ino`, timestamps in UTC), totals for directories, mount points, and errors.
 - **`errors`** has one row per failed operation: path, exact bytes, operation, errno, message, and time.
+- **Integer types:** integer columns are signed and wide enough for every value (`INTEGER` or `BIGINT`), so scans load into databases and tools without unsigned types, such as PostgreSQL and Spark, and DuckDB functions like `format_bytes()` work without casts. The exceptions are `dev`, `ino`, and `rdev`, which stay `UBIGINT`: they're opaque 64-bit identifiers, and inode numbers on Lustre and NFS really do use the top bit. Counts and byte totals are capped at the signed maximum (8 EiB), never wrapped. Schema version 2 made this change; version 1 had unsigned counts and sizes.
 - **`--columns`** selects a subset of entry columns in every format.
 - Entries that vanish between being listed and being read are counted as **vanished** in the manifest, not as errors. Live file systems churn.
 

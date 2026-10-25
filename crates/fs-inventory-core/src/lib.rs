@@ -16,7 +16,7 @@ pub mod walker;
 
 /// Version of the inventory output schema. Bump on any incompatible change
 /// to column names, types, or semantics.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Version of this library, as recorded in output metadata.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
