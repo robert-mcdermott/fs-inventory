@@ -80,7 +80,7 @@ def main():
     parser.add_argument("root", help="directory tree to scan")
     parser.add_argument("--bin", default=None, help="fs-inventory binary (default: on PATH, else target/release)")
     parser.add_argument("--threads", default="8,16,32,64,128", help="comma-separated thread counts")
-    parser.add_argument("--format", choices=["csv", "jsonl"], default="csv")
+    parser.add_argument("--format", choices=["parquet", "csv", "jsonl"], default="parquet")
     parser.add_argument("--repeat", type=int, default=3, help="runs per configuration (default 3)")
     parser.add_argument("--work-dir", default=None, help="where scan output and results go")
     parser.add_argument("--drop-caches", action="store_true", help="drop Linux caches before each run (root)")

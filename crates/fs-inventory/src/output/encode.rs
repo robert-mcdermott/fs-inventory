@@ -10,53 +10,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use fs_inventory_core::model::{Entry, EntryKind, ErrorInfo, ErrorRecord, Timestamp};
 use fs_inventory_core::names::{self, Controls};
 
+use super::schema::{Column, ENTRY_COLUMNS, ERROR_COLUMNS, Selection};
 use super::timefmt::{self, Precision};
-
-/// Columns of the entries table, in output order.
-pub const ENTRY_COLUMNS: [&str; 31] = [
-    "path",
-    "parent_path",
-    "name",
-    "extension",
-    "path_b64",
-    "name_flags",
-    "kind",
-    "depth",
-    "dir_id",
-    "parent_id",
-    "dev",
-    "ino",
-    "nlink",
-    "uid",
-    "gid",
-    "mode",
-    "size",
-    "alloc_bytes",
-    "atime",
-    "mtime",
-    "ctime",
-    "btime",
-    "rdev",
-    "dir_entries",
-    "dir_files",
-    "dir_subdirs",
-    "dir_bytes",
-    "dir_alloc_bytes",
-    "is_mount_point",
-    "time_flags",
-    "error",
-];
-
-/// Columns of the errors table, in output order.
-pub const ERROR_COLUMNS: [&str; 7] = [
-    "path",
-    "path_b64",
-    "op",
-    "errno",
-    "errno_name",
-    "message",
-    "time",
-];
 
 /// Bits of the `time_flags` column: the timestamp could not be represented
 /// and was clamped.
@@ -97,6 +52,8 @@ pub struct EncodeOptions {
     pub csv_raw_controls: bool,
     pub precision: Precision,
     pub time_style: TimeStyle,
+    /// Entry columns to write.
+    pub selection: Selection,
 }
 
 /// Encodes rows into a byte buffer.
@@ -122,6 +79,22 @@ impl Encoder {
         }
     }
 
+    /// Names of the entry columns written, in order.
+    pub fn entry_columns(&self) -> Vec<&'static str> {
+        let selection = self.options.selection;
+        ENTRY_COLUMNS
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| selection.contains(*i))
+            .map(|(_, c)| c.text_name)
+            .collect()
+    }
+
+    /// Names of the error columns, in order.
+    pub fn error_columns(&self) -> Vec<&'static str> {
+        ERROR_COLUMNS.iter().map(|c: &Column| c.text_name).collect()
+    }
+
     /// The header line for a table, or nothing for JSON Lines.
     pub fn header(&self, columns: &[&str]) -> Vec<u8> {
         match self.options.format {
@@ -132,6 +105,11 @@ impl Encoder {
             }
             TextFormat::Jsonl => Vec::new(),
         }
+    }
+
+    /// Whether a timestamp must be clamped in this encoding.
+    fn clamped(&self, t: Option<Timestamp>) -> bool {
+        self.options.time_style == TimeStyle::Iso && t.is_some_and(|t| !timefmt::iso_in_range(t))
     }
 
     pub fn entry(&self, e: &Entry<'_>, out: &mut Vec<u8>) {
@@ -150,7 +128,19 @@ impl Encoder {
         let stat = e.stat;
         let is_device = matches!(e.kind(), EntryKind::CharDevice | EntryKind::BlockDevice);
 
-        let mut row = Row::new(self.options.format, out);
+        let mut time_flags = 0;
+        for (time, clamped) in [
+            (Some(stat.atime), ATIME_CLAMPED),
+            (Some(stat.mtime), MTIME_CLAMPED),
+            (Some(stat.ctime), CTIME_CLAMPED),
+            (stat.btime, BTIME_CLAMPED),
+        ] {
+            if self.clamped(time) {
+                time_flags |= clamped;
+            }
+        }
+
+        let mut row = Row::new(self.options.format, Some(self.options.selection), out);
         row.text("path", &path);
         row.text("parent_path", &names::to_text(e.parent_path, controls));
         row.text("name", &names::to_text(e.name, controls));
@@ -169,17 +159,10 @@ impl Encoder {
         row.uint("mode", u64::from(stat.mode));
         row.int("size", stat.size);
         row.uint("alloc_bytes", stat.alloc_bytes());
-        let mut time_flags = 0;
-        for (name, time, clamped) in [
-            ("atime", Some(stat.atime), ATIME_CLAMPED),
-            ("mtime", Some(stat.mtime), MTIME_CLAMPED),
-            ("ctime", Some(stat.ctime), CTIME_CLAMPED),
-            ("btime", stat.btime, BTIME_CLAMPED),
-        ] {
-            if !row.time(name, time, self.options) {
-                time_flags |= clamped;
-            }
-        }
+        row.time("atime", Some(stat.atime), self.options);
+        row.time("mtime", Some(stat.mtime), self.options);
+        row.time("ctime", Some(stat.ctime), self.options);
+        row.time("btime", stat.btime, self.options);
         row.opt_uint("rdev", is_device.then_some(stat.rdev));
         let totals = e.totals;
         row.opt_uint("dir_entries", totals.map(|t| t.entries));
@@ -199,7 +182,7 @@ impl Encoder {
         let path = names::to_text(r.path, controls);
         let path_b64 = (self.options.raw_paths_always || matches!(path, Cow::Owned(_)))
             .then(|| BASE64.encode(r.path));
-        let mut row = Row::new(self.options.format, out);
+        let mut row = Row::new(self.options.format, None, out);
         row.text("path", &path);
         row.opt_text("path_b64", path_b64.as_deref());
         row.text("op", r.info.op.as_str());
@@ -212,33 +195,43 @@ impl Encoder {
 }
 
 /// A short description for the `error` column, such as `open: EACCES`.
-fn error_summary(info: &ErrorInfo) -> String {
+pub fn error_summary(info: &ErrorInfo) -> String {
     match info.errno_name() {
         Some(name) => format!("{}: {name}", info.op.as_str()),
         None => format!("{}: {}", info.op.as_str(), info.message),
     }
 }
 
-/// Writes one row field by field.
+/// Writes one row field by field, skipping columns that aren't selected.
 struct Row<'a> {
     format: TextFormat,
+    selection: Option<Selection>,
     out: &'a mut Vec<u8>,
+    index: usize,
     first: bool,
 }
 
 impl<'a> Row<'a> {
-    fn new(format: TextFormat, out: &'a mut Vec<u8>) -> Self {
+    fn new(format: TextFormat, selection: Option<Selection>, out: &'a mut Vec<u8>) -> Self {
         if format == TextFormat::Jsonl {
             out.push(b'{');
         }
         Self {
             format,
+            selection,
             out,
+            index: 0,
             first: true,
         }
     }
 
-    fn key(&mut self, name: &str) {
+    /// Starts the next field. Returns `false` if its column isn't selected.
+    fn field(&mut self, name: &str) -> bool {
+        let index = self.index;
+        self.index += 1;
+        if self.selection.is_some_and(|s| !s.contains(index)) {
+            return false;
+        }
         if !self.first {
             self.out.push(b',');
         }
@@ -248,6 +241,7 @@ impl<'a> Row<'a> {
             self.out.extend_from_slice(name.as_bytes());
             self.out.extend_from_slice(b"\":");
         }
+        true
     }
 
     fn null(&mut self) {
@@ -257,7 +251,9 @@ impl<'a> Row<'a> {
     }
 
     fn text(&mut self, name: &str, value: &str) {
-        self.key(name);
+        if !self.field(name) {
+            return;
+        }
         match self.format {
             TextFormat::Csv => csv_field(self.out, value),
             TextFormat::Jsonl => json_string(self.out, value),
@@ -267,57 +263,55 @@ impl<'a> Row<'a> {
     fn opt_text(&mut self, name: &str, value: Option<&str>) {
         match value {
             Some(v) => self.text(name, v),
-            None => {
-                self.key(name);
-                self.null();
-            }
+            None if self.field(name) => self.null(),
+            None => {}
         }
     }
 
     fn uint(&mut self, name: &str, value: u64) {
-        self.key(name);
-        self.out
-            .extend_from_slice(itoa::Buffer::new().format(value).as_bytes());
+        if self.field(name) {
+            self.out
+                .extend_from_slice(itoa::Buffer::new().format(value).as_bytes());
+        }
     }
 
     fn int(&mut self, name: &str, value: i64) {
-        self.key(name);
-        self.out
-            .extend_from_slice(itoa::Buffer::new().format(value).as_bytes());
+        if self.field(name) {
+            self.out
+                .extend_from_slice(itoa::Buffer::new().format(value).as_bytes());
+        }
     }
 
     fn opt_uint(&mut self, name: &str, value: Option<u64>) {
         match value {
             Some(v) => self.uint(name, v),
-            None => {
-                self.key(name);
-                self.null();
-            }
+            None if self.field(name) => self.null(),
+            None => {}
         }
     }
 
     fn opt_int(&mut self, name: &str, value: Option<i64>) {
         match value {
             Some(v) => self.int(name, v),
-            None => {
-                self.key(name);
-                self.null();
-            }
+            None if self.field(name) => self.null(),
+            None => {}
         }
     }
 
     fn bool(&mut self, name: &str, value: bool) {
-        self.key(name);
-        self.out
-            .extend_from_slice(if value { b"true" } else { b"false" });
+        if self.field(name) {
+            self.out
+                .extend_from_slice(if value { b"true" } else { b"false" });
+        }
     }
 
-    /// Writes a timestamp. Returns `false` if it was clamped.
-    fn time(&mut self, name: &str, value: Option<Timestamp>, options: EncodeOptions) -> bool {
-        self.key(name);
+    fn time(&mut self, name: &str, value: Option<Timestamp>, options: EncodeOptions) {
+        if !self.field(name) {
+            return;
+        }
         let Some(t) = value else {
             self.null();
-            return true;
+            return;
         };
         match options.time_style {
             TimeStyle::Iso => {
@@ -325,16 +319,12 @@ impl<'a> Row<'a> {
                 if quote {
                     self.out.push(b'"');
                 }
-                let in_range = timefmt::write_iso(self.out, t, options.precision);
+                timefmt::write_iso(self.out, t, options.precision);
                 if quote {
                     self.out.push(b'"');
                 }
-                in_range
             }
-            TimeStyle::Epoch => {
-                timefmt::write_epoch(self.out, t, options.precision);
-                true
-            }
+            TimeStyle::Epoch => timefmt::write_epoch(self.out, t, options.precision),
         }
     }
 
@@ -408,6 +398,7 @@ mod tests {
             csv_raw_controls: false,
             precision: Precision::Micros,
             time_style: TimeStyle::Iso,
+            selection: Selection::ALL,
         }
     }
 
@@ -581,6 +572,37 @@ mod tests {
         assert_eq!(value["errno"], 13);
         assert_eq!(value["errno_name"], "EACCES");
         assert_eq!(value.as_object().unwrap().len(), ERROR_COLUMNS.len());
+    }
+
+    #[test]
+    fn selected_columns_only() {
+        let selection = Selection::parse(&["size".into(), "path".into()]).unwrap();
+        for (format, expected) in [
+            (TextFormat::Csv, "/d/x,42\n"),
+            (TextFormat::Jsonl, "{\"path\":\"/d/x\",\"size\":42}\n"),
+        ] {
+            let encoder = Encoder::new(EncodeOptions {
+                selection,
+                ..options(format)
+            });
+            assert_eq!(encoder.entry_columns(), ["path", "size"]);
+            let stat = file_stat();
+            let entry = Entry {
+                path: b"/d/x",
+                parent_path: b"/d",
+                name: b"x",
+                depth: 1,
+                dir_id: None,
+                parent_id: 7,
+                stat: &stat,
+                is_mount_point: false,
+                totals: None,
+                error: None,
+            };
+            let mut out = Vec::new();
+            encoder.entry(&entry, &mut out);
+            assert_eq!(String::from_utf8(out).unwrap(), expected);
+        }
     }
 
     #[test]

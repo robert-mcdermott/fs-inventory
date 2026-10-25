@@ -168,42 +168,16 @@ This is the core robustness feature.
 - CSV and JSON default to ISO-8601 UTC with fractional seconds. `--time-format epoch` writes `seconds.nanoseconds` instead.
 - **`btime`** (birth/creation time) is nullable. It comes from `statx` `STATX_BTIME` on Linux when the file system supports it, and from `st_birthtime` on macOS and BSD. Documentation will point out that `ctime` is *change* time, not creation time, and that `ctime` is the trustworthy "recently written" signal because `cp -p`, `rsync -a`, and `tar` preserve `mtime`.
 
-### 4.3 `entries` schema (v1)
+### 4.3 Schema reference
 
-| Column | Parquet type | Notes |
-|---|---|---|
-| `path` | STRING | Full path (UTF-8-safe, §4.1) |
-| `parent_path` | STRING (dictionary) | Compresses to almost nothing because rows are grouped by directory |
-| `name` | STRING | Basename |
-| `extension` | STRING (dictionary), nullable | |
-| `path_raw` | BINARY, nullable | Exact bytes (§4.1) |
-| `name_flags` | UINT32 | Bitmask (§4.1) |
-| `kind` | STRING (dictionary) | `file`, `dir`, `symlink`, `fifo`, `socket`, `char`, `block`, `unknown` |
-| `depth` | UINT16 | 0 = root |
-| `dir_id` | UINT64, nullable | Set for directories. Crawl-assigned and unique within a crawl |
-| `parent_id` | UINT64 | `dir_id` of the containing directory (0 for the root) |
-| `dev`, `ino` | UINT64 | Unsigned because hash-based inode numbers (Lustre, NFS) use the high bit |
-| `nlink` | UINT64 | Count `(dev, ino)` once to avoid double-counting hard links |
-| `uid`, `gid` | UINT32 | Names resolved only with `--resolve-ids` (cached) |
-| `mode` | UINT32 | Full `st_mode`. The SQL views decode it to octal and `rwx` |
-| `size` | INT64 | Logical size |
-| `alloc_bytes` | INT64 | `st_blocks × 512`. Reveals sparse, compressed, and tiered/stubbed files |
-| `atime`, `mtime`, `ctime` | TIMESTAMP(µs, UTC) | |
-| `btime` | TIMESTAMP(µs, UTC), nullable | |
-| `rdev` | UINT64, nullable | Device files only |
-| `fs_attrs` | UINT64, nullable | statx attributes on Linux, `st_flags` on BSD/macOS |
-| `symlink_target` / `symlink_target_raw` | STRING / BINARY, nullable | Only with `--symlink-targets` |
-| `dir_entries`, `dir_files`, `dir_subdirs` | UINT64, nullable | Directories only: immediate children |
-| `dir_bytes`, `dir_alloc_bytes` | INT64, nullable | Directories only: sum over immediate non-directory children |
-| `is_mount_point` | BOOLEAN | `dev` differs from the parent's, or `STATX_ATTR_MOUNT_ROOT` |
-| `time_flags` | UINT8 | Saturated or clamped timestamps |
-| `error` | STRING, nullable | Example: `EACCES` on a directory that couldn't be opened (the row is present but the directory wasn't read) |
+The schema is defined once in code (`crates/fs-inventory/src/output/schema.rs`), and every format comes from it: the Parquet schema, CSV and JSON Lines columns, `fs-inventory schema --format sql|json|markdown`, and **[docs/schema.md](docs/schema.md)**, which is generated and checked by a test. Tests also check the DuckDB macros in `sql/` against it.
 
-`--columns` and `--fields` select a subset to shrink the output. We'll measure in M2 whether storing `path` alongside `parent_path` and `name` is worth the extra bytes after zstd. If not, `path` becomes a view column.
+Main points:
 
-### 4.4 `errors` schema
-
-`path`, `path_raw`, `op` (`open`, `readdir`, `stat`, `verify`, `internal`), `errno` (INT32), `errno_name`, `message`, `time`. Entries that vanish between `getdents` and `statx` (`ENOENT`) are counted separately as **`vanished`**, not as errors. Live file systems churn.
+- **`entries`** has 31 columns: path text, `path_raw` exact bytes, name flags, kind, depth, crawl IDs, the full `stat` (unsigned 64-bit `dev`/`ino`, timestamps in UTC), totals for directories, mount points, and errors.
+- **`errors`** has one row per failed operation: path, exact bytes, operation, errno, message, and time.
+- **`--columns`** selects a subset of entry columns in every format.
+- Entries that vanish between being listed and being read are counted as **vanished** in the manifest, not as errors. Live file systems churn.
 
 ### 4.5 Recursive totals (`rollup`)
 
@@ -233,11 +207,36 @@ Repeated scans can sit side by side (`scans/scan_date=2026-10-25/…`), so DuckD
 
 ### 5.2 Parquet
 
-- **Writer pool:** crawl workers hand over directory-aligned Arrow `RecordBatch`es through a bounded channel. Writers encode and compress in parallel. The number of output files follows `--writers`, not `--threads`, so 256 crawl threads don't produce 256 small files.
-- **Defaults:** ZSTD level 3 (`--compression zstd[:N] | snappy | lz4 | none`), row groups of about 1M rows, 1 MiB data pages, column and offset indexes and min/max statistics enabled (so DuckDB can skip row groups on `mtime`, `size`, `uid`), and dictionary encoding on low-cardinality columns only.
+- **Pipeline:** crawl workers append rows to per-worker Arrow builders and hand directory-aligned record batches to the writers through a bounded channel. Writers encode and compress. The number of output files follows `--writers`, not `--threads`, so 256 crawl threads don't produce 256 small files.
+- **Defaults:**
+  - Compression: zstd level 3 (`--compression zstd[:N] | gzip[:N] | snappy | lz4 | none`).
+  - Row groups: up to `--row-group-rows` (default 1,048,576) and 128 MiB in progress.
+  - Page-level statistics and the page index, so DuckDB can skip row groups on `mtime`, `size`, or `uid`.
+- **Encodings:** measured on 1.24 million real entries (average path 126 bytes):
+
+  | Choice | Effect (bytes per entry) |
+  |---|---|
+  | `path` as `DELTA_BYTE_ARRAY` (each path stored as a suffix of the previous one) | 7.9 → 5.0 |
+  | `ino` as `DELTA_BINARY_PACKED` | 1.6 → 1.3 |
+  | No dictionary for high-cardinality columns (`path`, `name`, `path_raw`, `ino`, `dir_id`, timestamps) | Arrow's defaults are 36% larger overall; dictionary-encoded timestamps are about 70% larger |
+  | Plain `name` and timestamps | Delta encoding made both larger |
+
 - **Rolling parts:** a writer starts a new part at `--part-max-bytes` (default 1 GiB) or `--part-max-rows`.
-- **Commit protocol:** write `*.parquet.tmp`, fsync, then rename. A finalized part is always a valid file. A crash leaves only `.tmp` files, which resume deletes.
-- **Key-value metadata on every file:** `fs_inventory.schema_version`, `tool_version`, `scan_id`, `root`, `host`.
+- **Commit protocol:** write `*.parquet.tmp` (footer last), fsync, then rename. A finalized part is always a valid file, and a crash leaves only `.tmp` files.
+- **Key-value metadata on every file:** `fs_inventory.schema_version`, `tool_version`, `scan_id`, `host`, and `roots`. `verify` checks each part's `scan_id` against the manifest.
+- **Measured output size**, on the same 1.24 million entries:
+
+  | Format | Bytes per entry | 1 billion entries |
+  |---|---|---|
+  | Parquet, zstd 3 (default) | 24.9 | about 25 GB |
+  | Parquet, zstd 9 | 23.3 | about 23 GB |
+  | Parquet, zstd 1 | 26.0 | about 26 GB |
+  | CSV, zstd 3 | 36.0 | about 36 GB |
+  | JSON Lines, zstd 3 | 41.0 | about 41 GB |
+  | Parquet, Snappy | 41.0 | about 41 GB |
+  | CSV, uncompressed | 446 | about 446 GB |
+
+- **Allocator:** the binary uses mimalloc. Arrow builders allocate constantly, and musl's allocator (used by the static Linux build) serialized the crawl threads on a lock. A 500,000-file Parquet scan with 8 threads went from 722 ms to 332 ms. At 4 to 8 threads, Parquet now scans as fast as CSV.
 
 ### 5.3 CSV and JSON Lines
 
@@ -413,7 +412,7 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 |---|---|---|
 | **M0: Skeleton** ✅ | Workspace, LICENSE, NOTICE, CI, `cargo-deny`, `clap` skeleton | CI green on Linux and macOS |
 | **M1: Core walker + CSV/JSONL** ✅ | Work-stealing scheduler, Linux statx/getdents backend, generic backend (macOS), names module, directory aggregates, errors table, excludes, `--max-depth`, mount and snapshot policy, progress, graceful signals, stdout and directory output with rolling parts and the commit protocol, manifest, benchmark kit. Directory-atomic batching from day one. | Torture tree passes in a Linux container, the oracle diff is exact, there are zero panics under fault injection, and DuckDB 2.0 loads the output |
-| **M2: Parquet** | Arrow builders, Parquet writer pool, key-value metadata, `sql/` views and queries, `verify`, `schema` (also generates the schema doc) | A 100M-entry scan loads in DuckDB with no errors, and output size per entry is measured and documented |
+| **M2: Parquet** ✅ | Arrow builders, Parquet writer pool, key-value metadata, `--columns`, `sql/` macros and example queries, `verify`, `schema` (also generates `docs/schema.md`), mimalloc | Output size per entry measured on 1.24M real entries (§5.2), and DuckDB 2.0 loads Parquet, CSV, and JSON Lines scans. A 100M-entry scan has not been run yet; that happens on the Linux server. |
 | **M3: Scale** | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat |
 | **M4: Resume** | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run |
 | **M5: Platform and extras** | `diff` between two scans (§11), macOS `getattrlistbulk` backend (if benchmarks justify it), `--guess-encoding`, symlink targets, statx attributes, `--resolve-ids`, `convert`, release packaging (static binaries, .deb/.rpm, Homebrew), documentation site | Release 1.0 |

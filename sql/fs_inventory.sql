@@ -1,18 +1,31 @@
 -- SPDX-License-Identifier: Apache-2.0
 -- Copyright 2026 Robert McDermott
 --
--- DuckDB macros for reading fs-inventory scans written as CSV or JSON Lines.
--- Column types are given explicitly so DuckDB never guesses them from a
--- sample (a column of numeric-looking file names would otherwise be read as
--- numbers). Compressed parts (.zst, .gz) are read transparently.
+-- DuckDB macros for reading fs-inventory scans.
 --
 -- Usage, in the DuckDB shell:
 --   .read sql/fs_inventory.sql
---   SELECT kind, count(*) FROM fs_entries_csv('/scratch/inventory/scan-2026-10-25') GROUP BY kind;
+--   SELECT kind, count(*) FROM fs_entries('/scratch/inventory/scan-2026-10-25') GROUP BY kind;
 --
--- Each table macro adds `path_raw`, the exact path bytes when `path` differs
--- from them, so `coalesce(path_raw, encode(path))` is exact for every row.
--- Timestamps assume the default --time-format iso.
+-- fs_entries and fs_errors read Parquet scans (the default format), whose
+-- files carry their own column types. fs_errors needs at least one error
+-- part, which exists only if the scan recorded errors.
+--
+-- The _csv and _jsonl variants read the text formats. They give column types
+-- explicitly, so DuckDB never guesses them from a sample (a column of
+-- numeric-looking file names would otherwise be read as numbers), read
+-- compressed parts (.zst, .gz) transparently, and add `path_raw` decoded from
+-- `path_b64`. The CSV macros need every column; for scans made with
+-- --columns, use read_csv with your own column list, or Parquet. Timestamps
+-- assume the default --time-format iso.
+--
+-- In every format, `coalesce(path_raw, encode(path))` is the exact path bytes.
+
+CREATE OR REPLACE MACRO fs_entries(scan_dir) AS TABLE
+SELECT * FROM read_parquet(scan_dir || '/entries/*.parquet');
+
+CREATE OR REPLACE MACRO fs_errors(scan_dir) AS TABLE
+SELECT * FROM read_parquet(scan_dir || '/errors/*.parquet');
 
 CREATE OR REPLACE MACRO fs_entries_csv(scan_dir) AS TABLE
 SELECT *, from_base64(path_b64) AS path_raw

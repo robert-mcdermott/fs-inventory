@@ -1,33 +1,42 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Robert McDermott
 
-//! Output: per-worker sinks that encode rows, and a pool of writer threads
+//! Output: per-worker sinks that buffer rows, and a pool of writer threads
 //! that turn them into part files or a stdout stream.
 //!
 //! Sinks hand over directory-aligned chunks through a bounded channel, so a
-//! slow disk slows the crawl down instead of growing memory.
+//! slow disk slows the crawl down instead of growing memory. Sinks only
+//! buffer rows (text, or Arrow columns); writers do the expensive Parquet
+//! encoding and compression, so `--writers` sets the CPU spent on it.
 
+pub mod arrow;
 pub mod encode;
 pub mod manifest;
+pub mod parquet;
 pub mod parts;
+pub mod schema;
 pub mod timefmt;
 
 use std::io::{self, BufWriter, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::SystemTime;
 
+use arrow_array::RecordBatch;
 use crossbeam_channel::{Receiver, Sender};
 use flate2::write::GzEncoder;
 use fs_inventory_core::model::{Entry, EntryKind, ErrorRecord, Timestamp};
 use fs_inventory_core::names::{self, Controls};
 use fs_inventory_core::walker::Sink;
 
-use self::encode::{ENTRY_COLUMNS, ERROR_COLUMNS, Encoder};
+use self::arrow::{ArrowOptions, EntryBatchBuilder, ErrorBatchBuilder, entry_schema};
+use self::encode::Encoder;
+use self::parquet::{ParquetPartWriter, ParquetSettings};
 use self::parts::{PartInfo, PartWriter, RollLimits, compression_suffix};
+use self::schema::{ERROR_COLUMNS, Selection, arrow_schema};
 use crate::parse::Compression;
 
 /// Memory shared by every worker's row buffer. Each worker sends its rows
@@ -40,22 +49,35 @@ const MAX_FLUSH_BYTES: usize = 1 << 20;
 /// A worker sends mid-directory once its buffer reaches this multiple of its
 /// share, so very large directories don't hold unbounded memory.
 const MAX_BUFFER_FACTOR: usize = 4;
-/// Send buffered error rows once a directory ends past this size.
-const ERROR_FLUSH_BYTES: usize = 64 << 10;
+/// Send buffered error rows once a directory ends past this many.
+const ERROR_FLUSH_ROWS: usize = 256;
 
 /// Where rows go.
 #[derive(Debug, Clone)]
 pub enum Destination {
     /// Part files under a scan directory.
     Dir(PathBuf),
-    /// One stream on stdout; error rows go to stderr as text.
+    /// One stream on stdout (text formats only); error rows go to stderr.
     Stdout,
+}
+
+/// How rows are encoded.
+#[derive(Debug, Clone)]
+pub enum Format {
+    /// CSV or JSON Lines.
+    Text(Encoder),
+    Parquet {
+        arrow: ArrowOptions,
+        settings: ParquetSettings,
+    },
 }
 
 #[derive(Debug, Clone)]
 pub struct OutputConfig {
     pub destination: Destination,
-    pub encoder: Encoder,
+    pub format: Format,
+    pub selection: Selection,
+    /// Compression for text output; Parquet takes it from its settings.
     pub compression: Compression,
     pub writers: usize,
     /// Crawl threads, each with its own sink.
@@ -69,21 +91,38 @@ enum Table {
     Errors,
 }
 
+enum Payload {
+    Text(Vec<u8>),
+    Batch(RecordBatch),
+}
+
 struct Chunk {
     table: Table,
-    bytes: Vec<u8>,
+    payload: Payload,
     rows: u64,
 }
 
 /// State shared by every sink.
 struct Shared {
-    encoder: Encoder,
+    format: Format,
+    selection: Selection,
     /// Each sink sends its rows at a directory boundary past this size.
     flush_bytes: usize,
     errors_to_stderr: bool,
     kinds: [AtomicU64; EntryKind::ALL.len()],
     error_rows: AtomicU64,
     stop: Arc<AtomicBool>,
+    /// A failure inside a sink, reported with the writers' failures.
+    failure: Mutex<Option<io::Error>>,
+}
+
+impl Shared {
+    fn fail(&self, error: io::Error) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Ok(mut failure) = self.failure.lock() {
+            failure.get_or_insert(error);
+        }
+    }
 }
 
 /// What the writers produced.
@@ -94,7 +133,7 @@ pub struct OutputReport {
     /// Rows written, by kind, in [`EntryKind::ALL`] order.
     pub kinds: [u64; EntryKind::ALL.len()],
     pub error_rows: u64,
-    /// The first write failure, if any. Output after it was discarded.
+    /// The first failure, if any. Output after it was discarded.
     pub failure: Option<io::Error>,
 }
 
@@ -119,12 +158,14 @@ impl Output {
         let flush_bytes = (SINK_BUDGET_BYTES / config.crawl_threads.max(1))
             .clamp(MIN_FLUSH_BYTES, MAX_FLUSH_BYTES);
         let shared = Arc::new(Shared {
-            encoder: config.encoder,
+            format: config.format.clone(),
+            selection: config.selection,
             flush_bytes,
             errors_to_stderr: matches!(config.destination, Destination::Stdout),
             kinds: Default::default(),
             error_rows: AtomicU64::new(0),
             stop: Arc::clone(&stop),
+            failure: Mutex::new(None),
         });
         let mut handles = Vec::with_capacity(writers);
         for index in 0..writers {
@@ -147,13 +188,23 @@ impl Output {
     }
 
     /// A sink for one crawl worker.
-    pub fn sink(&self) -> TextSink {
-        TextSink {
+    pub fn sink(&self) -> RowSink {
+        let (entries, errors) = match &self.shared.format {
+            Format::Text(_) => (EntryBuffer::Text(Vec::new()), ErrorBuffer::Text(Vec::new())),
+            Format::Parquet { arrow, .. } => (
+                EntryBuffer::Arrow(Box::new(EntryBatchBuilder::new(
+                    *arrow,
+                    self.shared.selection,
+                ))),
+                ErrorBuffer::Arrow(Box::new(ErrorBatchBuilder::new(*arrow))),
+            ),
+        };
+        RowSink {
             tx: self.tx.clone(),
             shared: Arc::clone(&self.shared),
-            entries: Vec::new(),
+            entries,
             entry_rows: 0,
-            errors: Vec::new(),
+            errors,
             error_rows: 0,
             kinds: [0; EntryKind::ALL.len()],
         }
@@ -180,6 +231,11 @@ impl Output {
                 }
             }
         }
+        if let Ok(mut failure) = self.shared.failure.lock()
+            && let Some(e) = failure.take()
+        {
+            report.failure.get_or_insert(e);
+        }
         for (count, kind) in report.kinds.iter_mut().zip(&self.shared.kinds) {
             *count = kind.load(Ordering::Relaxed);
         }
@@ -194,6 +250,80 @@ fn drain_after_failure(rx: &Receiver<Chunk>) {
     for _ in rx.iter() {}
 }
 
+/// Writes one table in whichever format the scan uses.
+#[allow(clippy::large_enum_variant, reason = "two per writer thread")]
+enum TableWriter {
+    Text(PartWriter),
+    Parquet(ParquetPartWriter),
+}
+
+impl TableWriter {
+    fn write(&mut self, chunk: &Chunk) -> io::Result<()> {
+        match (self, &chunk.payload) {
+            (Self::Text(w), Payload::Text(bytes)) => w.write(bytes, chunk.rows),
+            (Self::Parquet(w), Payload::Batch(batch)) => w.write(batch),
+            _ => Err(io::Error::other(
+                "output chunk does not match the output format",
+            )),
+        }
+    }
+
+    fn finish(self) -> io::Result<Vec<PartInfo>> {
+        match self {
+            Self::Text(w) => w.finish(),
+            Self::Parquet(w) => w.finish(),
+        }
+    }
+}
+
+fn table_writers(
+    config: &OutputConfig,
+    dir: &std::path::Path,
+    index: usize,
+) -> io::Result<(TableWriter, TableWriter)> {
+    let prefix = format!("part-w{index:02}");
+    Ok(match &config.format {
+        Format::Text(encoder) => {
+            let suffix = compression_suffix(config.compression);
+            let extension = format!("{}{suffix}", encoder.format().extension());
+            let writer = |table, columns: Vec<&str>| {
+                TableWriter::Text(PartWriter::new(
+                    dir,
+                    table,
+                    prefix.clone(),
+                    extension.clone(),
+                    encoder.header(&columns),
+                    config.compression,
+                    config.limits,
+                ))
+            };
+            (
+                writer("entries", encoder.entry_columns()),
+                writer("errors", encoder.error_columns()),
+            )
+        }
+        Format::Parquet { arrow, settings } => {
+            let entries = ParquetPartWriter::new(
+                dir,
+                "entries",
+                prefix.clone(),
+                entry_schema(*arrow, config.selection),
+                settings,
+                config.limits,
+            )?;
+            let errors = ParquetPartWriter::new(
+                dir,
+                "errors",
+                prefix,
+                arrow_schema(&ERROR_COLUMNS, arrow.unit),
+                settings,
+                config.limits,
+            )?;
+            (TableWriter::Parquet(entries), TableWriter::Parquet(errors))
+        }
+    })
+}
+
 fn write_parts(
     rx: Receiver<Chunk>,
     config: &OutputConfig,
@@ -201,22 +331,14 @@ fn write_parts(
     index: usize,
     stop: &AtomicBool,
 ) -> WriterResult {
-    let suffix = compression_suffix(config.compression);
-    let extension = format!("{}{suffix}", config.encoder.format().extension());
-    let prefix = format!("part-w{index:02}");
-    let new_writer = |table, columns: &[&str]| {
-        PartWriter::new(
-            &dir,
-            table,
-            prefix.clone(),
-            extension.clone(),
-            config.encoder.header(columns),
-            config.compression,
-            config.limits,
-        )
+    let (mut entries, mut errors) = match table_writers(config, &dir, index) {
+        Ok(writers) => writers,
+        Err(e) => {
+            stop.store(true, Ordering::Relaxed);
+            drain_after_failure(&rx);
+            return (Vec::new(), Vec::new(), Some(e));
+        }
     };
-    let mut entries = new_writer("entries", &ENTRY_COLUMNS);
-    let mut errors = new_writer("errors", &ERROR_COLUMNS);
 
     let mut failure = None;
     for chunk in rx.iter() {
@@ -224,14 +346,14 @@ fn write_parts(
             Table::Entries => &mut entries,
             Table::Errors => &mut errors,
         };
-        if let Err(e) = writer.write(&chunk.bytes, chunk.rows) {
+        if let Err(e) = writer.write(&chunk) {
             failure = Some(e);
             stop.store(true, Ordering::Relaxed);
             drain_after_failure(&rx);
             break;
         }
     }
-    let mut finished = |writer: PartWriter| match writer.finish() {
+    let mut finished = |writer: TableWriter| match writer.finish() {
         Ok(parts) => parts,
         Err(e) => {
             failure.get_or_insert(e);
@@ -282,15 +404,21 @@ impl StdoutStream {
 
 fn write_stdout(rx: Receiver<Chunk>, config: &OutputConfig, stop: &AtomicBool) -> WriterResult {
     let result = (|| -> io::Result<()> {
+        let Format::Text(encoder) = &config.format else {
+            return Err(io::Error::other("stdout output must be CSV or JSON Lines"));
+        };
         let mut stream = StdoutStream::new(config.compression)?;
         stream
             .writer()
-            .write_all(&config.encoder.header(&ENTRY_COLUMNS))?;
+            .write_all(&encoder.header(&encoder.entry_columns()))?;
         let stderr = io::stderr();
         for chunk in rx.iter() {
+            let Payload::Text(bytes) = &chunk.payload else {
+                return Err(io::Error::other("stdout output must be CSV or JSON Lines"));
+            };
             match chunk.table {
-                Table::Entries => stream.writer().write_all(&chunk.bytes)?,
-                Table::Errors => stderr.lock().write_all(&chunk.bytes)?,
+                Table::Entries => stream.writer().write_all(bytes)?,
+                Table::Errors => stderr.lock().write_all(bytes)?,
             }
         }
         stream.finish()
@@ -303,92 +431,155 @@ fn write_stdout(rx: Receiver<Chunk>, config: &OutputConfig, stop: &AtomicBool) -
     (Vec::new(), Vec::new(), failure)
 }
 
-/// Encodes one crawl worker's rows and hands them to the writers.
-pub struct TextSink {
+/// Buffered entry rows.
+enum EntryBuffer {
+    Text(Vec<u8>),
+    Arrow(Box<EntryBatchBuilder>),
+}
+
+/// Buffered error rows.
+enum ErrorBuffer {
+    Text(Vec<u8>),
+    Arrow(Box<ErrorBatchBuilder>),
+}
+
+/// Buffers one crawl worker's rows and hands them to the writers.
+pub struct RowSink {
     tx: Sender<Chunk>,
     shared: Arc<Shared>,
-    entries: Vec<u8>,
+    entries: EntryBuffer,
     entry_rows: u64,
-    errors: Vec<u8>,
+    errors: ErrorBuffer,
     error_rows: u64,
     kinds: [u64; EntryKind::ALL.len()],
 }
 
-impl TextSink {
-    fn send(&mut self, table: Table) {
-        let (buf, rows) = match table {
-            Table::Entries => (&mut self.entries, &mut self.entry_rows),
-            Table::Errors => (&mut self.errors, &mut self.error_rows),
-        };
-        if buf.is_empty() {
+impl RowSink {
+    fn entry_bytes(&self) -> usize {
+        match &self.entries {
+            EntryBuffer::Text(buf) => buf.len(),
+            EntryBuffer::Arrow(builder) => builder.bytes(),
+        }
+    }
+
+    fn send_entries(&mut self) {
+        if self.entry_rows == 0 {
             return;
         }
-        // Size the next buffer to the share, not to whatever this one grew
-        // to, so one large directory doesn't keep its memory forever.
-        let capacity = match table {
-            Table::Entries => self.shared.flush_bytes + self.shared.flush_bytes / 4,
-            Table::Errors => 0,
+        let payload = match &mut self.entries {
+            EntryBuffer::Text(buf) => {
+                // Size the next buffer to the share, not to whatever this one
+                // grew to, so one large directory doesn't keep its memory.
+                let capacity = self.shared.flush_bytes + self.shared.flush_bytes / 4;
+                Payload::Text(std::mem::replace(buf, Vec::with_capacity(capacity)))
+            }
+            EntryBuffer::Arrow(builder) => match builder.finish() {
+                Ok(batch) => Payload::Batch(batch),
+                Err(e) => {
+                    self.entry_rows = 0;
+                    self.shared.fail(io::Error::other(e));
+                    return;
+                }
+            },
         };
-        let chunk = Chunk {
-            table,
-            bytes: std::mem::replace(buf, Vec::with_capacity(capacity)),
-            rows: std::mem::take(rows),
+        let rows = std::mem::take(&mut self.entry_rows);
+        self.send(Table::Entries, payload, rows);
+    }
+
+    fn send_errors(&mut self) {
+        if self.error_rows == 0 {
+            return;
+        }
+        let payload = match &mut self.errors {
+            ErrorBuffer::Text(buf) => Payload::Text(std::mem::take(buf)),
+            ErrorBuffer::Arrow(builder) => match builder.finish() {
+                Ok(batch) => Payload::Batch(batch),
+                Err(e) => {
+                    self.error_rows = 0;
+                    self.shared.fail(io::Error::other(e));
+                    return;
+                }
+            },
         };
-        if self.tx.send(chunk).is_err() {
+        let rows = std::mem::take(&mut self.error_rows);
+        self.send(Table::Errors, payload, rows);
+    }
+
+    fn send(&self, table: Table, payload: Payload, rows: u64) {
+        if self
+            .tx
+            .send(Chunk {
+                table,
+                payload,
+                rows,
+            })
+            .is_err()
+        {
             // Every writer has stopped; the failure is reported by `finish`.
             self.shared.stop.store(true, Ordering::Relaxed);
         }
     }
 }
 
-impl Sink for TextSink {
+impl Sink for RowSink {
     fn entry(&mut self, entry: &Entry<'_>) {
-        // If encoding ever panics, drop the partial row before the walker
-        // records the failure, so no part file gets a truncated line.
-        let mark = self.entries.len();
-        let encoder = self.shared.encoder;
-        let entries = &mut self.entries;
-        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| encoder.entry(entry, entries))) {
-            self.entries.truncate(mark);
-            resume_unwind(panic);
+        match &mut self.entries {
+            EntryBuffer::Text(buf) => {
+                // If encoding ever panics, drop the partial row before the
+                // walker records the failure, so no part gets a truncated line.
+                let mark = buf.len();
+                let Format::Text(encoder) = &self.shared.format else {
+                    return;
+                };
+                if let Err(panic) = catch_unwind(AssertUnwindSafe(|| encoder.entry(entry, buf))) {
+                    buf.truncate(mark);
+                    resume_unwind(panic);
+                }
+            }
+            // Computes every value before appending any, so a panic leaves
+            // the columns consistent.
+            EntryBuffer::Arrow(builder) => builder.append(entry),
         }
         self.entry_rows += 1;
         if let Some(i) = EntryKind::ALL.iter().position(|k| *k == entry.kind()) {
             self.kinds[i] += 1;
         }
-        if self.entries.len() >= self.shared.flush_bytes * MAX_BUFFER_FACTOR {
-            self.send(Table::Entries);
+        if self.entry_bytes() >= self.shared.flush_bytes * MAX_BUFFER_FACTOR {
+            self.send_entries();
         }
     }
 
     fn error(&mut self, error: &ErrorRecord<'_>) {
-        if self.shared.errors_to_stderr {
-            let path = names::to_text(error.path, Controls::Escape);
-            let line = format!(
-                "fs-inventory: {} {path}: {}\n",
-                error.info.op.as_str(),
-                error.info.message
-            );
-            self.errors.extend_from_slice(line.as_bytes());
-        } else {
-            self.shared.encoder.error(error, now(), &mut self.errors);
+        match (&mut self.errors, &self.shared.format) {
+            (ErrorBuffer::Text(buf), _) if self.shared.errors_to_stderr => {
+                let path = names::to_text(error.path, Controls::Escape);
+                let line = format!(
+                    "fs-inventory: {} {path}: {}\n",
+                    error.info.op.as_str(),
+                    error.info.message
+                );
+                buf.extend_from_slice(line.as_bytes());
+            }
+            (ErrorBuffer::Text(buf), Format::Text(encoder)) => encoder.error(error, now(), buf),
+            (ErrorBuffer::Arrow(builder), _) => builder.append(error, now()),
+            (ErrorBuffer::Text(_), Format::Parquet { .. }) => return,
         }
         self.error_rows += 1;
         self.shared.error_rows.fetch_add(1, Ordering::Relaxed);
     }
 
     fn end_dir(&mut self) {
-        if self.entries.len() >= self.shared.flush_bytes {
-            self.send(Table::Entries);
+        if self.entry_bytes() >= self.shared.flush_bytes {
+            self.send_entries();
         }
-        if self.errors.len() >= ERROR_FLUSH_BYTES {
-            self.send(Table::Errors);
+        if self.error_rows as usize >= ERROR_FLUSH_ROWS {
+            self.send_errors();
         }
     }
 
     fn finish(&mut self) {
-        self.send(Table::Entries);
-        self.send(Table::Errors);
+        self.send_entries();
+        self.send_errors();
         for (shared, local) in self.shared.kinds.iter().zip(&mut self.kinds) {
             shared.fetch_add(std::mem::take(local), Ordering::Relaxed);
         }

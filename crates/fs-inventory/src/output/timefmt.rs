@@ -33,6 +33,11 @@ impl Precision {
 const MIN_ISO_SECONDS: i64 = -62_135_596_800;
 const MAX_ISO_SECONDS: i64 = 253_402_300_800;
 
+/// Whether `t` fits ISO-8601 with a four-digit year (0001 to 9999).
+pub fn iso_in_range(t: Timestamp) -> bool {
+    (MIN_ISO_SECONDS..MAX_ISO_SECONDS).contains(&t.sec)
+}
+
 /// Writes `t` as ISO-8601 UTC, such as `2026-10-25T01:30:00.123456Z`.
 /// Returns `false` if the time was outside years 1 to 9999 and was clamped.
 pub fn write_iso(out: &mut Vec<u8>, t: Timestamp, precision: Precision) -> bool {
