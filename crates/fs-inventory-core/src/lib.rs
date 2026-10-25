@@ -9,6 +9,11 @@
 
 #![warn(missing_docs)]
 
+pub mod backend;
+pub mod model;
+pub mod names;
+pub mod walker;
+
 /// Version of the inventory output schema. Bump on any incompatible change
 /// to column names, types, or semantics.
 pub const SCHEMA_VERSION: u32 = 1;

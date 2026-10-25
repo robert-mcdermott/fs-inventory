@@ -44,10 +44,10 @@ Both Go and Rust can saturate a metadata server. On network and parallel file sy
 
 **Recommendation: Rust.** Two factors decide it.
 
-1. **The biggest correctness risk is file names.** I verified with DuckDB 1.5.1 on this machine that a Parquet column annotated as a string with *one* invalid UTF-8 value makes the whole file unreadable: `Invalid string encoding found in Parquet file … is not valid UTF8!`. A single legacy Shift-JIS file name among a billion entries would poison the dataset. Rust's `str`/`[u8]` split makes this class of bug a compile-time concern rather than a production surprise.
+1. **The biggest correctness risk is file names.** I verified with DuckDB 1.5.1 and again with 2.0.0 on this machine that a Parquet column annotated as a string with *one* invalid UTF-8 value makes the whole file unreadable: `Invalid string encoding found in Parquet file … is not valid UTF8!`. A single legacy Shift-JIS file name among a billion entries would poison the dataset. Rust's `str`/`[u8]` split makes this class of bug a compile-time concern rather than a production surprise.
 2. **Billion-row output with steady memory.** arrow-rs is a reference-quality Parquet writer, and having no GC keeps memory use flat across multi-day crawls.
 
-Go is a reasonable alternative if long-term maintainers are Go-first. The architecture below is language-neutral. Both toolchains are already installed here (rustc 1.99, go 1.26.6), along with DuckDB 1.5.1.
+Go is a reasonable alternative if long-term maintainers are Go-first. The architecture below is language-neutral. Both toolchains are already installed here (rustc 1.99, go 1.26.6), along with DuckDB 2.0.0.
 
 ---
 
@@ -203,11 +203,13 @@ This is the core robustness feature.
 
 ### 4.4 `errors` schema
 
-`path`, `path_raw`, `op` (`open`, `getdents`, `statx`, `readlink`, `verify`), `errno` (INT32), `message`, `time`, `worker`. Entries that vanish between `getdents` and `statx` (`ENOENT`) are counted separately as **`vanished`**, not as errors. Live file systems churn.
+`path`, `path_raw`, `op` (`open`, `readdir`, `stat`, `verify`, `internal`), `errno` (INT32), `errno_name`, `message`, `time`. Entries that vanish between `getdents` and `statx` (`ENOENT`) are counted separately as **`vanished`**, not as errors. Live file systems churn.
 
 ### 4.5 Recursive totals (`rollup`)
 
 Each directory row carries totals for its *immediate* children. `fs-inventory rollup <scan-dir>` reads only the directory rows (about 5% of rows, 5 columns), rebuilds the tree from `dir_id`/`parent_id`, and writes `rollup/part-*.parquet`. Each output row has `dir_id`, `path`, `depth`, `total_entries`, `total_files`, `total_dirs`, `total_bytes`, `total_alloc_bytes`, `min_mtime`, `max_mtime`, and `max_ctime`. Running it after the crawl means it is always correct, including after a resume. For 50M directories it needs about 2 GB of RAM.
+
+For file-age heat maps, each rollup row also carries **age histograms**: file counts and bytes per age bucket (by default < 30 days, < 90 days, < 1 year, < 2, 3, 5, and 10 years, and older), for `mtime`, `ctime`, and `atime`, measured from the scan's start time. To build them, `rollup` also reads five columns of the file rows (`parent_id`, `size`, `mtime`, `ctime`, `atime`), which is a fast column scan in Parquet. Buckets are configurable (`--age-buckets`), so they aren't frozen into the scan. The web app then reads a small directory × age-bucket table instead of aggregating billions of rows.
 
 ---
 
@@ -224,6 +226,8 @@ scan-2026-10-25T0130Z/
   rollup/part-000000.parquet          (after `fs-inventory rollup`)
   checkpoints/ckpt-000042.bin.zst     (resume state; deleted on success unless --keep-checkpoints)
 ```
+
+Every format is sharded the same way, so a billion-entry scan becomes many part files of bounded size rather than one huge file. DuckDB reads a glob of parts as a single table (`read_parquet('scan/entries/*.parquet')`, `read_csv('scan/entries/*.csv')`, `read_json('scan/entries/*.jsonl')`), and so can ingestion jobs that load parts in parallel.
 
 Repeated scans can sit side by side (`scans/scan_date=2026-10-25/…`), so DuckDB's hive partitioning gives you inventory-over-time analytics for free: growth, churn, new versus deleted files.
 
@@ -385,6 +389,12 @@ fs-inventory/
 
 ### 9.2 Performance
 
+Development happens on a macOS laptop, so tests are split by where they can run:
+
+- **On the laptop:** unit, property, and integration tests, and small synthetic trees. Never quote laptop numbers as performance results.
+- **In a Linux container (Podman):** the Linux `statx`/`getdents64` backend, invalid-byte file names (APFS rejects them), and the torture tree.
+- **On a Linux server with large NFS mounts (later):** real performance. M1 ships a portable benchmark kit, `bench/`, with a synthetic tree generator and a runner that sweeps thread counts and compares against `find`. You copy the static binary and the kit to the server and run it there.
+
 - **Synthetic trees** of 10M and 100M entries (wide, deep, and mixed) on tmpfs and NVMe. Compare against `find`, `fd`, `du`, and `gdu`. Measure entries/s, CPU, peak memory, and output bytes per entry.
 - **Real file systems** in your environment (NFS, GPFS/Spectrum Scale, Lustre, BeeGFS): a thread-count sweep to set defaults, plus `getdents` buffer-size and `--statx-dont-sync` experiments.
 - **Targets to validate, not promises:**
@@ -401,29 +411,41 @@ fs-inventory/
 
 | Milestone | Scope | Exit criteria |
 |---|---|---|
-| **M0: Skeleton** | Workspace, LICENSE, NOTICE, CI, `cargo-deny`, `clap` skeleton, schema doc | CI green on Linux and macOS |
-| **M1: Core walker + CSV/JSONL** | Work-stealing scheduler, Linux statx/getdents backend, generic backend (macOS), names module, directory aggregates, errors table, excludes, `--max-depth`, mount and snapshot policy, progress, graceful signals, stdout and directory output. Directory-atomic batching from day one. | Torture tree passes, the oracle diff is exact, there are zero panics under fault injection, and it beats `find` on 10M entries |
-| **M2: Parquet** | Arrow builders, writer pool, rolling parts with the commit protocol, key-value metadata, manifest, `sql/` views and queries, `verify`, `schema` | A 100M-entry scan loads in DuckDB with no errors, and output size per entry is measured and documented |
+| **M0: Skeleton** ✅ | Workspace, LICENSE, NOTICE, CI, `cargo-deny`, `clap` skeleton | CI green on Linux and macOS |
+| **M1: Core walker + CSV/JSONL** ✅ | Work-stealing scheduler, Linux statx/getdents backend, generic backend (macOS), names module, directory aggregates, errors table, excludes, `--max-depth`, mount and snapshot policy, progress, graceful signals, stdout and directory output with rolling parts and the commit protocol, manifest, benchmark kit. Directory-atomic batching from day one. | Torture tree passes in a Linux container, the oracle diff is exact, there are zero panics under fault injection, and DuckDB 2.0 loads the output |
+| **M2: Parquet** | Arrow builders, Parquet writer pool, key-value metadata, `sql/` views and queries, `verify`, `schema` (also generates the schema doc) | A 100M-entry scan loads in DuckDB with no errors, and output size per entry is measured and documented |
 | **M3: Scale** | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat |
 | **M4: Resume** | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run |
-| **M5: Platform and extras** | macOS `getattrlistbulk` backend (if benchmarks justify it), `--guess-encoding`, symlink targets, statx attributes, `--resolve-ids`, `convert`, release packaging (static binaries, .deb/.rpm, Homebrew), documentation site | Release 1.0 |
+| **M5: Platform and extras** | `diff` between two scans (§11), macOS `getattrlistbulk` backend (if benchmarks justify it), `--guess-encoding`, symlink targets, statx attributes, `--resolve-ids`, `convert`, release packaging (static binaries, .deb/.rpm, Homebrew), documentation site | Release 1.0 |
 
 ### Future ideas (post-1.0)
 
 - **Multi-host crawls:** `--partition k/N` hashes top-level subtrees across N hosts. Sharded Parquet output merges in DuckDB with no extra step.
 - **Native-scanner ingest adapters:** convert GPFS policy-engine `LIST` output and Lustre changelog or `lfs find` output into the same schema. These are typically much faster than a POSIX crawl on those systems.
-- **`diff` subcommand:** new, deleted, and changed files between two scans.
 - **Optional content hashing** for duplicate detection.
 - **Windows backend** using `NtQueryDirectoryFile`, which returns names and metadata in bulk.
 
 ---
 
-## 11. Decisions to confirm
+## 11. Downstream consumer: inventory web application
 
-| # | Decision | Recommendation |
+fs-inventory will feed a separate file inventory and analytics web application: finding data, file-age reports, and file-age heat maps. The tool stays stand-alone, but its output is a long-lived contract with that system's ingestion. That shapes several choices:
+
+- **Schema stability:** `fs_inventory.schema_version` is in every part file and in the manifest. Adding a nullable column is a minor change; renaming, removing, or retyping one bumps the major schema version.
+- **Ingest only complete scans:** `manifest.json` has a unique `scan_id`, the roots, start and end times, and a `status`. Ingestion takes a scan only when `status` is `complete` (or `incomplete`, if it accepts partial data) and records the `scan_id` it loaded.
+- **Parallel loading:** sharded part files let ingestion load parts concurrently, and each part is self-describing.
+- **Incremental updates:** the app's database is refreshed from successive scans. The stable identity of an entry across scans is its exact path bytes (`coalesce(path_raw, encode(path))`). `(dev, ino)` changes across NFS clients and remounts, so it is only a rename hint. A `diff` subcommand (moved up to M5) emits new, deleted, and changed entries between two scans so the app can apply deltas instead of reloading billions of rows.
+- **Heat maps:** `rollup` (§4.5) produces per-directory recursive age histograms after each scan, so the app reads a small table instead of aggregating every file.
+- **Orchestration:** documented exit codes and `--progress json` let a scheduler run scans and track them.
+
+---
+
+## 12. Decisions
+
+| # | Decision | Status |
 |---|---|---|
-| 1 | Language | Rust (§2) |
-| 2 | Copyright holder in `NOTICE` and file headers | You personally, or your institution? |
+| 1 | Language | **Decided:** Rust (§2) |
+| 2 | Copyright holder in `NOTICE` and file headers | **Decided:** Robert McDermott |
 | 3 | Cross mount points by default | **No.** Record mount points and require `--cross-mounts` to enter them |
 | 4 | When to fill `path_raw` | Only when needed, with `--raw-paths always` available |
 | 5 | Timestamp precision | Microseconds by default, `--time-unit ns` optional |
@@ -433,6 +455,8 @@ fs-inventory/
 ---
 
 ## Appendix: example DuckDB queries
+
+Tested with DuckDB 2.0.0. DuckDB 2.0 disables the `x -> x * 2` lambda syntax by default, so SQL shipped with fs-inventory uses `lambda x: x * 2`.
 
 ```sql
 CREATE VIEW fs AS SELECT * FROM read_parquet('scan-*/entries/*.parquet');

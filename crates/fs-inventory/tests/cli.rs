@@ -50,8 +50,27 @@ fn usage_errors_exit_2() {
 
 #[test]
 fn unimplemented_commands_exit_4() {
-    let out = fs_inventory(&["scan", "/data", "-o", "out"]);
+    let out = fs_inventory(&["verify", "/scans/x"]);
     assert_eq!(out.status.code(), Some(4));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("not implemented yet"), "{stderr}");
+}
+
+#[test]
+fn unimplemented_scan_options_are_refused() {
+    // Parquet (the default format) arrives in M2.
+    let out = fs_inventory(&["scan", "/data", "-o", "out"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Parquet"));
+    let out = fs_inventory(&[
+        "scan",
+        "/data",
+        "-o",
+        "out",
+        "-f",
+        "csv",
+        "--symlink-targets",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--symlink-targets"));
 }
