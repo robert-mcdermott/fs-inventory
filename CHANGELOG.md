@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Changed
+
+- Schema version 2: integer columns are now signed (`INTEGER` or `BIGINT`), so scans load into databases without unsigned types and DuckDB functions such as `format_bytes()` work without casts. Only `dev`, `ino`, and `rdev` stay unsigned (`UBIGINT`). Values above the signed maximum are capped, not wrapped. `verify` reports scans written with schema version 1.
+
 ### Added
 
 - Parquet output, now the default format: zstd level 3, row groups of up to 1,048,576 rows, page statistics, column encodings chosen by measurement (about 25 bytes per entry on real data), and scan ID, schema version, host, and roots in every file's footer.

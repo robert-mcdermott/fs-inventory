@@ -10,7 +10,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use fs_inventory_core::model::{Entry, EntryKind, ErrorInfo, ErrorRecord, Timestamp};
 use fs_inventory_core::names::{self, Controls};
 
-use super::schema::{Column, ENTRY_COLUMNS, ERROR_COLUMNS, Selection};
+use super::schema::{Column, ENTRY_COLUMNS, ERROR_COLUMNS, Selection, signed};
 use super::timefmt::{self, Precision};
 
 /// Bits of the `time_flags` column: the timestamp could not be represented
@@ -149,27 +149,27 @@ impl Encoder {
         row.uint("name_flags", u64::from(flags.bits()));
         row.text("kind", e.kind().as_str());
         row.uint("depth", u64::from(e.depth));
-        row.opt_uint("dir_id", e.dir_id);
-        row.uint("parent_id", e.parent_id);
+        row.opt_int("dir_id", e.dir_id.map(signed));
+        row.int("parent_id", signed(e.parent_id));
         row.uint("dev", stat.dev);
         row.uint("ino", stat.ino);
-        row.uint("nlink", stat.nlink);
-        row.uint("uid", u64::from(stat.uid));
-        row.uint("gid", u64::from(stat.gid));
-        row.uint("mode", u64::from(stat.mode));
+        row.int("nlink", signed(stat.nlink));
+        row.int("uid", i64::from(stat.uid));
+        row.int("gid", i64::from(stat.gid));
+        row.int("mode", i64::from(stat.mode));
         row.int("size", stat.size);
-        row.uint("alloc_bytes", stat.alloc_bytes());
+        row.int("alloc_bytes", signed(stat.alloc_bytes()));
         row.time("atime", Some(stat.atime), self.options);
         row.time("mtime", Some(stat.mtime), self.options);
         row.time("ctime", Some(stat.ctime), self.options);
         row.time("btime", stat.btime, self.options);
         row.opt_uint("rdev", is_device.then_some(stat.rdev));
         let totals = e.totals;
-        row.opt_uint("dir_entries", totals.map(|t| t.entries));
-        row.opt_uint("dir_files", totals.map(|t| t.files));
-        row.opt_uint("dir_subdirs", totals.map(|t| t.subdirs));
-        row.opt_uint("dir_bytes", totals.map(|t| t.bytes));
-        row.opt_uint("dir_alloc_bytes", totals.map(|t| t.alloc_bytes));
+        row.opt_int("dir_entries", totals.map(|t| signed(t.entries)));
+        row.opt_int("dir_files", totals.map(|t| signed(t.files)));
+        row.opt_int("dir_subdirs", totals.map(|t| signed(t.subdirs)));
+        row.opt_int("dir_bytes", totals.map(|t| signed(t.bytes)));
+        row.opt_int("dir_alloc_bytes", totals.map(|t| signed(t.alloc_bytes)));
         row.bool("is_mount_point", e.is_mount_point);
         row.uint("time_flags", u64::from(time_flags));
         let error = e.error.map(error_summary);
