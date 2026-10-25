@@ -88,11 +88,19 @@ pub struct Manifest {
 impl Manifest {
     /// Writes `manifest.json` atomically.
     pub fn write(&self, scan_dir: &Path) -> io::Result<()> {
-        let mut json = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        json.push(b'\n');
-        let tmp = scan_dir.join("manifest.json.tmp");
-        fs::write(&tmp, json)?;
-        fs::File::open(&tmp)?.sync_all()?;
-        fs::rename(tmp, scan_dir.join("manifest.json"))
+        write_value(
+            scan_dir,
+            &serde_json::to_value(self).map_err(io::Error::other)?,
+        )
     }
+}
+
+/// Writes a manifest, possibly read back and amended, atomically.
+pub fn write_value(scan_dir: &Path, manifest: &serde_json::Value) -> io::Result<()> {
+    let mut json = serde_json::to_vec_pretty(manifest).map_err(io::Error::other)?;
+    json.push(b'\n');
+    let tmp = scan_dir.join("manifest.json.tmp");
+    fs::write(&tmp, json)?;
+    fs::File::open(&tmp)?.sync_all()?;
+    fs::rename(tmp, scan_dir.join("manifest.json"))
 }

@@ -287,6 +287,155 @@ pub const ERROR_COLUMNS: [Column; 7] = [
     col("time", Timestamp, false, "When the error happened."),
 ];
 
+/// The rollup table written by `fs-inventory rollup`: recursive totals for
+/// every directory.
+pub const ROLLUP_COLUMNS: [Column; 15] = [
+    col(
+        "dir_id",
+        Int64,
+        false,
+        "The directory's `dir_id` in `entries`.",
+    ),
+    col(
+        "parent_id",
+        Int64,
+        false,
+        "`dir_id` of the containing directory; 0 for a root.",
+    ),
+    col(
+        "depth",
+        Int32,
+        false,
+        "Levels below the scan root; 0 for the root.",
+    ),
+    col(
+        "path",
+        Text,
+        false,
+        "Full path, rendered like `entries.path`.",
+    ),
+    bytes(
+        "path_raw",
+        "path_b64",
+        "Exact path bytes, when `path` differs from them.",
+    ),
+    col(
+        "entries",
+        Int64,
+        false,
+        "Entries anywhere below this directory, not counting the directory itself.",
+    ),
+    col(
+        "files",
+        Int64,
+        false,
+        "Entries below this directory that aren't directories.",
+    ),
+    col("dirs", Int64, false, "Directories below this directory."),
+    col(
+        "bytes",
+        Int64,
+        false,
+        "Sum of `size` over entries below this directory that aren't directories.",
+    ),
+    col(
+        "alloc_bytes",
+        Int64,
+        false,
+        "Sum of `alloc_bytes` over entries below this directory that aren't directories.",
+    ),
+    col(
+        "oldest_mtime",
+        Timestamp,
+        true,
+        "Oldest `mtime` below this directory, over entries that aren't directories. Null when there are none.",
+    ),
+    col(
+        "newest_mtime",
+        Timestamp,
+        true,
+        "Newest `mtime` below this directory, over entries that aren't directories.",
+    ),
+    col(
+        "newest_ctime",
+        Timestamp,
+        true,
+        "Newest `ctime` below this directory, over entries that aren't directories.",
+    ),
+    col(
+        "newest_atime",
+        Timestamp,
+        true,
+        "Newest `atime` below this directory, over entries that aren't directories.",
+    ),
+    col(
+        "incomplete_dirs",
+        Int64,
+        false,
+        "Directories in this subtree, including this one, that weren't read completely: errors, mount points not entered, or `--max-depth`. When it isn't 0, the totals are lower bounds.",
+    ),
+];
+
+/// The age histogram table written by `fs-inventory rollup`: for directories
+/// down to `--age-depth`, files and bytes below them by age.
+pub const ROLLUP_AGE_COLUMNS: [Column; 6] = [
+    col(
+        "dir_id",
+        Int64,
+        false,
+        "The directory's `dir_id`; join with `rollup` or `entries` for its path.",
+    ),
+    col(
+        "time",
+        Text,
+        false,
+        "Which timestamp the age is measured from: `mtime`, `ctime`, or `atime`.",
+    ),
+    col(
+        "bucket",
+        Int32,
+        false,
+        "Age bucket, in order: 0 is `future` (newer than the scan), then increasing age.",
+    ),
+    col(
+        "label",
+        Text,
+        false,
+        "The bucket's label, such as `<30d`, `1y-2y`, or `>=10y`, from `--age-buckets`.",
+    ),
+    col(
+        "files",
+        Int64,
+        false,
+        "Entries below the directory in this bucket that aren't directories. Only buckets with files have rows.",
+    ),
+    col("bytes", Int64, false, "Sum of `size` over those entries."),
+];
+
+/// Every table, with an introduction for the docs.
+pub const TABLES: [(&str, &[Column], &str); 4] = [
+    (
+        "entries",
+        &ENTRY_COLUMNS,
+        "One row per file, directory, or other entry.",
+    ),
+    (
+        "errors",
+        &ERROR_COLUMNS,
+        "One row per failed operation. Present only if there were any.",
+    ),
+    (
+        "rollup",
+        &ROLLUP_COLUMNS,
+        "Written by `fs-inventory rollup`: one row per directory with totals over its whole subtree. Parquet only.",
+    ),
+    (
+        "rollup_ages",
+        &ROLLUP_AGE_COLUMNS,
+        "Written by `fs-inventory rollup`: file counts and bytes by age for each directory down to `--age-depth`, measured from the scan's start time. Parquet only.",
+    ),
+];
+
 /// Converts a count or byte total to the signed 64-bit integers the schema
 /// uses, capping (never wrapping) values no real file system reaches.
 pub fn signed(value: u64) -> i64 {
@@ -370,10 +519,7 @@ fn describe_sql() -> String {
         "{}, as read from Parquet.",
         fs_inventory_core::SCHEMA_VERSION
     );
-    for (table, columns) in [
-        ("entries", &ENTRY_COLUMNS[..]),
-        ("errors", &ERROR_COLUMNS[..]),
-    ] {
+    for (table, columns, _) in TABLES {
         let _ = writeln!(out, "CREATE TABLE {table} (");
         for (i, c) in columns.iter().enumerate() {
             let null = if c.nullable { "" } else { " NOT NULL" };
@@ -405,6 +551,8 @@ fn describe_json() -> String {
         "schema_version": fs_inventory_core::SCHEMA_VERSION,
         "entries": table(&ENTRY_COLUMNS),
         "errors": table(&ERROR_COLUMNS),
+        "rollup": table(&ROLLUP_COLUMNS),
+        "rollup_ages": table(&ROLLUP_AGE_COLUMNS),
         "name_flags": NameFlags::ALL.iter().map(|(f, n)| serde_json::json!({"bit": f.bits(), "name": n})).collect::<Vec<_>>(),
         "kinds": EntryKind::ALL.iter().map(|k| k.as_str()).collect::<Vec<_>>(),
     });
@@ -419,18 +567,15 @@ fn describe_markdown() -> String {
         out,
         "# Inventory schema\n\n\
          <!-- Generated by `fs-inventory schema --format markdown`; do not edit by hand. -->\n\n\
-         Schema version {}. A scan directory holds an `entries` table (one row per file, directory, or other entry), an `errors` table (one row per failed operation, present only if there were any), and `manifest.json`.\n\n\
+         Schema version {}. A scan directory holds `manifest.json` and a directory of part files per table; DuckDB reads each table's parts with a glob such as `entries/*.parquet`.\n\n\
          Types are as DuckDB reads them from Parquet. In CSV and JSON Lines, byte columns are base64 text under their text name, and timestamps are ISO-8601 UTC text (or epoch seconds with `--time-format epoch`).\n\n\
          Integer columns are signed and wide enough for every value, so they work in tools and databases without unsigned types (PostgreSQL, Spark). The exceptions are `dev`, `ino`, and `rdev`: opaque 64-bit identifiers whose top bit can be set, so they're unsigned (`UBIGINT`). Byte totals and counts above the signed 64-bit maximum (8 EiB) would be capped, not wrapped.\n",
         fs_inventory_core::SCHEMA_VERSION
     );
-    for (title, columns) in [
-        ("entries", &ENTRY_COLUMNS[..]),
-        ("errors", &ERROR_COLUMNS[..]),
-    ] {
+    for (title, columns, intro) in TABLES {
         let _ = write!(
             out,
-            "\n## `{title}`\n\n| Column | Type | Null | Description |\n|---|---|---|---|\n"
+            "\n## `{title}`\n\n{intro}\n\n| Column | Type | Null | Description |\n|---|---|---|---|\n"
         );
         for c in columns {
             let name = if c.text_name == c.name {
@@ -512,7 +657,7 @@ mod tests {
 
     #[test]
     fn names_are_unique() {
-        for columns in [&ENTRY_COLUMNS[..], &ERROR_COLUMNS[..]] {
+        for (_, columns, _) in TABLES {
             let mut names: Vec<_> = columns.iter().map(|c| c.name).collect();
             names.sort_unstable();
             names.dedup();
@@ -526,6 +671,8 @@ mod tests {
         let unsigned: Vec<_> = ENTRY_COLUMNS
             .iter()
             .chain(&ERROR_COLUMNS)
+            .chain(&ROLLUP_COLUMNS)
+            .chain(&ROLLUP_AGE_COLUMNS)
             .filter(|c| c.kind == ColumnType::UInt64)
             .map(|c| c.name)
             .collect();

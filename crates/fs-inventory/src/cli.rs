@@ -28,8 +28,8 @@ pub enum Command {
     Scan(ScanArgs),
     /// Continue an interrupted scan from its last checkpoint.
     Resume(ScanDirArgs),
-    /// Compute recursive directory totals for a completed scan.
-    Rollup(ScanDirArgs),
+    /// Compute totals over every directory's subtree, and age histograms.
+    Rollup(RollupArgs),
     /// Re-export a Parquet scan as CSV or JSON Lines.
     Convert(ConvertArgs),
     /// Check that a scan is complete and its manifest matches its part files.
@@ -209,6 +209,27 @@ pub struct ProgressOptions {
     /// Interval between progress reports.
     #[arg(long, value_parser = parse_duration, default_value = "10s", value_name = "DURATION")]
     pub progress_interval: Duration,
+}
+
+#[derive(Debug, Args)]
+pub struct RollupArgs {
+    /// Scan output directory (Parquet).
+    #[arg(value_name = "SCAN_DIR")]
+    pub scan_dir: PathBuf,
+
+    /// Age bucket edges, ascending, measured back from the scan's start time.
+    #[arg(
+        long,
+        value_name = "LIST",
+        default_value = crate::rollup::DEFAULT_AGE_BUCKETS,
+        value_parser = crate::rollup::AgeBuckets::parse
+    )]
+    pub age_buckets: crate::rollup::AgeBuckets,
+
+    /// Compute age histograms for directories down to this depth below each
+    /// root (0 is the root). Each one costs about 0.5 KB of memory.
+    #[arg(long, value_name = "N", default_value_t = 4)]
+    pub age_depth: u32,
 }
 
 #[derive(Debug, Args)]

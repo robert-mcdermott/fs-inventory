@@ -3,8 +3,9 @@
 --
 -- Example queries over an fs-inventory scan. Run in the DuckDB shell after
 --   .read sql/fs_inventory.sql
--- and point the view at your scan:
-CREATE OR REPLACE VIEW fs AS SELECT * FROM fs_entries('/scratch/inventory/scan-2026-10-25');
+-- and point these at your scan:
+SET VARIABLE scan = '/scratch/inventory/scan-2026-10-25';
+CREATE OR REPLACE VIEW fs AS SELECT * FROM fs_entries(getvariable('scan'));
 
 -- Timestamps are stored in UTC. DuckDB displays and groups them (year(),
 -- date_trunc()) in the session time zone, so a file dated 1970-01-01 UTC
@@ -68,3 +69,32 @@ SELECT path, error FROM fs WHERE error IS NOT NULL;
 -- Several scans side by side, such as scans/2026-10-01/, scans/2026-11-01/:
 -- SELECT parse_path(filename)[2] AS scan, count(*), sum(size)
 -- FROM read_parquet('scans/*/entries/*.parquet', filename = true) GROUP BY scan;
+
+-- After `fs-inventory rollup SCAN_DIR`:
+
+-- The largest directories two levels down, counting everything below them.
+-- (Sort on the numeric column, not the formatted text.)
+SELECT path, files, format_bytes(bytes) AS size, incomplete_dirs
+FROM fs_rollup(getvariable('scan'))
+WHERE depth = 2 ORDER BY bytes DESC LIMIT 20;
+
+-- Directories whose newest change is more than three years old: archive candidates.
+SELECT path, files, format_bytes(bytes) AS size, newest_ctime
+FROM fs_rollup(getvariable('scan'))
+WHERE newest_ctime < now() - INTERVAL 3 YEAR AND bytes > 1e9
+ORDER BY bytes DESC LIMIT 50;
+
+-- Heat map: bytes by age of last modification for each directory one level
+-- down. Pivot label into columns for a grid.
+SELECT r.path, a.label, a.bytes
+FROM fs_rollup_ages(getvariable('scan')) a
+JOIN fs_rollup(getvariable('scan')) r USING (dir_id)
+WHERE r.depth = 1 AND a.time = 'mtime'
+ORDER BY r.path, a.bucket;
+
+PIVOT (
+    SELECT r.path, a.label, a.bytes
+    FROM fs_rollup_ages(getvariable('scan')) a
+    JOIN fs_rollup(getvariable('scan')) r USING (dir_id)
+    WHERE r.depth = 1 AND a.time = 'mtime'
+) ON label USING sum(bytes) ORDER BY path;

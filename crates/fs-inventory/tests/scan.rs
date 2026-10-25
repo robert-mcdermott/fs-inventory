@@ -664,3 +664,126 @@ fn verify_catches_damaged_scans() {
     .unwrap();
     assert!(problems(&interrupted).contains("interrupted"));
 }
+
+#[test]
+fn rollup_totals_match_the_tree() {
+    use arrow_array::cast::AsArray as _;
+    use arrow_array::types::Int64Type;
+
+    let (tmp, root, _) = tree();
+    let out_dir = tmp.path().join("scan");
+    let out = scan(&root, &out_dir, &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rollup = |extra: &[&str]| {
+        let mut args = vec![OsStr::new("rollup"), out_dir.as_os_str()];
+        args.extend(extra.iter().map(OsStr::new));
+        fs_inventory(&args)
+    };
+    let out = rollup(&["--age-depth", "1"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("directories"));
+
+    // The root's totals cover everything below it.
+    let expected = oracle(&root);
+    let files: Vec<_> = expected.values().filter(|m| !m.is_dir()).collect();
+    let dirs = expected.values().filter(|m| m.is_dir()).count() - 1;
+    let bytes: i64 = files.iter().map(|m| m.size() as i64).sum();
+    let batches = read_parquet(&out_dir, "rollup");
+    let mut found_root = false;
+    let mut rows = 0;
+    for batch in &batches {
+        rows += batch.num_rows();
+        let depth = batch
+            .column_by_name("depth")
+            .unwrap()
+            .as_primitive::<arrow_array::types::Int32Type>();
+        let col = |name: &str| {
+            batch
+                .column_by_name(name)
+                .unwrap()
+                .as_primitive::<Int64Type>()
+                .clone()
+        };
+        let (entries, nfiles, ndirs, nbytes, incomplete) = (
+            col("entries"),
+            col("files"),
+            col("dirs"),
+            col("bytes"),
+            col("incomplete_dirs"),
+        );
+        for i in 0..batch.num_rows() {
+            if depth.value(i) == 0 {
+                found_root = true;
+                assert_eq!(entries.value(i) as usize, expected.len() - 1);
+                assert_eq!(nfiles.value(i) as usize, files.len());
+                assert_eq!(ndirs.value(i) as usize, dirs);
+                assert_eq!(nbytes.value(i), bytes);
+                assert_eq!(incomplete.value(i), 0);
+            }
+        }
+    }
+    assert!(found_root);
+    assert_eq!(rows, dirs + 1, "one rollup row per directory");
+
+    // Age rows exist for the root and its children, and add up to the files.
+    let ages = read_parquet(&out_dir, "rollup_ages");
+    let mut root_mtime_files = 0;
+    for batch in &ages {
+        let dir_id = batch
+            .column_by_name("dir_id")
+            .unwrap()
+            .as_primitive::<Int64Type>();
+        let time = batch.column_by_name("time").unwrap().as_string::<i32>();
+        let count = batch
+            .column_by_name("files")
+            .unwrap()
+            .as_primitive::<Int64Type>();
+        for i in 0..batch.num_rows() {
+            if dir_id.value(i) == 1 && time.value(i) == "mtime" {
+                root_mtime_files += count.value(i);
+            }
+        }
+    }
+    assert_eq!(root_mtime_files as usize, files.len());
+
+    // The manifest lists the rollup, verify checks it, and a rerun replaces it.
+    let out = verify(&out_dir);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = rollup(&["--age-buckets", "7d,1y"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let manifest: Value =
+        serde_json::from_str(&fs::read_to_string(out_dir.join("manifest.json")).unwrap()).unwrap();
+    assert_eq!(
+        manifest["rollup"]["age_buckets"],
+        serde_json::json!(["future", "<7d", "7d-1y", ">=1y"])
+    );
+    assert_eq!(verify(&out_dir).status.code(), Some(0));
+    assert!(!out_dir.join(".rollup-staging").exists());
+
+    // Text scans are refused.
+    let csv_dir = tmp.path().join("csv");
+    assert_eq!(scan(&root, &csv_dir, &["-f", "csv"]).status.code(), Some(0));
+    let out = fs_inventory(&[OsStr::new("rollup"), csv_dir.as_os_str()]);
+    assert_eq!(out.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Parquet"));
+}
