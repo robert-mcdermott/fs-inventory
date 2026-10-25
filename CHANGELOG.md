@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-25
+
+The first tagged release. Version numbers follow the milestones, so 0.3.0 completes milestone M3 and there is no 0.1.0 or 0.2.0 release.
+
 ### Added
 
 - `fs-inventory rollup SCAN_DIR` writes two Parquet tables into the scan: `rollup`, with totals over every directory's whole subtree (entries, files, directories, bytes, allocated bytes, oldest and newest times, and how many directories weren't fully read), and `rollup_ages`, with file counts and bytes by age for directories down to `--age-depth` (default 4), in buckets set by `--age-buckets` (default `30d,90d,1y,2y,3y,5y,10y`) and measured from the scan's start time. The manifest lists both, `verify` checks them, and running it again replaces them. DuckDB macros `fs_rollup` and `fs_rollup_ages`, and heat-map examples in `sql/examples.sql`.
@@ -19,8 +23,9 @@ All notable changes to this project are documented in this file. The format foll
 - `fs-inventory verify` checks a scan before ingestion: status, schema version, every part's size and row count, each Parquet part's scan ID, totals, and stray or leftover files.
 - DuckDB macros `fs_entries` and `fs_errors` for Parquet scans, and example queries in `sql/examples.sql`.
 - mimalloc as the memory allocator. The static musl build no longer slows down as crawl threads are added.
+- Static musl builds run on any Linux distribution with kernel 3.2 or later, such as RHEL 7, and crawl as fast as glibc builds. (Crawl threads never read the system clock, which costs a system call per read with musl.)
 - `scan` writes CSV or JSON Lines (Parquet arrives in M2), as rolling part files that are committed atomically, or as one stream to stdout. Optional zstd or gzip compression.
-- Parallel work-stealing walker with a configurable thread count. On Linux it uses `getdents64` and `statx` relative to the open directory, falls back to `fstatat` on kernels without `statx`, avoids directory atime updates, and never triggers automounts.
+- Parallel work-stealing walker with a configurable thread count. On Linux it uses `getdents64` and `statx` relative to the open directory, falls back to `fstatat` on kernels without `statx` (before 4.11, such as RHEL 7; detected once per scan, and `btime` is then null), avoids directory atime updates, and never triggers automounts.
 - Lossless file names: text columns are always valid UTF-8, exact bytes go in `path_b64` when they differ, and `name_flags` marks invalid UTF-8, control characters, non-NFC names, Windows-reserved names, and long names or paths.
 - Paths longer than `PATH_MAX` are opened one component at a time.
 - Per-directory totals over immediate children, crawl-assigned directory IDs linking every row to its parent, and mount point detection.
@@ -39,3 +44,6 @@ All notable changes to this project are documented in this file. The format foll
 
 - Writer threads start one at a time and are added, up to `--writers`, only when output backs up. Small scans now write one part file per table instead of one per CPU core.
 - Schema version 2: integer columns are now signed (`INTEGER` or `BIGINT`), so scans load into databases without unsigned types and DuckDB functions such as `format_bytes()` work without casts. Only `dev`, `ino`, and `rdev` stay unsigned (`UBIGINT`). Values above the signed maximum are capped, not wrapped. `verify` reports scans written with schema version 1.
+
+[Unreleased]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/robert-mcdermott/fs-inventory/releases/tag/v0.3.0

@@ -453,6 +453,7 @@ fs-inventory will feed a separate file inventory and analytics web application: 
 | 5 | Timestamp precision | Microseconds by default, `--time-unit ns` optional |
 | 6 | v1 platforms | Linux (primary) and macOS. Windows later |
 | 7 | Binary name | `fs-inventory` (optionally also install a short `fsinv` alias) |
+| 8 | Versioning | **Decided:** the tool version follows Semantic Versioning. Each milestone is released as `0.N.0` (M3 is 0.3.0), fixes in between as patch releases, and M5 as 1.0.0. The version changes only in a release commit, which is then tagged `vX.Y.Z`. The schema version is separate (§11) and changes only when the output format breaks readers. |
 
 ---
 
