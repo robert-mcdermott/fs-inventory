@@ -31,7 +31,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
-use crossbeam_utils::Backoff;
+use crossbeam_utils::{Backoff, CachePadded};
 use globset::GlobSet;
 
 use crate::backend::{Backend, NameBatch};
@@ -45,7 +45,7 @@ pub const SHARE_AFTER: usize = 10_000;
 /// [`WalkOptions::include_snapshots`] is set.
 pub const SNAPSHOT_DIRS: [&[u8]; 4] = [b".snapshot", b"~snapshot", b".snapshots", b".zfs"];
 
-/// How often the watchdog checks the workers.
+/// How often the watchdog checks the workers and advances the walk's clock.
 const WATCHDOG_TICK: Duration = Duration::from_millis(250);
 
 /// What to traverse.
@@ -324,8 +324,8 @@ const ABANDONED: u64 = u64::MAX;
 /// One worker's state, as seen by the watchdog.
 #[derive(Default)]
 struct WorkerStatus {
-    /// Milliseconds since the walk started at the worker's last progress, 0
-    /// while idle, or [`ABANDONED`].
+    /// [`WalkShared::now`] at the worker's last progress, 0 while idle, or
+    /// [`ABANDONED`].
     progress: AtomicU64,
     work: Mutex<Option<Work>>,
 }
@@ -389,6 +389,10 @@ struct WalkShared<B: Backend> {
     stealers: Vec<Stealer<DirTask>>,
     statuses: Vec<WorkerStatus>,
     started: Instant,
+    /// Milliseconds since `started`, as of the watchdog's last tick. Workers
+    /// read this instead of the system clock, which they would otherwise
+    /// read for every entry: a system call with static musl builds.
+    clock: CachePadded<AtomicU64>,
     /// Directories whose worker was abandoned. They stay pending forever, so
     /// workers finish once only these are left.
     abandoned_tasks: AtomicU64,
@@ -398,8 +402,17 @@ struct WalkShared<B: Backend> {
 }
 
 impl<B: Backend> WalkShared<B> {
+    /// The time in milliseconds since the walk started, at most one
+    /// watchdog tick old.
     fn now(&self) -> u64 {
-        u64::try_from(self.started.elapsed().as_millis()).unwrap_or(ABANDONED - 1)
+        self.clock.load(Ordering::Relaxed)
+    }
+
+    /// Advances [`Self::now`] to the current time and returns it.
+    fn tick(&self) -> u64 {
+        let now = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(ABANDONED - 1);
+        self.clock.store(now, Ordering::Relaxed);
+        now
     }
 
     /// Whether every directory is done, except those given up on.
@@ -465,6 +478,7 @@ where
         stealers: deques.iter().map(Worker::stealer).collect(),
         statuses: (0..threads).map(|_| WorkerStatus::default()).collect(),
         started: Instant::now(),
+        clock: CachePadded::new(AtomicU64::new(0)),
         abandoned_tasks: AtomicU64::new(0),
         queued_bytes: AtomicI64::new(0),
         spill,
@@ -637,7 +651,7 @@ fn watchdog<B: Backend, S: Sink>(
     tally: &mut Tally,
     abandoned: &mut Vec<Stalled>,
 ) {
-    let now = shared.now();
+    let now = shared.tick();
     let report = u64::try_from(shared.options.stall_report.as_millis()).unwrap_or(u64::MAX);
     let timeout = shared
         .options
