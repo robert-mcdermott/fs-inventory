@@ -369,10 +369,10 @@ fn salvage(state: &Mutex<SinkState>, shared: &Shared) -> bool {
     }
     state.entry_rows = keep;
     state.pending_kinds = [0; EntryKind::ALL.len()];
+    state.closed = true;
     state.send_entries(shared);
     state.send_errors(shared);
     shared.add_kinds(&mut state.kinds);
-    state.closed = true;
     state.tx = None;
     true
 }
@@ -679,7 +679,9 @@ impl SinkState {
     fn send(&self, shared: &Shared, table: Table, payload: Payload, rows: u64) {
         let Some(tx) = &self.tx else { return };
         let active = shared.active_writers.load(Ordering::Relaxed);
-        if active < shared.max_writers && tx.len() >= active * BACKLOG_PER_WRITER {
+        // A closing sink's last rows arrive in a burst with every other
+        // worker's, which doesn't mean the writers are falling behind.
+        if !self.closed && active < shared.max_writers && tx.len() >= active * BACKLOG_PER_WRITER {
             // The writers are falling behind; failure to start one only
             // means the existing writers keep going alone.
             let _ = shared.add_writer();
@@ -798,11 +800,11 @@ impl Sink for RowSink {
         if state.closed {
             return;
         }
+        state.closed = true;
         state.send_entries(&self.shared);
         state.send_errors(&self.shared);
         state.commit_kinds();
         self.shared.add_kinds(&mut state.kinds);
-        state.closed = true;
         state.tx = None;
     }
 }
