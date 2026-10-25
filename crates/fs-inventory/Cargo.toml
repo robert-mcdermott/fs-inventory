@@ -1,0 +1,23 @@
+[package]
+name = "fs-inventory"
+description = "High-performance, crash-resilient file system inventory to Parquet, CSV, and JSON Lines"
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "fs-inventory"
+path = "src/main.rs"
+
+[dependencies]
+fs-inventory-core.workspace = true
+clap.workspace = true
+humantime.workspace = true
+
+[lints]
+workspace = true
