@@ -70,9 +70,14 @@ impl Sink for CollectingSink {
         self.errors.push((r.path.to_vec(), r.info.op, r.info.errno));
     }
 
+    /// Commits rows at each directory boundary, like the real output, so a
+    /// worker abandoned mid-directory keeps the directories it finished.
     fn end_dir(&mut self) {
         let batch = std::mem::take(&mut self.batch);
-        self.shared.lock().unwrap().batches.push(batch);
+        let mut shared = self.shared.lock().unwrap();
+        shared.batches.push(batch);
+        shared.rows.append(&mut self.rows);
+        shared.errors.append(&mut self.errors);
     }
 
     fn finish(&mut self) {
@@ -89,23 +94,40 @@ fn run_walk<B: Backend + 'static>(
     backend: B,
     stop: bool,
 ) -> (Collected, WalkResult) {
+    run_walk_shared(
+        roots,
+        options,
+        backend,
+        stop,
+        Arc::new(Mutex::new(Collected::default())),
+    )
+}
+
+/// Like `run_walk`, collecting into `shared`, which the test can inspect
+/// again later.
+fn run_walk_shared<B: Backend + 'static>(
+    roots: Vec<Vec<u8>>,
+    options: WalkOptions,
+    backend: B,
+    stop: bool,
+    shared: Arc<Mutex<Collected>>,
+) -> (Collected, WalkResult) {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let shared = Arc::new(Mutex::new(Collected::default()));
-        let counters = Counters::default();
-        let stop = AtomicBool::new(stop);
+        let counters = Arc::new(Counters::default());
+        let stop = Arc::new(AtomicBool::new(stop));
         let result = walk(
             &roots,
-            &options,
-            &backend,
+            options,
+            Arc::new(backend),
             |_| CollectingSink {
                 shared: Arc::clone(&shared),
                 batch: Vec::new(),
                 rows: Vec::new(),
                 errors: Vec::new(),
             },
-            &counters,
-            &stop,
+            counters,
+            stop,
         );
         let collected = std::mem::take(&mut *shared.lock().unwrap());
         let _ = tx.send((collected, result));
@@ -430,7 +452,7 @@ impl Backend for FaultyBackend {
 
     fn read_names(
         &self,
-        dir: &mut Self::Dir,
+        dir: &Self::Dir,
         scratch: &mut Self::Scratch,
         names: &mut NameBatch,
     ) -> io::Result<bool> {
@@ -439,7 +461,7 @@ impl Backend for FaultyBackend {
                 rustix::io::Errno::IO.raw_os_error(),
             ));
         }
-        self.0.read_names(&mut dir.0, scratch, names)
+        self.0.read_names(&dir.0, scratch, names)
     }
 
     fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
@@ -513,4 +535,332 @@ fn failures_are_recorded_and_never_stop_the_walk() {
     let boom = row(b"boom-dir").unwrap();
     assert_eq!(boom.totals.map(|t| t.entries), Some(1));
     assert!(got.rows.iter().any(|r| r.path.ends_with(b"boom-dir/child")));
+}
+
+#[test]
+fn detect_cycles_never_reads_a_directory_twice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    make_tree(&root, 2, 2, 2);
+    let sub = root.join("dir-0");
+    let opts = || WalkOptions {
+        detect_cycles: true,
+        ..options(4)
+    };
+
+    // Overlapping roots, and the same root twice.
+    let roots = vec![bytes(&root), bytes(&sub), bytes(&root)];
+    let (got, result) = run_walk(
+        roots,
+        opts(),
+        NativeBackend::new(BackendOptions::default()),
+        false,
+    );
+    assert!(result.complete);
+    let revisits: Vec<&Row> = got
+        .rows
+        .iter()
+        .filter(|r| r.error == Some(Op::Revisit))
+        .collect();
+    // dir-0 is found again inside the first root, and the root is repeated.
+    assert_eq!(revisits.len(), 2, "{revisits:?}");
+    assert!(
+        revisits
+            .iter()
+            .all(|r| r.totals.is_none() && r.dir_id.is_some())
+    );
+    // Everything below dir-0 appears once.
+    let below: Vec<&Vec<u8>> = got
+        .rows
+        .iter()
+        .map(|r| &r.path)
+        .filter(|p| p.starts_with(&bytes(&sub)) && p.len() > bytes(&sub).len())
+        .collect();
+    let unique: BTreeSet<&Vec<u8>> = below.iter().copied().collect();
+    assert_eq!(below.len(), unique.len());
+    assert!(!below.is_empty());
+
+    // Without detection, the overlap is read twice.
+    let (got, _) = run_walk(
+        vec![bytes(&root), bytes(&sub)],
+        options(4),
+        NativeBackend::new(BackendOptions::default()),
+        false,
+    );
+    let leaf = sub.join("file-0.dat");
+    assert_eq!(
+        got.rows.iter().filter(|r| r.path == bytes(&leaf)).count(),
+        2
+    );
+}
+
+/// Records which threads stat entries named `h-*`, slowing each slightly so
+/// sharing is visible, and panics on `h-panic`.
+struct TracingBackend {
+    inner: NativeBackend,
+    threads: Arc<Mutex<BTreeSet<String>>>,
+}
+
+impl Backend for TracingBackend {
+    type Dir = <NativeBackend as Backend>::Dir;
+    type Scratch = <NativeBackend as Backend>::Scratch;
+
+    fn new_scratch(&self) -> Self::Scratch {
+        self.inner.new_scratch()
+    }
+
+    fn stat_root(&self, path: &[u8]) -> io::Result<Stat> {
+        self.inner.stat_root(path)
+    }
+
+    fn open_dir(&self, path: &[u8], follow: bool) -> io::Result<Self::Dir> {
+        self.inner.open_dir(path, follow)
+    }
+
+    fn dir_stat(&self, dir: &Self::Dir) -> io::Result<Stat> {
+        self.inner.dir_stat(dir)
+    }
+
+    fn read_names(
+        &self,
+        dir: &Self::Dir,
+        scratch: &mut Self::Scratch,
+        names: &mut NameBatch,
+    ) -> io::Result<bool> {
+        self.inner.read_names(dir, scratch, names)
+    }
+
+    fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
+        if name.starts_with(b"h-") {
+            assert!(name != b"h-panic", "injected panic");
+            let thread = format!("{:?}", std::thread::current().id());
+            self.threads.lock().unwrap().insert(thread);
+            std::thread::sleep(Duration::from_micros(20));
+        }
+        self.inner.stat_at(dir, name)
+    }
+}
+
+#[test]
+fn huge_directories_are_read_by_several_workers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    let huge = root.join("huge");
+    fs::create_dir(&huge).unwrap();
+    const FILES: usize = 20_000;
+    for i in 0..FILES {
+        fs::write(huge.join(format!("h-{i:05}")), "x").unwrap();
+    }
+    fs::write(huge.join("h-panic"), "x").unwrap();
+    fs::create_dir(huge.join("h-subdir")).unwrap();
+    fs::write(huge.join("h-subdir").join("inner"), "x").unwrap();
+
+    let threads = Arc::new(Mutex::new(BTreeSet::new()));
+    let backend = TracingBackend {
+        inner: NativeBackend::new(BackendOptions::default()),
+        threads: Arc::clone(&threads),
+    };
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let (got, result) = run_walk(vec![bytes(&root)], options(8), backend, false);
+    std::panic::set_hook(hook);
+
+    assert!(result.complete);
+    assert!(
+        threads.lock().unwrap().len() > 1,
+        "only one thread read metadata in a {FILES}-entry directory"
+    );
+    let children: BTreeSet<&Vec<u8>> = got
+        .rows
+        .iter()
+        .filter(|r| r.parent_path == bytes(&huge))
+        .map(|r| &r.path)
+        .collect();
+    // Every entry once, except the one that panicked.
+    assert_eq!(children.len(), FILES + 1);
+    assert_eq!(
+        got.rows
+            .iter()
+            .filter(|r| r.parent_path == bytes(&huge))
+            .count(),
+        FILES + 1
+    );
+    assert!(
+        got.rows
+            .iter()
+            .any(|r| r.path == bytes(&huge.join("h-subdir").join("inner")))
+    );
+    let internal: Vec<_> = got
+        .errors
+        .iter()
+        .filter(|(_, op, _)| *op == Op::Internal)
+        .collect();
+    assert_eq!(internal.len(), 1);
+    assert!(internal[0].0.ends_with(b"h-panic"));
+    // The directory's totals include the batches other workers read.
+    let dir = got.rows.iter().find(|r| r.path == bytes(&huge)).unwrap();
+    let totals = dir.totals.unwrap();
+    assert_eq!(totals.entries as usize, FILES + 1);
+    assert_eq!((totals.files as usize, totals.subdirs), (FILES, 1));
+    assert_eq!(totals.bytes as usize, FILES);
+}
+
+/// Blocks forever on `stat` of names starting with `hang`, until released,
+/// like a call to a hung NFS server.
+struct HangingBackend {
+    inner: NativeBackend,
+    released: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Backend for HangingBackend {
+    type Dir = <NativeBackend as Backend>::Dir;
+    type Scratch = <NativeBackend as Backend>::Scratch;
+
+    fn new_scratch(&self) -> Self::Scratch {
+        self.inner.new_scratch()
+    }
+
+    fn stat_root(&self, path: &[u8]) -> io::Result<Stat> {
+        self.inner.stat_root(path)
+    }
+
+    fn open_dir(&self, path: &[u8], follow: bool) -> io::Result<Self::Dir> {
+        self.inner.open_dir(path, follow)
+    }
+
+    fn dir_stat(&self, dir: &Self::Dir) -> io::Result<Stat> {
+        self.inner.dir_stat(dir)
+    }
+
+    fn read_names(
+        &self,
+        dir: &Self::Dir,
+        scratch: &mut Self::Scratch,
+        names: &mut NameBatch,
+    ) -> io::Result<bool> {
+        self.inner.read_names(dir, scratch, names)
+    }
+
+    fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
+        if name.starts_with(b"hang") {
+            let (lock, released) = &*self.released;
+            let mut done = lock.lock().unwrap();
+            while !*done {
+                done = released.wait(done).unwrap();
+            }
+        }
+        self.inner.stat_at(dir, name)
+    }
+}
+
+#[test]
+fn stalled_directories_are_abandoned() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    make_tree(&root, 3, 2, 3);
+    let stuck = root.join("stuck");
+    fs::create_dir(&stuck).unwrap();
+    fs::write(stuck.join("hang-forever"), "x").unwrap();
+    fs::create_dir(stuck.join("child")).unwrap();
+    fs::write(stuck.join("child").join("leaf"), "x").unwrap();
+
+    let released = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let backend = HangingBackend {
+        inner: NativeBackend::new(BackendOptions::default()),
+        released: Arc::clone(&released),
+    };
+    let opts = WalkOptions {
+        stall_report: Duration::from_millis(200),
+        stall_timeout: Some(Duration::from_secs(1)),
+        ..options(4)
+    };
+    let shared = Arc::new(Mutex::new(Collected::default()));
+    let started = std::time::Instant::now();
+    let (got, result) = run_walk_shared(
+        vec![bytes(&root)],
+        opts,
+        backend,
+        false,
+        Arc::clone(&shared),
+    );
+    assert!(started.elapsed() < Duration::from_secs(30));
+
+    // The walk finished without the stuck directory.
+    assert!(!result.complete);
+    assert_eq!(result.abandoned.len(), 1, "{:?}", result.abandoned);
+    assert_eq!(result.abandoned[0].path, bytes(&stuck));
+    assert!(result.abandoned[0].seconds >= 1);
+    let stall_row = got.rows.iter().find(|r| r.path == bytes(&stuck)).unwrap();
+    assert_eq!(stall_row.error, Some(Op::Stall));
+    assert!(stall_row.totals.is_none());
+    assert!(
+        got.errors
+            .iter()
+            .any(|(p, op, _)| p == &bytes(&stuck) && *op == Op::Stall)
+    );
+    // Everything else was read, exactly once.
+    let expected = oracle(&root);
+    for path in expected.keys().filter(|p| !p.starts_with(&bytes(&stuck))) {
+        assert_eq!(
+            got.rows.iter().filter(|r| &r.path == path).count(),
+            1,
+            "{path:?}"
+        );
+    }
+
+    // Once the stuck call returns, the abandoned worker writes nothing more.
+    let before = got.rows.len();
+    {
+        let (lock, cvar) = &*released;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let after = shared.lock().unwrap().rows.len();
+    assert_eq!(after, 0, "rows written after abandonment (had {before})");
+}
+
+#[test]
+fn spilled_directories_are_all_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("tree");
+    fs::create_dir(&root).unwrap();
+    make_tree(&root, 4, 3, 2); // 85 directories
+    let spill_dir = tmp.path().join("spill");
+    fs::create_dir(&spill_dir).unwrap();
+
+    // A one-byte budget sends every queued directory through the spill file.
+    let opts = WalkOptions {
+        queue_budget: 1,
+        spill_dir: Some(spill_dir.clone()),
+        ..options(4)
+    };
+    let shared = Arc::new(Mutex::new(Collected::default()));
+    let counters = Arc::new(Counters::default());
+    let sink_shared = Arc::clone(&shared);
+    let result = walk(
+        &[bytes(&root)],
+        opts,
+        Arc::new(NativeBackend::new(BackendOptions::default())),
+        move |_| CollectingSink {
+            shared: Arc::clone(&sink_shared),
+            batch: Vec::new(),
+            rows: Vec::new(),
+            errors: Vec::new(),
+        },
+        Arc::clone(&counters),
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert!(result.complete);
+    assert!(counters.spilled.load(std::sync::atomic::Ordering::Relaxed) >= 80);
+    let got = shared.lock().unwrap();
+    let paths: BTreeSet<&Vec<u8>> = got.rows.iter().map(|r| &r.path).collect();
+    assert_eq!(paths.len(), got.rows.len(), "duplicate rows");
+    let expected: BTreeSet<Vec<u8>> = oracle(&root).into_keys().collect();
+    assert_eq!(
+        paths.into_iter().cloned().collect::<BTreeSet<_>>(),
+        expected
+    );
+    // The spill file was unlinked from the start.
+    assert_eq!(fs::read_dir(&spill_dir).unwrap().count(), 0);
 }

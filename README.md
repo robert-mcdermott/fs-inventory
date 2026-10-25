@@ -4,14 +4,16 @@ A high-performance, crash-resilient file system inventory tool and Rust library.
 
 `fs-inventory` crawls a POSIX file system in parallel and records the metadata of every file and directory, ready for analysis in tools like DuckDB. It is built for file systems with hundreds of millions to billions of entries, decades of history, and names in any language or legacy encoding.
 
-> **Status:** milestone M2. Scans write Parquet (the default), CSV, or JSON Lines. See [PLAN.md](PLAN.md) for the design and roadmap.
+> **Status:** milestone M3. Scans write Parquet (the default), CSV, or JSON Lines, and `rollup` adds subtree totals and file-age histograms. Large-scale benchmarks are still to come. See [PLAN.md](PLAN.md) for the design and roadmap.
 
 ## Features
 
-- **Parallel crawling:** a work-stealing crawler with a configurable number of threads (`--threads`).
+- **Parallel crawling:** a work-stealing crawler with a configurable number of threads (`--threads`). Directories with millions of entries are stat'ed by several threads at once, and `probe` suggests a thread count for your storage.
 - **Compact Parquet output:** about 25 bytes per entry with zstd (measured on 1.2 million real entries with 126-byte average paths), so a billion-file scan takes about 25 GB. Every part carries its scan ID and schema version.
 - **Lossless names:** every name is kept byte for byte. Text columns are always valid UTF-8; when a name isn't valid UTF-8, or contains control characters, its exact bytes are kept in `path_b64`. `name_flags` marks names that will cause trouble (legacy encodings, control characters, Windows-reserved names, and so on).
-- **Never stops on errors:** an unreadable directory or vanished file is recorded in an errors table and the crawl continues.
+- **Never stops on errors:** an unreadable directory or vanished file is recorded in an errors table and the crawl continues. A thread stuck on a hung NFS server is reported, and with `--stall-timeout` the scan gives up on that directory and finishes the rest.
+- **Bounded memory:** directories waiting to be read spill to a temporary file beyond a budget (`--max-memory`), so huge trees don't exhaust memory.
+- **Heat-map ready:** `rollup` adds per-directory totals over whole subtrees and file counts by age, so dashboards read a small table instead of every file.
 - **Read-only:** never follows symlinks, never reads file contents, doesn't trigger automounts, and on Linux doesn't update directory access times when it has permission.
 - **Paths of any length:** paths longer than the 4,096-byte system limit are opened one directory at a time.
 - **Safe output:** part files appear only once complete and synced to disk, and Ctrl-C finishes the directories in progress and writes the manifest before exiting.
@@ -44,6 +46,18 @@ Check that a scan is complete and consistent before loading it anywhere:
 fs-inventory verify /scratch/inventory/data-2026-10-25
 ```
 
+Add subtree totals and file-age histograms (the `rollup` and `rollup_ages` tables):
+
+```bash
+fs-inventory rollup /scratch/inventory/data-2026-10-25
+```
+
+Find a good thread count for a file system before a big scan (writes nothing):
+
+```bash
+fs-inventory probe /data --threads 16,32,64,128 --duration 30s
+```
+
 Stream to stdout instead (errors go to stderr):
 
 ```bash
@@ -60,6 +74,10 @@ Useful options:
 | `--exclude GLOB` | Skip matching paths. Globs without `/` match names at any depth. |
 | `--cross-mounts` | Descend into other mounted file systems. Mount points are always recorded. |
 | `--max-depth N` | Don't read directories more than N levels down |
+| `--fields SPEC` | Skip optional metadata, such as `-size,-blocks` for a fast namespace-only scan on Lustre |
+| `--detect-cycles` | Never enter a directory twice (bind-mount loops, hard-linked directories) |
+| `--stall-timeout DUR` | Give up on directories whose thread has made no progress for this long, such as on a hung NFS server |
+| `--max-memory SIZE` | Soft memory budget for queued directories and output buffers |
 | `--progress plain\|json` | Periodic progress on stderr |
 
 Run `fs-inventory scan --help` for every option.
@@ -71,6 +89,8 @@ data-2026-10-25/
   manifest.json                      scan ID, status, roots, options, totals, and the list of part files
   entries/part-w00-000000.parquet    one row per file or directory
   errors/part-w00-000000.parquet     one row per failure (only if there were any)
+  rollup/part-000000.parquet         subtree totals per directory (after `fs-inventory rollup`)
+  rollup_ages/part-000000.parquet    file counts and bytes by age per directory
 ```
 
 The columns are described in [docs/schema.md](docs/schema.md), or run `fs-inventory schema`. Large scans are split into many part files, and DuckDB reads them as one table:
@@ -79,7 +99,7 @@ The columns are described in [docs/schema.md](docs/schema.md), or run `fs-invent
 SELECT kind, count(*), sum(size) FROM read_parquet('/scratch/inventory/data-2026-10-25/entries/*.parquet') GROUP BY kind;
 ```
 
-[sql/fs_inventory.sql](sql/fs_inventory.sql) has macros for every format (`fs_entries`, `fs_entries_csv`, `fs_entries_jsonl`, and the `fs_errors` equivalents), and [sql/examples.sql](sql/examples.sql) has example queries: age profiles, top users, extensions, hard-link-aware usage, and problem names.
+[sql/fs_inventory.sql](sql/fs_inventory.sql) has macros for every format (`fs_entries`, `fs_entries_csv`, `fs_entries_jsonl`, the `fs_errors` equivalents, and `fs_rollup` and `fs_rollup_ages`), and [sql/examples.sql](sql/examples.sql) has example queries: age profiles, top users, extensions, hard-link-aware usage, problem names, and heat maps from `rollup`.
 
 Only treat a scan as complete when `manifest.json` has `"status": "complete"`, or when `fs-inventory verify` exits 0.
 
@@ -90,7 +110,7 @@ Only treat a scan as complete when `manifest.json` has `"status": "complete"`, o
 | 0 | Complete with no errors |
 | 1 | Complete, but some entries couldn't be read (see `errors/`) |
 | 2 | Invalid arguments or configuration |
-| 3 | Interrupted; queued directories weren't read |
+| 3 | Interrupted, or gave up on stalled directories (`--stall-timeout`); see the manifest's `status` and `stalled` |
 | 4 | Fatal error, such as output that couldn't be written |
 
 ## Benchmarking

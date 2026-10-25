@@ -12,6 +12,7 @@
 pub mod backend;
 pub mod model;
 pub mod names;
+mod spill;
 pub mod walker;
 
 /// Version of the inventory output schema. Bump on any incompatible change

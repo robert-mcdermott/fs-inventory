@@ -27,6 +27,14 @@ SELECT * FROM read_parquet(scan_dir || '/entries/*.parquet');
 CREATE OR REPLACE MACRO fs_errors(scan_dir) AS TABLE
 SELECT * FROM read_parquet(scan_dir || '/errors/*.parquet');
 
+-- Written by `fs-inventory rollup SCAN_DIR`: totals over each directory's
+-- subtree, and file ages for directories near the top of the tree.
+CREATE OR REPLACE MACRO fs_rollup(scan_dir) AS TABLE
+SELECT * FROM read_parquet(scan_dir || '/rollup/*.parquet');
+
+CREATE OR REPLACE MACRO fs_rollup_ages(scan_dir) AS TABLE
+SELECT * FROM read_parquet(scan_dir || '/rollup_ages/*.parquet');
+
 CREATE OR REPLACE MACRO fs_entries_csv(scan_dir) AS TABLE
 SELECT *, from_base64(path_b64) AS path_raw
 FROM read_csv(

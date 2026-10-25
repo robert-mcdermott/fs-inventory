@@ -14,7 +14,7 @@ use rustix::fd::OwnedFd;
 use rustix::fs::{Mode, OFlags};
 use rustix::io::Errno;
 
-use crate::model::Stat;
+use crate::model::{Fields, Stat};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -34,6 +34,10 @@ pub struct BackendOptions {
     pub statx_dont_sync: bool,
     /// Size in bytes of each worker's directory-read buffer.
     pub readdir_buffer: usize,
+    /// Optional fields to request. On Linux, fields left out aren't asked
+    /// for at all, which on Lustre avoids a round trip to the storage
+    /// servers for sizes. Elsewhere, every field is read regardless.
+    pub fields: Fields,
 }
 
 impl Default for BackendOptions {
@@ -41,6 +45,7 @@ impl Default for BackendOptions {
         Self {
             statx_dont_sync: false,
             readdir_buffer: 256 * 1024,
+            fields: Fields::ALL,
         }
     }
 }
@@ -48,8 +53,9 @@ impl Default for BackendOptions {
 /// Access to a file system: opening directories, listing them, and reading
 /// metadata. Implementations must never modify the file system.
 pub trait Backend: Send + Sync {
-    /// An open directory.
-    type Dir: Send;
+    /// An open directory. Several workers may read metadata from one open
+    /// directory at once, so it must be shareable.
+    type Dir: Send + Sync;
     /// Per-worker scratch space, such as a directory-read buffer.
     type Scratch: Send;
 
@@ -70,7 +76,7 @@ pub trait Backend: Send + Sync {
     /// Returns `false` once the directory is exhausted.
     fn read_names(
         &self,
-        dir: &mut Self::Dir,
+        dir: &Self::Dir,
         scratch: &mut Self::Scratch,
         names: &mut NameBatch,
     ) -> io::Result<bool>;

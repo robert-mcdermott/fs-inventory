@@ -102,6 +102,46 @@ pub fn write_epoch(out: &mut Vec<u8>, t: Timestamp, precision: Precision) {
     );
 }
 
+/// Parses an ISO-8601 UTC time as written by [`write_iso`], such as
+/// `2026-10-25T01:30:00.123456Z`. The fraction is optional.
+pub fn parse_iso(text: &str) -> Option<Timestamp> {
+    let text = text.strip_suffix('Z')?;
+    let (date, time) = text.split_once('T')?;
+    let mut date = date.splitn(3, '-');
+    let year: i64 = date.next()?.parse().ok()?;
+    let month: u32 = date.next()?.parse().ok()?;
+    let day: u32 = date.next()?.parse().ok()?;
+    let (clock, fraction) = time.split_once('.').unwrap_or((time, ""));
+    let mut clock = clock.splitn(3, ':');
+    let hour: i64 = clock.next()?.parse().ok()?;
+    let minute: i64 = clock.next()?.parse().ok()?;
+    let second: i64 = clock.next()?.parse().ok()?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || fraction.len() > 9 {
+        return None;
+    }
+    let nsec = if fraction.is_empty() {
+        0
+    } else {
+        let digits: u32 = fraction.parse().ok()?;
+        digits * 10u32.pow(9 - fraction.len() as u32)
+    };
+    let sec = days_from_civil(year, month, day) * 86_400 + hour * 3600 + minute * 60 + second;
+    Some(Timestamp { sec, nsec })
+}
+
+/// Converts a proleptic Gregorian date to days since 1970-01-01; the inverse
+/// of [`civil_from_days`].
+pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = year.div_euclid(400);
+    let yoe = year.rem_euclid(400);
+    let month = i64::from(month);
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
 fn push_padded(out: &mut Vec<u8>, digits: &str, width: usize) {
     out.extend(std::iter::repeat_n(
         b'0',
@@ -207,6 +247,29 @@ mod tests {
         assert_eq!(epoch(-1, 500_000_000, Micros), "-0.500000");
         assert_eq!(epoch(-2, 0, Nanos), "-2.000000000");
         assert_eq!(epoch(i64::MIN, 0, Micros), "-9223372036854775808.000000");
+    }
+
+    #[test]
+    fn iso_round_trips() {
+        for (sec, nsec) in [
+            (0, 0),
+            (1_761_355_800, 123_456_000),
+            (-2_208_988_800, 0),
+            (-1, 999_999_000),
+        ] {
+            let (text, _) = iso(sec, nsec, Precision::Micros);
+            assert_eq!(parse_iso(&text), Some(Timestamp { sec, nsec }), "{text}");
+        }
+        assert_eq!(
+            parse_iso("2026-10-25T00:00:00Z").map(|t| t.sec),
+            Some(1_792_886_400)
+        );
+        assert_eq!(parse_iso("2026-13-01T00:00:00Z"), None);
+        assert_eq!(parse_iso("garbage"), None);
+        for days in [-719_162, -1, 0, 11_016, 2_932_896] {
+            let (y, m, d) = civil_from_days(days);
+            assert_eq!(days_from_civil(y, m, d), days);
+        }
     }
 
     #[test]

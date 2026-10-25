@@ -13,7 +13,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -28,7 +28,7 @@ use crate::cli::{Format, Progress, RawPaths, ScanArgs, TimeFormat, TimeUnit};
 use crate::exit::Exit;
 use crate::output::arrow::ArrowOptions;
 use crate::output::encode::{EncodeOptions, Encoder, TextFormat, TimeStyle};
-use crate::output::manifest::{ErrorSummary, Manifest, Parts, Root, Status, Totals};
+use crate::output::manifest::{ErrorSummary, Manifest, Parts, Root, StalledDir, Status, Totals};
 use crate::output::parquet::ParquetSettings;
 use crate::output::parts::{RollLimits, sync_dir};
 use crate::output::schema::{ENTRY_COLUMNS, ERROR_COLUMNS, Selection};
@@ -36,6 +36,44 @@ use crate::output::timefmt::{self, Precision};
 use crate::output::{Destination, Format as OutputFormat, Output, OutputConfig, OutputReport, now};
 use crate::parse::Compression;
 use crate::progress::{self, Reporter, Snapshot, Style};
+
+/// How `--max-memory` is divided.
+struct MemoryBudgets {
+    /// Directories waiting to be read; more wait in a spill file.
+    queue: usize,
+    /// The crawl threads' row buffers, together.
+    sinks: usize,
+    /// In-progress Parquet row groups, across all writers.
+    row_groups: usize,
+}
+
+impl MemoryBudgets {
+    /// Half for queued directories, an eighth for row buffers, and the rest
+    /// for row groups; without a limit, the defaults.
+    fn new(max_memory: Option<u64>) -> Self {
+        match max_memory.map(|m| usize::try_from(m).unwrap_or(usize::MAX)) {
+            None => Self {
+                queue: 1 << 30,
+                sinks: crate::output::SINK_BUDGET_BYTES,
+                row_groups: usize::MAX,
+            },
+            Some(m) => Self {
+                queue: m / 2,
+                sinks: (m / 8).min(crate::output::SINK_BUDGET_BYTES),
+                row_groups: m / 4,
+            },
+        }
+    }
+
+    /// The row group limit for each of `writers` writers.
+    fn row_group(&self, writers: usize) -> usize {
+        (self.row_groups / writers.max(1))
+            .clamp(8 << 20, crate::output::parquet::MAX_ROW_GROUP_BYTES)
+    }
+}
+
+/// Report a crawl thread as stalled after this long without progress.
+const STALL_REPORT: Duration = Duration::from_secs(60);
 
 /// A problem found before the crawl starts.
 struct SetupError {
@@ -72,6 +110,8 @@ pub fn run(args: &ScanArgs) -> Exit {
 fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
     reject_unimplemented(args)?;
     let selection = Selection::parse(&args.output.columns).map_err(SetupError::usage)?;
+    let fields = args.metadata.fields.unwrap_or_default();
+    let budgets = MemoryBudgets::new(args.robustness.max_memory);
     let compression = args.output.compression.unwrap_or(match args.output.format {
         Format::Parquet => Compression::Zstd(3),
         Format::Csv | Format::Jsonl => Compression::None,
@@ -127,6 +167,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
                 TimeFormat::Epoch => TimeStyle::Epoch,
             },
             selection,
+            fields,
         })),
         Format::Parquet => OutputFormat::Parquet {
             arrow: ArrowOptions {
@@ -135,10 +176,12 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
                     TimeUnit::Ns => arrow_schema::TimeUnit::Nanosecond,
                 },
                 raw_paths_always,
+                fields,
             },
             settings: ParquetSettings {
                 compression,
                 row_group_rows: usize::try_from(args.output.row_group_rows).unwrap_or(usize::MAX),
+                max_row_group_bytes: budgets.row_group(writers),
                 metadata: vec![
                     (
                         "fs_inventory.schema_version".into(),
@@ -194,6 +237,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         duration_seconds: None,
         totals: Totals::default(),
         errors_by_kind: Vec::new(),
+        stalled: Vec::new(),
         parts: Parts::default(),
     };
     if let Destination::Dir(dir) = &destination {
@@ -210,6 +254,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             compression,
             writers,
             crawl_threads: usize::from(args.traversal.threads),
+            sink_budget: budgets.sinks,
             limits: RollLimits {
                 max_bytes: args.output.part_max_bytes,
                 max_rows: args.output.part_max_rows,
@@ -230,6 +275,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
 
     let backend = NativeBackend::new(BackendOptions {
         statx_dont_sync: args.metadata.statx_dont_sync,
+        fields,
         ..BackendOptions::default()
     });
     let walk_options = WalkOptions {
@@ -239,17 +285,32 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         excludes,
         include_snapshots: args.traversal.include_snapshots,
         skip_dirs,
+        detect_cycles: args.traversal.detect_cycles,
+        stall_report: STALL_REPORT,
+        stall_timeout: args.robustness.stall_timeout,
+        queue_budget: budgets.queue,
+        // Next to the output, on storage the user chose; else the temp dir.
+        spill_dir: match &destination {
+            Destination::Dir(dir) => Some(dir.clone()),
+            Destination::Stdout => None,
+        },
     };
     let result = walker::walk(
         &roots,
-        &walk_options,
-        &backend,
+        walk_options,
+        Arc::new(backend),
         |_| output.sink(),
-        &counters,
-        &stop,
+        Arc::clone(&counters),
+        Arc::clone(&stop),
     );
     let report = output.finish();
     reporter.stop();
+    if report.salvaged > 0 {
+        eprintln!(
+            "fs-inventory: kept the finished directories of {} stalled crawl threads",
+            report.salvaged
+        );
+    }
     let snapshot = Snapshot::take(&counters, started);
 
     let stdout_closed = matches!(destination, Destination::Stdout)
@@ -264,6 +325,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             (Status::Failed, Exit::Fatal)
         }
         (None, true) => (Status::Interrupted, Exit::Incomplete),
+        (None, false) if !result.abandoned.is_empty() => (Status::Incomplete, Exit::Incomplete),
         (None, false) if !result.complete => (Status::Interrupted, Exit::Incomplete),
         (None, false) if snapshot.errors > 0 => (Status::Complete, Exit::CompletedWithErrors),
         (None, false) => (Status::Complete, Exit::Success),
@@ -284,8 +346,16 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         Status::Complete => "complete",
         Status::Interrupted => "interrupted",
         Status::Failed => "failed",
+        Status::Incomplete => "incomplete",
         Status::Running => "running",
     };
+    for stalled in &result.abandoned {
+        eprintln!(
+            "fs-inventory: gave up on {} after {} seconds without progress",
+            names::to_text(&stalled.path, Controls::Escape),
+            stalled.seconds
+        );
+    }
     progress::summary(
         match style {
             Style::None if args.progress.progress == Progress::Auto => Style::Plain,
@@ -301,15 +371,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
 /// Options that parse but do nothing yet. Accepting them silently would be
 /// worse than refusing them.
 fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 8] = [
-        (args.metadata.fields.is_some(), "--fields", "M3"),
-        (args.traversal.detect_cycles, "--detect-cycles", "M3"),
-        (
-            args.robustness.stall_timeout.is_some(),
-            "--stall-timeout",
-            "M3",
-        ),
-        (args.robustness.max_memory.is_some(), "--max-memory", "M3"),
+    let pending: [(bool, &str, &str); 4] = [
         (
             args.robustness.checkpoint_interval.is_some(),
             "--checkpoint-interval",
@@ -493,7 +555,13 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<&'static str, s
             ),
         ),
         ("include_snapshots", json!(args.traversal.include_snapshots)),
+        ("detect_cycles", json!(args.traversal.detect_cycles)),
+        ("max_memory", json!(args.robustness.max_memory)),
         ("statx_dont_sync", json!(args.metadata.statx_dont_sync)),
+        (
+            "fields",
+            json!(args.metadata.fields.unwrap_or_default().names()),
+        ),
         ("raw_paths", json!(enum_name(&args.encoding.raw_paths))),
         ("csv_raw_controls", json!(args.encoding.csv_raw_controls)),
         ("time_unit", json!(enum_name(&args.encoding.time_unit))),
@@ -527,6 +595,8 @@ fn finalize_manifest(
         bytes: snapshot.bytes,
         errors: snapshot.errors,
         vanished: snapshot.vanished,
+        revisits: snapshot.revisits,
+        spilled: snapshot.spilled,
     };
     manifest.errors_by_kind = result
         .errors
@@ -536,6 +606,18 @@ fn finalize_manifest(
             errno: e.errno,
             errno_name: e.errno.and_then(errno_name),
             count: e.count,
+        })
+        .collect();
+    manifest.stalled = result
+        .abandoned
+        .iter()
+        .map(|s| {
+            let root = root_record(&s.path);
+            StalledDir {
+                path: root.path,
+                path_b64: root.path_b64,
+                seconds: s.seconds,
+            }
         })
         .collect();
     manifest.parts = Parts {

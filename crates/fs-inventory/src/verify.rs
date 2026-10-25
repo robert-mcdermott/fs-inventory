@@ -75,16 +75,32 @@ pub fn check(scan_dir: &Path) -> Report {
     let count_text_rows =
         !(format == "csv" && manifest["options"]["csv_raw_controls"].as_bool() == Some(true));
 
-    let mut table_rows = [0u64; 2];
-    let mut part_counts = [0usize; 2];
-    for (t, table) in ["entries", "errors"].into_iter().enumerate() {
-        let parts = manifest["parts"][table]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+    // The scan's own tables, then any rollup tables (always Parquet).
+    let mut tables: Vec<(&str, Vec<Value>, &str)> = ["entries", "errors"]
+        .into_iter()
+        .map(|t| {
+            let parts = manifest["parts"][t].as_array().cloned().unwrap_or_default();
+            (t, parts, format)
+        })
+        .collect();
+    tables.extend(
+        crate::rollup::tables(&manifest)
+            .into_iter()
+            .map(|(t, parts)| (t, parts, "parquet")),
+    );
+    for table in ["rollup", "rollup_ages"] {
+        if !tables.iter().any(|(t, _, _)| *t == table) {
+            tables.push((table, Vec::new(), "parquet"));
+        }
+    }
+
+    let mut table_rows = vec![0u64; tables.len()];
+    let mut part_counts = vec![0usize; tables.len()];
+    for (t, (table, parts, format)) in tables.iter().enumerate() {
+        let (table, format) = (*table, *format);
         part_counts[t] = parts.len();
         let mut listed = BTreeSet::new();
-        for part in &parts {
+        for part in parts {
             let Some(file) = part["file"].as_str() else {
                 report
                     .problems

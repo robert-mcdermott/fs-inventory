@@ -4,12 +4,15 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
-### Changed
-
-- Schema version 2: integer columns are now signed (`INTEGER` or `BIGINT`), so scans load into databases without unsigned types and DuckDB functions such as `format_bytes()` work without casts. Only `dev`, `ino`, and `rdev` stay unsigned (`UBIGINT`). Values above the signed maximum are capped, not wrapped. `verify` reports scans written with schema version 1.
-
 ### Added
 
+- `fs-inventory rollup SCAN_DIR` writes two Parquet tables into the scan: `rollup`, with totals over every directory's whole subtree (entries, files, directories, bytes, allocated bytes, oldest and newest times, and how many directories weren't fully read), and `rollup_ages`, with file counts and bytes by age for directories down to `--age-depth` (default 4), in buckets set by `--age-buckets` (default `30d,90d,1y,2y,3y,5y,10y`) and measured from the scan's start time. The manifest lists both, `verify` checks them, and running it again replaces them. DuckDB macros `fs_rollup` and `fs_rollup_ages`, and heat-map examples in `sql/examples.sql`.
+- `--fields` chooses which optional metadata to read (size, blocks, atime, mtime, ctime, btime). Skipped fields are written as null, and on Linux they aren't requested from the kernel, so `--fields -size,-blocks` avoids a round trip per file to Lustre's storage servers. `size`, `alloc_bytes`, `atime`, `mtime`, and `ctime` are now nullable.
+- `--detect-cycles` remembers every directory entered (by device and inode) and never enters one twice, guarding against bind-mount loops, hard-linked directories, and overlapping roots. A directory reached again gets a row with the error `revisit`, and the manifest counts them.
+- Huge directories are read by several workers. After 10,000 entries, the worker reading a directory publishes each further batch of names, and idle workers stat them in parallel while it keeps reading; it helps with the batches until all are done. On file systems where every stat is a network round trip, one directory of millions of files no longer runs at one thread's speed.
+- A watchdog reports crawl threads that stop making progress, such as one stuck in a call to a hung NFS server, in the progress output. With `--stall-timeout`, the scan gives up on such a thread's directory: it gets a `stall` row and error and is listed under `stalled` in the manifest, the other threads finish the rest, the rows of every directory the stuck thread had finished are still written, and the scan ends with status `incomplete` and exit code 3 instead of hanging.
+- Memory for directories waiting to be read is bounded (1 GiB by default). Beyond it, they wait in a spill file next to the output, read back once memory drains; the file is unlinked as soon as it's created, so it never lingers. `--max-memory` sets an overall soft budget: half for that queue, the rest for output buffers and Parquet row groups. The manifest counts spilled directories.
+- `fs-inventory probe PATH` times crawls of a real tree at several thread counts (`--threads`, default `8,16,32,64,128,256`; `--duration`, default 30 s each), writes nothing, and suggests the smallest count that reaches 90% of the best rate. On Linux, `--drop-caches` (root) drops the kernel's caches before each run so every run reads from the storage, not from memory.
 - Parquet output, now the default format: zstd level 3, row groups of up to 1,048,576 rows, page statistics, column encodings chosen by measurement (about 25 bytes per entry on real data), and scan ID, schema version, host, and roots in every file's footer.
 - `--columns` writes a subset of entry columns in any format.
 - `fs-inventory schema` describes the schema as DuckDB SQL, JSON, or Markdown. `docs/schema.md` is generated from it.
@@ -28,6 +31,11 @@ All notable changes to this project are documented in this file. The format foll
 - DuckDB macros in `sql/fs_inventory.sql`.
 - Benchmark kit in `bench/`.
 - Cargo workspace with the `fs-inventory-core` library and `fs-inventory` command-line crates.
-- Command-line interface for `scan`, `resume`, `rollup`, `convert`, `verify`, `schema`, and `probe`, with argument validation and documented exit codes. The commands are not implemented yet.
+- Command-line interface for `scan`, `resume`, `rollup`, `convert`, `verify`, `schema`, and `probe`, with argument validation and documented exit codes. `resume` and `convert` are not implemented yet.
 - Apache-2.0 license and NOTICE.
 - CI on Linux (x86_64 and aarch64) and macOS: formatting, Clippy, tests, the minimum supported Rust version, static musl builds, and cargo-deny license and advisory checks.
+
+### Changed
+
+- Writer threads start one at a time and are added, up to `--writers`, only when output backs up. Small scans now write one part file per table instead of one per CPU core.
+- Schema version 2: integer columns are now signed (`INTEGER` or `BIGINT`), so scans load into databases without unsigned types and DuckDB functions such as `format_bytes()` work without casts. Only `dev`, `ino`, and `rdev` stay unsigned (`UBIGINT`). Values above the signed maximum are capped, not wrapped. `verify` reports scans written with schema version 1.

@@ -83,8 +83,8 @@ Go is a reasonable alternative if long-term maintainers are Go-first. The archit
 - An idle worker first steals a batch from the global `Injector`, then steals from the **FIFO end** of a random peer's deque. The FIFO end holds directories nearest the root, which are the largest chunks of work. This is the same pattern used by HPC tools such as mpiFileUtils/libcircle, within a single process.
 - **Termination:** an atomic `pending_dirs` counter goes up on push and down after a directory and all its child pushes are finished. When it reaches zero and all workers are idle, the crawl is done.
 - **Threads are long-lived.** There is no thread-per-directory creation or teardown. The thread count is configurable from 1 to 1024.
-- **Tuning by Little's law:** throughput ≈ concurrency ÷ per-op latency. With 0.5 ms NFS metadata RPCs, 64 in-flight stats can sustain about 128k stats/s until the server saturates. Network file systems want many more threads (64–256) than local disks. M3 adds an optional `probe` subcommand that samples throughput at several thread counts and suggests a setting.
-- **Queue memory:** a task is about 150 bytes (path bytes, `dir_id`, depth, and the stat already gathered by the parent). A million queued directories is about 150 MB. Beyond a configurable budget, the queue spills to a temporary file (M3).
+- **Tuning by Little's law:** throughput ≈ concurrency ÷ per-op latency. With 0.5 ms NFS metadata RPCs, 64 in-flight stats can sustain about 128k stats/s until the server saturates. Network file systems want many more threads (64–256) than local disks. `fs-inventory probe` times short crawls at several thread counts and suggests the smallest one within 90% of the best rate.
+- **Queue memory:** a task is about 150 bytes (path bytes, `dir_id`, depth, and the stat already gathered by the parent). A million queued directories is about 150 MB. Beyond a budget (1 GiB, or half of `--max-memory`), new tasks wait in a spill file next to the output, unlinked as soon as it's created, and are read back first in, first out once the queue drains.
 
 ### 3.2 Processing one directory
 
@@ -105,8 +105,8 @@ Go is a reasonable alternative if long-term maintainers are Go-first. The archit
 A single directory can hold 10M+ entries. `getdents` is one sequential stream, but the stat calls don't have to be.
 
 - **M1:** a large directory streams through one worker in batches. Memory stays bounded and other workers keep going.
-- **M3:** above a threshold (default 100k entries), and when other workers are idle, the owning worker publishes **stat-chunk tasks**: a shared directory fd (`Arc<OwnedFd>`) plus a block of names. Idle workers run those stats in parallel. Aggregates are merged with atomics, and whichever chunk finishes last writes the directory's row.
-- Rows from a chunked directory go to a dedicated `bigdir-<dir_id>` part that is committed only when the whole directory completes. That keeps resume semantics simple (§6).
+- **M3:** past 10,000 entries, the owning worker publishes each further batch of names as a **stat-chunk task**: a shared handle to the open directory plus the batch. Idle workers stat those batches in parallel while the owner keeps reading names. Totals merge under a lock, and the owner helps with batches until all are done, then writes the directory's row.
+- Rows from a chunk go to the part file of whichever worker stat'ed it. For resume (§6), a chunked directory counts as done only once its own row is committed; M4 has to discard or redo chunk rows of directories that weren't.
 
 ### 3.4 Traversal policy defaults
 
@@ -182,9 +182,9 @@ Main points:
 
 ### 4.5 Recursive totals (`rollup`)
 
-Each directory row carries totals for its *immediate* children. `fs-inventory rollup <scan-dir>` reads only the directory rows (about 5% of rows, 5 columns), rebuilds the tree from `dir_id`/`parent_id`, and writes `rollup/part-*.parquet`. Each output row has `dir_id`, `path`, `depth`, `total_entries`, `total_files`, `total_dirs`, `total_bytes`, `total_alloc_bytes`, `min_mtime`, `max_mtime`, and `max_ctime`. Running it after the crawl means it is always correct, including after a resume. For 50M directories it needs about 2 GB of RAM.
+Each directory row carries totals for its *immediate* children. `fs-inventory rollup <scan-dir>` reads only the directory rows (about 5% of rows, 5 columns), rebuilds the tree from `dir_id`/`parent_id`, and writes the `rollup` table: one row per directory with `entries`, `files`, `dirs`, `bytes`, `alloc_bytes`, the oldest and newest times, and `incomplete_dirs` (directories in the subtree that weren't fully read, so the totals are lower bounds). Running it after the crawl means it is always correct, including after a resume. For 50M directories it needs about 2 GB of RAM.
 
-For file-age heat maps, each rollup row also carries **age histograms**: file counts and bytes per age bucket (by default < 30 days, < 90 days, < 1 year, < 2, 3, 5, and 10 years, and older), for `mtime`, `ctime`, and `atime`, measured from the scan's start time. To build them, `rollup` also reads five columns of the file rows (`parent_id`, `size`, `mtime`, `ctime`, `atime`), which is a fast column scan in Parquet. Buckets are configurable (`--age-buckets`), so they aren't frozen into the scan. The web app then reads a small directory × age-bucket table instead of aggregating billions of rows.
+For file-age heat maps, it also writes **age histograms** to the `rollup_ages` table: file counts and bytes per age bucket (by default < 30 days, < 90 days, < 1 year, < 2, 3, 5, and 10 years, and older), for `mtime`, `ctime`, and `atime`, measured from the scan's start time, for directories down to `--age-depth` (default 4). To build them, `rollup` also reads a few columns of the file rows (`parent_id`, `size`, and the times), which is a fast column scan in Parquet. Buckets are configurable (`--age-buckets`), so they aren't frozen into the scan. The web app then reads a small directory × age-bucket table instead of aggregating billions of rows. Both tables are listed in the manifest and checked by `verify`; running `rollup` again replaces them.
 
 ---
 
@@ -199,6 +199,7 @@ scan-2026-10-25T0130Z/
   entries/part-w03-000017.parquet
   errors/part-w00-000002.parquet
   rollup/part-000000.parquet          (after `fs-inventory rollup`)
+  rollup_ages/part-000000.parquet
   checkpoints/ckpt-000042.bin.zst     (resume state; deleted on success unless --keep-checkpoints)
 ```
 
@@ -314,11 +315,12 @@ fs-inventory scan [OPTIONS] <ROOT>...
       --max-memory <SIZE>
 
 fs-inventory resume  <SCAN_DIR>
-fs-inventory rollup  <SCAN_DIR>
+fs-inventory rollup  <SCAN_DIR> [--age-buckets LIST] [--age-depth N]
 fs-inventory convert <SCAN_DIR> --to csv|jsonl
 fs-inventory verify  <SCAN_DIR>     Check manifest, parts, and row counts
 fs-inventory schema  [--format sql|json]
-fs-inventory probe   <PATH>         Sample throughput at several thread counts (M3)
+fs-inventory probe   <PATH> [--threads LIST] [--duration DUR] [--drop-caches]
+                                    Time crawls at several thread counts and suggest one
 ```
 
 **Progress:** a stderr line every 10 seconds by default. It shows elapsed time, entries and entries/s (1-minute average), directories done and queued, bytes seen, errors, vanished entries, active and stalled workers, and output bytes. `--progress json` writes machine-readable lines for log collection.
@@ -414,7 +416,7 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 | **M0: Skeleton** ✅ | Workspace, LICENSE, NOTICE, CI, `cargo-deny`, `clap` skeleton | CI green on Linux and macOS |
 | **M1: Core walker + CSV/JSONL** ✅ | Work-stealing scheduler, Linux statx/getdents backend, generic backend (macOS), names module, directory aggregates, errors table, excludes, `--max-depth`, mount and snapshot policy, progress, graceful signals, stdout and directory output with rolling parts and the commit protocol, manifest, benchmark kit. Directory-atomic batching from day one. | Torture tree passes in a Linux container, the oracle diff is exact, there are zero panics under fault injection, and DuckDB 2.0 loads the output |
 | **M2: Parquet** ✅ | Arrow builders, Parquet writer pool, key-value metadata, `--columns`, `sql/` macros and example queries, `verify`, `schema` (also generates `docs/schema.md`), mimalloc | Output size per entry measured on 1.24M real entries (§5.2), and DuckDB 2.0 loads Parquet, CSV, and JSON Lines scans. A 100M-entry scan has not been run yet; that happens on the Linux server. |
-| **M3: Scale** | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat |
+| **M3: Scale** (features done) | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, `--fields`, `--detect-cycles`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat. The features are in and tested on a laptop and in a Linux container; the large scan and default tuning happen on the Linux server. |
 | **M4: Resume** | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run |
 | **M5: Platform and extras** | `diff` between two scans (§11), macOS `getattrlistbulk` backend (if benchmarks justify it), `--guess-encoding`, symlink targets, statx attributes, `--resolve-ids`, `convert`, release packaging (static binaries, .deb/.rpm, Homebrew), documentation site | Release 1.0 |
 

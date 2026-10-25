@@ -28,15 +28,15 @@ pub enum Command {
     Scan(ScanArgs),
     /// Continue an interrupted scan from its last checkpoint.
     Resume(ScanDirArgs),
-    /// Compute recursive directory totals for a completed scan.
-    Rollup(ScanDirArgs),
+    /// Compute totals over every directory's subtree, and age histograms.
+    Rollup(RollupArgs),
     /// Re-export a Parquet scan as CSV or JSON Lines.
     Convert(ConvertArgs),
     /// Check that a scan is complete and its manifest matches its part files.
     Verify(ScanDirArgs),
     /// Print the inventory schema.
     Schema(SchemaArgs),
-    /// Sample crawl throughput at several thread counts and suggest a setting.
+    /// Time crawls at several thread counts and suggest `--threads`.
     Probe(ProbeArgs),
 }
 
@@ -105,7 +105,9 @@ pub struct TraversalOptions {
     #[arg(short, long, default_value_t = 32, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=1024))]
     pub threads: u16,
 
-    /// Encoder and writer threads [default: CPU cores, at most 8].
+    /// Most encoder and writer threads. One starts, and more join as output
+    /// backs up, so small scans write one file per table [default: CPU
+    /// cores, at most 8].
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=256))]
     pub writers: Option<u16>,
 
@@ -131,8 +133,10 @@ pub struct TraversalOptions {
     #[arg(long)]
     pub include_snapshots: bool,
 
-    /// Track directory identities to break cycles from bind mounts or
-    /// hard-linked directories.
+    /// Never enter a directory twice (by device and inode), guarding against
+    /// bind-mount loops, hard-linked directories, and overlapping roots.
+    /// A directory reached again gets a row with the error `revisit`. Costs
+    /// about 50 bytes of memory per directory.
     #[arg(long)]
     pub detect_cycles: bool,
 }
@@ -140,9 +144,18 @@ pub struct TraversalOptions {
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Metadata")]
 pub struct MetadataOptions {
-    /// Metadata fields to collect, for example "default,+btime,-size".
-    #[arg(long, value_name = "SPEC")]
-    pub fields: Option<String>,
+    /// Optional metadata to read: size, blocks, atime, mtime, ctime, btime,
+    /// or times (all four). `-size,-blocks` reads everything but those;
+    /// `mtime,ctime` reads only those. Skipped fields are written as null.
+    /// On Linux, skipping size and blocks avoids a round trip per file to
+    /// Lustre's storage servers [default: all].
+    #[arg(
+        long,
+        value_name = "LIST",
+        allow_hyphen_values = true,
+        value_parser = fs_inventory_core::model::Fields::parse
+    )]
+    pub fields: Option<fs_inventory_core::model::Fields>,
 
     /// Accept cached attributes on network file systems (faster, possibly stale).
     #[arg(long)]
@@ -194,7 +207,9 @@ pub struct RobustnessOptions {
     #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
     pub stall_timeout: Option<Duration>,
 
-    /// Soft memory budget for queues and buffers.
+    /// Soft memory budget. Half holds directories waiting to be read (more
+    /// wait in a spill file next to the output), and the rest holds output
+    /// buffers and Parquet row groups [default: queue up to 1 GiB in memory].
     #[arg(long, value_parser = parse_size, value_name = "SIZE")]
     pub max_memory: Option<u64>,
 }
@@ -209,6 +224,27 @@ pub struct ProgressOptions {
     /// Interval between progress reports.
     #[arg(long, value_parser = parse_duration, default_value = "10s", value_name = "DURATION")]
     pub progress_interval: Duration,
+}
+
+#[derive(Debug, Args)]
+pub struct RollupArgs {
+    /// Scan output directory (Parquet).
+    #[arg(value_name = "SCAN_DIR")]
+    pub scan_dir: PathBuf,
+
+    /// Age bucket edges, ascending, measured back from the scan's start time.
+    #[arg(
+        long,
+        value_name = "LIST",
+        default_value = crate::rollup::DEFAULT_AGE_BUCKETS,
+        value_parser = crate::rollup::AgeBuckets::parse
+    )]
+    pub age_buckets: crate::rollup::AgeBuckets,
+
+    /// Compute age histograms for directories down to this depth below each
+    /// root (0 is the root). Each one costs about 0.5 KB of memory.
+    #[arg(long, value_name = "N", default_value_t = 4)]
+    pub age_depth: u32,
 }
 
 #[derive(Debug, Args)]
@@ -247,7 +283,6 @@ pub struct SchemaArgs {
 }
 
 #[derive(Debug, Args)]
-#[allow(dead_code, reason = "consumed when probe is implemented")]
 pub struct ProbeArgs {
     /// Directory to sample.
     #[arg(value_name = "PATH")]
@@ -265,6 +300,11 @@ pub struct ProbeArgs {
     /// How long to sample each thread count.
     #[arg(long, value_parser = parse_duration, default_value = "30s", value_name = "DURATION")]
     pub duration: Duration,
+
+    /// Drop the page, dentry, and inode caches before each run, so every
+    /// run reads from the storage (Linux, root).
+    #[arg(long)]
+    pub drop_caches: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

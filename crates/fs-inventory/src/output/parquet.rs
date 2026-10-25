@@ -20,9 +20,9 @@ use parquet::schema::types::ColumnPath;
 use super::parts::{PartInfo, RollLimits};
 use crate::parse::Compression;
 
-/// Largest in-progress row group, so memory stays bounded however wide the
-/// rows are.
-const MAX_ROW_GROUP_BYTES: usize = 128 << 20;
+/// Default largest in-progress row group, so memory stays bounded however
+/// wide the rows are.
+pub const MAX_ROW_GROUP_BYTES: usize = 128 << 20;
 
 /// Columns whose values rarely repeat within a row group. Dictionary encoding
 /// made them larger (timestamps by about 70%) as well as slower.
@@ -45,6 +45,8 @@ const ENCODINGS: [(&str, Encoding); 2] = [
 pub struct ParquetSettings {
     pub compression: Compression,
     pub row_group_rows: usize,
+    /// Largest in-progress row group, in bytes.
+    pub max_row_group_bytes: usize,
     /// Key-value metadata stored in every file's footer.
     pub metadata: Vec<(String, String)>,
 }
@@ -69,7 +71,7 @@ impl ParquetSettings {
             ))
             .set_compression(codec)
             .set_max_row_group_row_count(Some(self.row_group_rows.max(1)))
-            .set_max_row_group_bytes(Some(MAX_ROW_GROUP_BYTES))
+            .set_max_row_group_bytes(Some(self.max_row_group_bytes.max(1)))
             .set_statistics_enabled(EnabledStatistics::Page)
             .set_key_value_metadata(Some(
                 self.metadata
@@ -245,6 +247,7 @@ mod tests {
         ParquetSettings {
             compression: Compression::Zstd(3),
             row_group_rows: 1000,
+            max_row_group_bytes: MAX_ROW_GROUP_BYTES,
             metadata: vec![("fs_inventory.schema_version".into(), "1".into())],
         }
     }

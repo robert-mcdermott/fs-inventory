@@ -25,6 +25,19 @@ pub enum Status {
     Interrupted,
     /// Output could not be written; the parts listed are valid but partial.
     Failed,
+    /// Finished, except for directories given up on after `--stall-timeout`
+    /// (listed in `stalled`).
+    Incomplete,
+}
+
+/// A directory the scan gave up on because reading it stopped making
+/// progress.
+#[derive(Debug, Clone, Serialize)]
+pub struct StalledDir {
+    pub path: String,
+    pub path_b64: Option<String>,
+    /// Seconds without progress when the scan gave up.
+    pub seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -46,6 +59,12 @@ pub struct Totals {
     pub errors: u64,
     /// Entries deleted between being listed and being read.
     pub vanished: u64,
+    /// Directories not entered again because `--detect-cycles` had already
+    /// seen them.
+    pub revisits: u64,
+    /// Directories that waited in the spill file because the queue was over
+    /// its memory budget.
+    pub spilled: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,17 +101,27 @@ pub struct Manifest {
     pub duration_seconds: Option<f64>,
     pub totals: Totals,
     pub errors_by_kind: Vec<ErrorSummary>,
+    /// Directories given up on after `--stall-timeout`.
+    pub stalled: Vec<StalledDir>,
     pub parts: Parts,
 }
 
 impl Manifest {
     /// Writes `manifest.json` atomically.
     pub fn write(&self, scan_dir: &Path) -> io::Result<()> {
-        let mut json = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        json.push(b'\n');
-        let tmp = scan_dir.join("manifest.json.tmp");
-        fs::write(&tmp, json)?;
-        fs::File::open(&tmp)?.sync_all()?;
-        fs::rename(tmp, scan_dir.join("manifest.json"))
+        write_value(
+            scan_dir,
+            &serde_json::to_value(self).map_err(io::Error::other)?,
+        )
     }
+}
+
+/// Writes a manifest, possibly read back and amended, atomically.
+pub fn write_value(scan_dir: &Path, manifest: &serde_json::Value) -> io::Result<()> {
+    let mut json = serde_json::to_vec_pretty(manifest).map_err(io::Error::other)?;
+    json.push(b'\n');
+    let tmp = scan_dir.join("manifest.json.tmp");
+    fs::write(&tmp, json)?;
+    fs::File::open(&tmp)?.sync_all()?;
+    fs::rename(tmp, scan_dir.join("manifest.json"))
 }
