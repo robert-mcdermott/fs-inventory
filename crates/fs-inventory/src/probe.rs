@@ -70,6 +70,13 @@ pub fn run(args: &ProbeArgs) -> Exit {
     let roots = vec![std::os::unix::ffi::OsStringExt::into_vec(
         root.into_os_string(),
     )];
+    // Fail before printing anything when caches can't be dropped.
+    if args.drop_caches
+        && let Err(e) = drop_caches()
+    {
+        eprintln!("fs-inventory: cannot drop caches (needs root): {e}");
+        return Exit::Fatal;
+    }
 
     println!(
         "Probing {} for up to {} per thread count.",
@@ -87,11 +94,12 @@ pub fn run(args: &ProbeArgs) -> Exit {
     );
 
     let mut samples = Vec::new();
-    for &threads in &args.threads {
+    for (i, &threads) in args.threads.iter().enumerate() {
         if args.drop_caches
+            && i > 0
             && let Err(e) = drop_caches()
         {
-            eprintln!("fs-inventory: cannot drop caches: {e}");
+            eprintln!("fs-inventory: cannot drop caches (needs root): {e}");
             return Exit::Fatal;
         }
         let sample = sample(&roots, threads, args.duration);
