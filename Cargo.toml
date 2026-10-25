@@ -1,0 +1,32 @@
+[workspace]
+resolver = "3"
+members = ["crates/fs-inventory-core", "crates/fs-inventory"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "Apache-2.0"
+authors = ["Robert McDermott"]
+keywords = ["filesystem", "inventory", "parquet", "metadata", "hpc"]
+categories = ["command-line-utilities", "filesystem"]
+
+[workspace.dependencies]
+fs-inventory-core = { path = "crates/fs-inventory-core", version = "0.1.0" }
+clap = { version = "4.6", features = ["derive", "wrap_help"] }
+humantime = "2.3"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "unwind"
