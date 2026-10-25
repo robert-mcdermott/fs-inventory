@@ -558,6 +558,8 @@ fn parquet_is_the_default_and_matches_std_exactly() {
         serde_json::from_str(&fs::read_to_string(out_dir.join("manifest.json")).unwrap()).unwrap();
     assert_eq!(manifest["format"], "parquet");
     assert_eq!(manifest["compression"], "zstd:3");
+    // A scan this small never backs up, so one writer writes one part.
+    assert_eq!(manifest["parts"]["entries"].as_array().unwrap().len(), 1);
     let out = verify(&out_dir);
     assert_eq!(
         out.status.code(),

@@ -20,7 +20,7 @@ pub mod timefmt;
 use std::io::{self, BufWriter, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::SystemTime;
@@ -51,6 +51,8 @@ const MAX_FLUSH_BYTES: usize = 1 << 20;
 const MAX_BUFFER_FACTOR: usize = 4;
 /// Send buffered error rows once a directory ends past this many.
 const ERROR_FLUSH_ROWS: usize = 256;
+/// Chunks queued per active writer before another writer starts.
+const BACKLOG_PER_WRITER: usize = 4;
 
 /// Where rows go.
 #[derive(Debug, Clone)]
@@ -114,9 +116,38 @@ struct Shared {
     stop: Arc<AtomicBool>,
     /// A failure inside a sink, reported with the writers' failures.
     failure: Mutex<Option<io::Error>>,
+    /// Writers start one at a time as the backlog grows, up to `max_writers`.
+    writers: Mutex<Vec<JoinHandle<WriterResult>>>,
+    active_writers: AtomicUsize,
+    max_writers: usize,
+    rx: Receiver<Chunk>,
+    config: OutputConfig,
 }
 
 impl Shared {
+    /// Starts another writer if there is room for one.
+    fn add_writer(&self) -> io::Result<()> {
+        let Ok(mut writers) = self.writers.lock() else {
+            return Ok(());
+        };
+        let index = writers.len();
+        if index >= self.max_writers {
+            return Ok(());
+        }
+        let rx = self.rx.clone();
+        let config = self.config.clone();
+        let stop = Arc::clone(&self.stop);
+        let handle = std::thread::Builder::new()
+            .name(format!("fs-inventory-write-{index}"))
+            .spawn(move || match &config.destination {
+                Destination::Dir(dir) => write_parts(rx, &config, dir.clone(), index, &stop),
+                Destination::Stdout => write_stdout(rx, &config, &stop),
+            })?;
+        writers.push(handle);
+        self.active_writers.store(writers.len(), Ordering::Relaxed);
+        Ok(())
+    }
+
     fn fail(&self, error: io::Error) {
         self.stop.store(true, Ordering::Relaxed);
         if let Ok(mut failure) = self.failure.lock() {
@@ -141,7 +172,6 @@ pub struct OutputReport {
 pub struct Output {
     shared: Arc<Shared>,
     tx: Sender<Chunk>,
-    writers: Vec<JoinHandle<WriterResult>>,
 }
 
 type WriterResult = (Vec<PartInfo>, Vec<PartInfo>, Option<io::Error>);
@@ -149,12 +179,14 @@ type WriterResult = (Vec<PartInfo>, Vec<PartInfo>, Option<io::Error>);
 impl Output {
     /// Starts the writer threads. `stop` is set if output fails, so the
     /// crawl ends early instead of producing rows nobody can store.
+    /// Writers start one at a time, up to `config.writers`, as chunks back
+    /// up, so a small scan writes one file per table.
     pub fn start(config: OutputConfig, stop: Arc<AtomicBool>) -> io::Result<Self> {
-        let writers = match config.destination {
+        let max_writers = match config.destination {
             Destination::Dir(_) => config.writers.max(1),
             Destination::Stdout => 1,
         };
-        let (tx, rx) = crossbeam_channel::bounded::<Chunk>(writers * 4);
+        let (tx, rx) = crossbeam_channel::bounded::<Chunk>(max_writers * BACKLOG_PER_WRITER);
         let flush_bytes = (SINK_BUDGET_BYTES / config.crawl_threads.max(1))
             .clamp(MIN_FLUSH_BYTES, MAX_FLUSH_BYTES);
         let shared = Arc::new(Shared {
@@ -166,25 +198,14 @@ impl Output {
             error_rows: AtomicU64::new(0),
             stop: Arc::clone(&stop),
             failure: Mutex::new(None),
+            writers: Mutex::new(Vec::with_capacity(max_writers)),
+            active_writers: AtomicUsize::new(0),
+            max_writers,
+            rx,
+            config,
         });
-        let mut handles = Vec::with_capacity(writers);
-        for index in 0..writers {
-            let rx = rx.clone();
-            let config = config.clone();
-            let stop = Arc::clone(&stop);
-            let handle = std::thread::Builder::new()
-                .name(format!("fs-inventory-write-{index}"))
-                .spawn(move || match &config.destination {
-                    Destination::Dir(dir) => write_parts(rx, &config, dir.clone(), index, &stop),
-                    Destination::Stdout => write_stdout(rx, &config, &stop),
-                })?;
-            handles.push(handle);
-        }
-        Ok(Self {
-            shared,
-            tx,
-            writers: handles,
-        })
+        shared.add_writer()?;
+        Ok(Self { shared, tx })
     }
 
     /// A sink for one crawl worker.
@@ -214,8 +235,12 @@ impl Output {
     /// after every sink has finished.
     pub fn finish(self) -> OutputReport {
         drop(self.tx);
+        let handles = match self.shared.writers.lock() {
+            Ok(mut writers) => std::mem::take(&mut *writers),
+            Err(_) => Vec::new(),
+        };
         let mut report = OutputReport::default();
-        for handle in self.writers {
+        for handle in handles {
             match handle.join() {
                 Ok((entries, errors, failure)) => {
                     report.entry_parts.extend(entries);
@@ -506,6 +531,12 @@ impl RowSink {
     }
 
     fn send(&self, table: Table, payload: Payload, rows: u64) {
+        let active = self.shared.active_writers.load(Ordering::Relaxed);
+        if active < self.shared.max_writers && self.tx.len() >= active * BACKLOG_PER_WRITER {
+            // The writers are falling behind; failure to start one only
+            // means the existing writers keep going alone.
+            let _ = self.shared.add_writer();
+        }
         if self
             .tx
             .send(Chunk {

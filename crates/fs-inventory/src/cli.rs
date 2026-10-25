@@ -105,7 +105,9 @@ pub struct TraversalOptions {
     #[arg(short, long, default_value_t = 32, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=1024))]
     pub threads: u16,
 
-    /// Encoder and writer threads [default: CPU cores, at most 8].
+    /// Most encoder and writer threads. One starts, and more join as output
+    /// backs up, so small scans write one file per table [default: CPU
+    /// cores, at most 8].
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=256))]
     pub writers: Option<u16>,
 
