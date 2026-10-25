@@ -41,7 +41,6 @@ pub enum Command {
 }
 
 #[derive(Debug, Args)]
-#[allow(dead_code, reason = "consumed when scan is implemented")]
 pub struct ScanArgs {
     /// Directories to inventory.
     #[arg(required = true, value_name = "ROOT")]
@@ -68,7 +67,6 @@ pub struct ScanArgs {
 
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Output")]
-#[allow(dead_code, reason = "consumed when scan is implemented")]
 pub struct OutputOptions {
     /// Output directory, or `-` to stream CSV or JSON Lines to stdout.
     #[arg(short, long, value_name = "DIR|-")]
@@ -102,7 +100,6 @@ pub struct OutputOptions {
 
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Traversal")]
-#[allow(dead_code, reason = "consumed when scan is implemented")]
 pub struct TraversalOptions {
     /// Crawl threads. Network file systems often benefit from 64-256.
     #[arg(short, long, default_value_t = 32, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=1024))]
@@ -120,7 +117,9 @@ pub struct TraversalOptions {
     #[arg(long, value_name = "N")]
     pub max_depth: Option<u32>,
 
-    /// Skip paths matching this glob (repeatable).
+    /// Skip paths matching this glob (repeatable). Globs without a `/`
+    /// match names at any depth, such as `*.tmp` or `node_modules`; others
+    /// match whole paths, such as `/data/*/scratch`.
     #[arg(long, value_name = "GLOB")]
     pub exclude: Vec<String>,
 
@@ -140,7 +139,6 @@ pub struct TraversalOptions {
 
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Metadata")]
-#[allow(dead_code, reason = "consumed when scan is implemented")]
 pub struct MetadataOptions {
     /// Metadata fields to collect, for example "default,+btime,-size".
     #[arg(long, value_name = "SPEC")]
@@ -161,7 +159,6 @@ pub struct MetadataOptions {
 
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Encoding")]
-#[allow(dead_code, reason = "consumed when scan is implemented")]
 pub struct EncodingOptions {
     /// When to fill the exact-bytes path column.
     #[arg(long, value_enum, default_value_t = RawPaths::Auto)]
@@ -187,11 +184,11 @@ pub struct EncodingOptions {
 
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Robustness")]
-#[allow(dead_code, reason = "consumed when scan is implemented")]
 pub struct RobustnessOptions {
-    /// Interval between resume checkpoints (`0` disables checkpoints).
-    #[arg(long, value_parser = parse_duration, default_value = "10m", value_name = "DURATION")]
-    pub checkpoint_interval: Duration,
+    /// Interval between resume checkpoints (`0` disables checkpoints)
+    /// [default: 10m]
+    #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
+    pub checkpoint_interval: Option<Duration>,
 
     /// Abandon subtrees whose file system calls hang longer than this.
     #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
@@ -204,7 +201,6 @@ pub struct RobustnessOptions {
 
 #[derive(Debug, Args)]
 #[command(next_help_heading = "Progress")]
-#[allow(dead_code, reason = "consumed when scan is implemented")]
 pub struct ProgressOptions {
     /// Progress reporting style on stderr.
     #[arg(long, value_enum, default_value_t = Progress::Auto)]
@@ -386,10 +382,7 @@ mod tests {
         assert!(!args.traversal.cross_mounts);
         assert_eq!(args.encoding.raw_paths, RawPaths::Auto);
         assert_eq!(args.encoding.time_unit, TimeUnit::Us);
-        assert_eq!(
-            args.robustness.checkpoint_interval,
-            Duration::from_secs(600)
-        );
+        assert_eq!(args.robustness.checkpoint_interval, None);
         assert_eq!(args.progress.progress_interval, Duration::from_secs(10));
         assert_eq!(args.validate(), Ok(()));
     }

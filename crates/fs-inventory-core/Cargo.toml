@@ -11,6 +11,16 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+crossbeam-deque.workspace = true
+crossbeam-utils.workspace = true
+globset.workspace = true
+rustix.workspace = true
+unicode-normalization.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+rustix = { workspace = true, features = ["fs"] }
+tempfile.workspace = true
 
 [lints]
 workspace = true

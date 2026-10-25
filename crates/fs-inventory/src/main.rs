@@ -5,7 +5,10 @@
 
 mod cli;
 mod exit;
+mod output;
 mod parse;
+mod progress;
+mod scan;
 
 use std::process::ExitCode;
 
@@ -38,7 +41,7 @@ fn usage_error(subcommand: &str, message: String) -> ! {
 
 fn run(command: &Command) -> Exit {
     let (name, milestone) = match command {
-        Command::Scan(_) => ("scan", "M1"),
+        Command::Scan(args) => return scan::run(args),
         Command::Verify(_) => ("verify", "M2"),
         Command::Schema(_) => ("schema", "M2"),
         Command::Rollup(_) => ("rollup", "M3"),
