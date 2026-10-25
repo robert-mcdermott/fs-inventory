@@ -70,9 +70,14 @@ impl Sink for CollectingSink {
         self.errors.push((r.path.to_vec(), r.info.op, r.info.errno));
     }
 
+    /// Commits rows at each directory boundary, like the real output, so a
+    /// worker abandoned mid-directory keeps the directories it finished.
     fn end_dir(&mut self) {
         let batch = std::mem::take(&mut self.batch);
-        self.shared.lock().unwrap().batches.push(batch);
+        let mut shared = self.shared.lock().unwrap();
+        shared.batches.push(batch);
+        shared.rows.append(&mut self.rows);
+        shared.errors.append(&mut self.errors);
     }
 
     fn finish(&mut self) {
@@ -89,23 +94,40 @@ fn run_walk<B: Backend + 'static>(
     backend: B,
     stop: bool,
 ) -> (Collected, WalkResult) {
+    run_walk_shared(
+        roots,
+        options,
+        backend,
+        stop,
+        Arc::new(Mutex::new(Collected::default())),
+    )
+}
+
+/// Like `run_walk`, collecting into `shared`, which the test can inspect
+/// again later.
+fn run_walk_shared<B: Backend + 'static>(
+    roots: Vec<Vec<u8>>,
+    options: WalkOptions,
+    backend: B,
+    stop: bool,
+    shared: Arc<Mutex<Collected>>,
+) -> (Collected, WalkResult) {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let shared = Arc::new(Mutex::new(Collected::default()));
-        let counters = Counters::default();
-        let stop = AtomicBool::new(stop);
+        let counters = Arc::new(Counters::default());
+        let stop = Arc::new(AtomicBool::new(stop));
         let result = walk(
             &roots,
-            &options,
-            &backend,
+            options,
+            Arc::new(backend),
             |_| CollectingSink {
                 shared: Arc::clone(&shared),
                 batch: Vec::new(),
                 rows: Vec::new(),
                 errors: Vec::new(),
             },
-            &counters,
-            &stop,
+            counters,
+            stop,
         );
         let collected = std::mem::take(&mut *shared.lock().unwrap());
         let _ = tx.send((collected, result));
@@ -681,4 +703,119 @@ fn huge_directories_are_read_by_several_workers() {
     assert_eq!(totals.entries as usize, FILES + 1);
     assert_eq!((totals.files as usize, totals.subdirs), (FILES, 1));
     assert_eq!(totals.bytes as usize, FILES);
+}
+
+/// Blocks forever on `stat` of names starting with `hang`, until released,
+/// like a call to a hung NFS server.
+struct HangingBackend {
+    inner: NativeBackend,
+    released: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl Backend for HangingBackend {
+    type Dir = <NativeBackend as Backend>::Dir;
+    type Scratch = <NativeBackend as Backend>::Scratch;
+
+    fn new_scratch(&self) -> Self::Scratch {
+        self.inner.new_scratch()
+    }
+
+    fn stat_root(&self, path: &[u8]) -> io::Result<Stat> {
+        self.inner.stat_root(path)
+    }
+
+    fn open_dir(&self, path: &[u8], follow: bool) -> io::Result<Self::Dir> {
+        self.inner.open_dir(path, follow)
+    }
+
+    fn dir_stat(&self, dir: &Self::Dir) -> io::Result<Stat> {
+        self.inner.dir_stat(dir)
+    }
+
+    fn read_names(
+        &self,
+        dir: &Self::Dir,
+        scratch: &mut Self::Scratch,
+        names: &mut NameBatch,
+    ) -> io::Result<bool> {
+        self.inner.read_names(dir, scratch, names)
+    }
+
+    fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
+        if name.starts_with(b"hang") {
+            let (lock, released) = &*self.released;
+            let mut done = lock.lock().unwrap();
+            while !*done {
+                done = released.wait(done).unwrap();
+            }
+        }
+        self.inner.stat_at(dir, name)
+    }
+}
+
+#[test]
+fn stalled_directories_are_abandoned() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    make_tree(&root, 3, 2, 3);
+    let stuck = root.join("stuck");
+    fs::create_dir(&stuck).unwrap();
+    fs::write(stuck.join("hang-forever"), "x").unwrap();
+    fs::create_dir(stuck.join("child")).unwrap();
+    fs::write(stuck.join("child").join("leaf"), "x").unwrap();
+
+    let released = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let backend = HangingBackend {
+        inner: NativeBackend::new(BackendOptions::default()),
+        released: Arc::clone(&released),
+    };
+    let opts = WalkOptions {
+        stall_report: Duration::from_millis(200),
+        stall_timeout: Some(Duration::from_secs(1)),
+        ..options(4)
+    };
+    let shared = Arc::new(Mutex::new(Collected::default()));
+    let started = std::time::Instant::now();
+    let (got, result) = run_walk_shared(
+        vec![bytes(&root)],
+        opts,
+        backend,
+        false,
+        Arc::clone(&shared),
+    );
+    assert!(started.elapsed() < Duration::from_secs(30));
+
+    // The walk finished without the stuck directory.
+    assert!(!result.complete);
+    assert_eq!(result.abandoned.len(), 1, "{:?}", result.abandoned);
+    assert_eq!(result.abandoned[0].path, bytes(&stuck));
+    assert!(result.abandoned[0].seconds >= 1);
+    let stall_row = got.rows.iter().find(|r| r.path == bytes(&stuck)).unwrap();
+    assert_eq!(stall_row.error, Some(Op::Stall));
+    assert!(stall_row.totals.is_none());
+    assert!(
+        got.errors
+            .iter()
+            .any(|(p, op, _)| p == &bytes(&stuck) && *op == Op::Stall)
+    );
+    // Everything else was read, exactly once.
+    let expected = oracle(&root);
+    for path in expected.keys().filter(|p| !p.starts_with(&bytes(&stuck))) {
+        assert_eq!(
+            got.rows.iter().filter(|r| &r.path == path).count(),
+            1,
+            "{path:?}"
+        );
+    }
+
+    // Once the stuck call returns, the abandoned worker writes nothing more.
+    let before = got.rows.len();
+    {
+        let (lock, cvar) = &*released;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let after = shared.lock().unwrap().rows.len();
+    assert_eq!(after, 0, "rows written after abandonment (had {before})");
 }

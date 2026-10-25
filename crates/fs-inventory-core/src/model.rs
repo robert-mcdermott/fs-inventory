@@ -305,6 +305,9 @@ pub enum Op {
     /// A directory already visited through another path (a bind mount, a
     /// hard-linked directory, or overlapping roots); not read again.
     Revisit,
+    /// A worker made no progress for `--stall-timeout` reading this
+    /// directory, so the scan gave up on it.
+    Stall,
 }
 
 impl Op {
@@ -317,6 +320,7 @@ impl Op {
             Self::Verify => "verify",
             Self::Internal => "internal",
             Self::Revisit => "revisit",
+            Self::Stall => "stall",
         }
     }
 }

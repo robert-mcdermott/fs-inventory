@@ -10,7 +10,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{RecvTimeoutError, Sender};
-use fs_inventory_core::walker::Counters;
+use fs_inventory_core::names::{self, Controls};
+use fs_inventory_core::walker::{Counters, Stalled};
 
 /// How progress is reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +89,12 @@ impl Reporter {
                         _ => return,
                     }
                     let now = Snapshot::take(&counters, started);
-                    report(style, &now, &last);
+                    let stalled = counters
+                        .stalled
+                        .lock()
+                        .map(|s| s.clone())
+                        .unwrap_or_default();
+                    report(style, &now, &last, &stalled);
                     last = now;
                 }
             })
@@ -108,7 +114,7 @@ impl Reporter {
     }
 }
 
-fn report(style: Style, now: &Snapshot, last: &Snapshot) {
+fn report(style: Style, now: &Snapshot, last: &Snapshot, stalled: &[Stalled]) {
     let window = now.elapsed.saturating_sub(last.elapsed).as_secs_f64();
     let recent_rate = if window > 0.0 {
         now.entries.saturating_sub(last.entries) as f64 / window
@@ -116,16 +122,28 @@ fn report(style: Style, now: &Snapshot, last: &Snapshot) {
         0.0
     };
     let line = match style {
-        Style::Plain => format!(
-            "fs-inventory: {}  {} entries ({}/s)  {} dirs  {}  {} errors  {} queued\n",
-            format_duration(now.elapsed),
-            format_count(now.entries as f64),
-            format_count(recent_rate),
-            format_count(now.dirs as f64),
-            format_bytes(now.bytes),
-            now.errors,
-            now.queued,
-        ),
+        Style::Plain => {
+            let mut line = format!(
+                "fs-inventory: {}  {} entries ({}/s)  {} dirs  {}  {} errors  {} queued",
+                format_duration(now.elapsed),
+                format_count(now.entries as f64),
+                format_count(recent_rate),
+                format_count(now.dirs as f64),
+                format_bytes(now.bytes),
+                now.errors,
+                now.queued,
+            );
+            if let Some(oldest) = stalled.iter().max_by_key(|s| s.seconds) {
+                line.push_str(&format!(
+                    "  {} stalled (longest {}: {})",
+                    stalled.len(),
+                    format_duration(Duration::from_secs(oldest.seconds)),
+                    names::to_text(&oldest.path, Controls::Escape)
+                ));
+            }
+            line.push('\n');
+            line
+        }
         Style::Json => format!(
             "{}\n",
             serde_json::json!({
@@ -138,6 +156,13 @@ fn report(style: Style, now: &Snapshot, last: &Snapshot) {
                 "errors": now.errors,
                 "vanished": now.vanished,
                 "queued": now.queued,
+                "stalled": stalled
+                    .iter()
+                    .map(|s| serde_json::json!({
+                        "path": names::to_text(&s.path, Controls::Keep),
+                        "seconds": s.seconds,
+                    }))
+                    .collect::<Vec<_>>(),
             })
         ),
         Style::None => return,

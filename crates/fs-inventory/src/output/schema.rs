@@ -258,7 +258,7 @@ pub const ENTRY_COLUMNS: [Column; 31] = [
         "error",
         Text,
         true,
-        "For directories that couldn't be fully read: the failed operation and error, such as `open: EACCES`. With `--detect-cycles`, `revisit: already visited through another path` marks a directory that was reached again and not re-read.",
+        "For directories that couldn't be fully read: the failed operation and error, such as `open: EACCES`. With `--detect-cycles`, `revisit: already visited through another path` marks a directory that was reached again and not re-read. With `--stall-timeout`, `stall: ...` marks a directory the scan gave up on.",
     ),
 ];
 
@@ -279,7 +279,7 @@ pub const ERROR_COLUMNS: [Column; 7] = [
         "op",
         Text,
         false,
-        "The failed operation: `open`, `readdir`, `stat`, `verify` (the directory was replaced during the scan), or `internal`.",
+        "The failed operation: `open`, `readdir`, `stat`, `verify` (the directory was replaced during the scan), `stall` (no progress for `--stall-timeout`, so the scan gave up on the directory), or `internal`.",
     ),
     col(
         "errno",

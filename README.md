@@ -90,7 +90,7 @@ Only treat a scan as complete when `manifest.json` has `"status": "complete"`, o
 | 0 | Complete with no errors |
 | 1 | Complete, but some entries couldn't be read (see `errors/`) |
 | 2 | Invalid arguments or configuration |
-| 3 | Interrupted; queued directories weren't read |
+| 3 | Interrupted, or gave up on stalled directories (`--stall-timeout`); see the manifest's `status` and `stalled` |
 | 4 | Fatal error, such as output that couldn't be written |
 
 ## Benchmarking

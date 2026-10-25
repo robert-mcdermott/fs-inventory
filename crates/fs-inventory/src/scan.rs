@@ -13,7 +13,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -28,7 +28,7 @@ use crate::cli::{Format, Progress, RawPaths, ScanArgs, TimeFormat, TimeUnit};
 use crate::exit::Exit;
 use crate::output::arrow::ArrowOptions;
 use crate::output::encode::{EncodeOptions, Encoder, TextFormat, TimeStyle};
-use crate::output::manifest::{ErrorSummary, Manifest, Parts, Root, Status, Totals};
+use crate::output::manifest::{ErrorSummary, Manifest, Parts, Root, StalledDir, Status, Totals};
 use crate::output::parquet::ParquetSettings;
 use crate::output::parts::{RollLimits, sync_dir};
 use crate::output::schema::{ENTRY_COLUMNS, ERROR_COLUMNS, Selection};
@@ -36,6 +36,9 @@ use crate::output::timefmt::{self, Precision};
 use crate::output::{Destination, Format as OutputFormat, Output, OutputConfig, OutputReport, now};
 use crate::parse::Compression;
 use crate::progress::{self, Reporter, Snapshot, Style};
+
+/// Report a crawl thread as stalled after this long without progress.
+const STALL_REPORT: Duration = Duration::from_secs(60);
 
 /// A problem found before the crawl starts.
 struct SetupError {
@@ -197,6 +200,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         duration_seconds: None,
         totals: Totals::default(),
         errors_by_kind: Vec::new(),
+        stalled: Vec::new(),
         parts: Parts::default(),
     };
     if let Destination::Dir(dir) = &destination {
@@ -244,17 +248,25 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         include_snapshots: args.traversal.include_snapshots,
         skip_dirs,
         detect_cycles: args.traversal.detect_cycles,
+        stall_report: STALL_REPORT,
+        stall_timeout: args.robustness.stall_timeout,
     };
     let result = walker::walk(
         &roots,
-        &walk_options,
-        &backend,
+        walk_options,
+        Arc::new(backend),
         |_| output.sink(),
-        &counters,
-        &stop,
+        Arc::clone(&counters),
+        Arc::clone(&stop),
     );
     let report = output.finish();
     reporter.stop();
+    if report.salvaged > 0 {
+        eprintln!(
+            "fs-inventory: kept the finished directories of {} stalled crawl threads",
+            report.salvaged
+        );
+    }
     let snapshot = Snapshot::take(&counters, started);
 
     let stdout_closed = matches!(destination, Destination::Stdout)
@@ -269,6 +281,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             (Status::Failed, Exit::Fatal)
         }
         (None, true) => (Status::Interrupted, Exit::Incomplete),
+        (None, false) if !result.abandoned.is_empty() => (Status::Incomplete, Exit::Incomplete),
         (None, false) if !result.complete => (Status::Interrupted, Exit::Incomplete),
         (None, false) if snapshot.errors > 0 => (Status::Complete, Exit::CompletedWithErrors),
         (None, false) => (Status::Complete, Exit::Success),
@@ -289,8 +302,16 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         Status::Complete => "complete",
         Status::Interrupted => "interrupted",
         Status::Failed => "failed",
+        Status::Incomplete => "incomplete",
         Status::Running => "running",
     };
+    for stalled in &result.abandoned {
+        eprintln!(
+            "fs-inventory: gave up on {} after {} seconds without progress",
+            names::to_text(&stalled.path, Controls::Escape),
+            stalled.seconds
+        );
+    }
     progress::summary(
         match style {
             Style::None if args.progress.progress == Progress::Auto => Style::Plain,
@@ -306,12 +327,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
 /// Options that parse but do nothing yet. Accepting them silently would be
 /// worse than refusing them.
 fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 6] = [
-        (
-            args.robustness.stall_timeout.is_some(),
-            "--stall-timeout",
-            "M3",
-        ),
+    let pending: [(bool, &str, &str); 5] = [
         (args.robustness.max_memory.is_some(), "--max-memory", "M3"),
         (
             args.robustness.checkpoint_interval.is_some(),
@@ -545,6 +561,18 @@ fn finalize_manifest(
             errno: e.errno,
             errno_name: e.errno.and_then(errno_name),
             count: e.count,
+        })
+        .collect();
+    manifest.stalled = result
+        .abandoned
+        .iter()
+        .map(|s| {
+            let root = root_record(&s.path);
+            StalledDir {
+                path: root.path,
+                path_b64: root.path_b64,
+                seconds: s.seconds,
+            }
         })
         .collect();
     manifest.parts = Parts {

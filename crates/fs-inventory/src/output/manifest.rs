@@ -25,6 +25,19 @@ pub enum Status {
     Interrupted,
     /// Output could not be written; the parts listed are valid but partial.
     Failed,
+    /// Finished, except for directories given up on after `--stall-timeout`
+    /// (listed in `stalled`).
+    Incomplete,
+}
+
+/// A directory the scan gave up on because reading it stopped making
+/// progress.
+#[derive(Debug, Clone, Serialize)]
+pub struct StalledDir {
+    pub path: String,
+    pub path_b64: Option<String>,
+    /// Seconds without progress when the scan gave up.
+    pub seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -85,6 +98,8 @@ pub struct Manifest {
     pub duration_seconds: Option<f64>,
     pub totals: Totals,
     pub errors_by_kind: Vec<ErrorSummary>,
+    /// Directories given up on after `--stall-timeout`.
+    pub stalled: Vec<StalledDir>,
     pub parts: Parts,
 }
 

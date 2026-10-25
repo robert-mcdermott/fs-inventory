@@ -44,7 +44,7 @@ One row per file, directory, or other entry.
 | `dir_alloc_bytes` | BIGINT | yes | For directories that were read: sum of `alloc_bytes` over immediate children that aren't directories. |
 | `is_mount_point` | BOOLEAN |  | True when this directory is on a different device from its parent. |
 | `time_flags` | INTEGER |  | Bitmask of timestamps that couldn't be represented and were clamped: 1 `atime`, 2 `mtime`, 4 `ctime`, 8 `btime`. |
-| `error` | VARCHAR | yes | For directories that couldn't be fully read: the failed operation and error, such as `open: EACCES`. With `--detect-cycles`, `revisit: already visited through another path` marks a directory that was reached again and not re-read. |
+| `error` | VARCHAR | yes | For directories that couldn't be fully read: the failed operation and error, such as `open: EACCES`. With `--detect-cycles`, `revisit: already visited through another path` marks a directory that was reached again and not re-read. With `--stall-timeout`, `stall: ...` marks a directory the scan gave up on. |
 
 ## `errors`
 
@@ -54,7 +54,7 @@ One row per failed operation. Present only if there were any.
 |---|---|---|---|
 | `path` | VARCHAR |  | Path of the entry the operation was on, rendered like `entries.path`. |
 | `path_raw` (text: `path_b64`) | BLOB | yes | Exact path bytes, when `path` differs from them. Base64 in CSV and JSON Lines, as `path_b64`. |
-| `op` | VARCHAR |  | The failed operation: `open`, `readdir`, `stat`, `verify` (the directory was replaced during the scan), or `internal`. |
+| `op` | VARCHAR |  | The failed operation: `open`, `readdir`, `stat`, `verify` (the directory was replaced during the scan), `stall` (no progress for `--stall-timeout`, so the scan gave up on the directory), or `internal`. |
 | `errno` | INTEGER | yes | The OS error number, when there is one. |
 | `errno_name` | VARCHAR | yes | Symbolic name of `errno`, such as `EACCES`. |
 | `message` | VARCHAR |  | Human-readable description. |

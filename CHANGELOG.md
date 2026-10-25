@@ -11,6 +11,7 @@ All notable changes to this project are documented in this file. The format foll
 - `--fields` chooses which optional metadata to read (size, blocks, atime, mtime, ctime, btime). Skipped fields are written as null, and on Linux they aren't requested from the kernel, so `--fields -size,-blocks` avoids a round trip per file to Lustre's storage servers. `size`, `alloc_bytes`, `atime`, `mtime`, and `ctime` are now nullable.
 - `--detect-cycles` remembers every directory entered (by device and inode) and never enters one twice, guarding against bind-mount loops, hard-linked directories, and overlapping roots. A directory reached again gets a row with the error `revisit`, and the manifest counts them.
 - Huge directories are read by several workers. After 10,000 entries, the worker reading a directory publishes each further batch of names, and idle workers stat them in parallel while it keeps reading; it helps with the batches until all are done. On file systems where every stat is a network round trip, one directory of millions of files no longer runs at one thread's speed.
+- A watchdog reports crawl threads that stop making progress, such as one stuck in a call to a hung NFS server, in the progress output. With `--stall-timeout`, the scan gives up on such a thread's directory: it gets a `stall` row and error and is listed under `stalled` in the manifest, the other threads finish the rest, the rows of every directory the stuck thread had finished are still written, and the scan ends with status `incomplete` and exit code 3 instead of hanging.
 
 ### Changed
 
