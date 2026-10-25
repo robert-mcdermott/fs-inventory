@@ -207,7 +207,9 @@ pub struct RobustnessOptions {
     #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
     pub stall_timeout: Option<Duration>,
 
-    /// Soft memory budget for queues and buffers.
+    /// Soft memory budget. Half holds directories waiting to be read (more
+    /// wait in a spill file next to the output), and the rest holds output
+    /// buffers and Parquet row groups [default: queue up to 1 GiB in memory].
     #[arg(long, value_parser = parse_size, value_name = "SIZE")]
     pub max_memory: Option<u64>,
 }

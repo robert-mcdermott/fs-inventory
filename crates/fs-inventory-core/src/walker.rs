@@ -24,7 +24,8 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -34,7 +35,8 @@ use crossbeam_utils::Backoff;
 use globset::GlobSet;
 
 use crate::backend::{Backend, NameBatch};
-use crate::model::{DirTotals, Entry, EntryKind, ErrorInfo, ErrorRecord, Op, Stat};
+use crate::model::{DirTotals, Entry, EntryKind, ErrorInfo, ErrorRecord, Op, Stat, Timestamp};
+use crate::spill::{Decode, Encode, Spill};
 
 /// Entries a worker reads from one directory before sharing the rest.
 pub const SHARE_AFTER: usize = 10_000;
@@ -73,6 +75,11 @@ pub struct WalkOptions {
     /// Abandon a worker after this long without progress. Its directory is
     /// recorded as stalled and the walk finishes without it.
     pub stall_timeout: Option<Duration>,
+    /// Memory for directories waiting to be read. Beyond it, they wait in a
+    /// spill file instead, read back once memory drains.
+    pub queue_budget: usize,
+    /// Where the spill file goes [default: the system temporary directory].
+    pub spill_dir: Option<PathBuf>,
 }
 
 impl Default for WalkOptions {
@@ -87,6 +94,8 @@ impl Default for WalkOptions {
             detect_cycles: false,
             stall_report: Duration::from_secs(60),
             stall_timeout: None,
+            queue_budget: 1 << 30,
+            spill_dir: None,
         }
     }
 }
@@ -133,6 +142,8 @@ pub struct Counters {
     pub vanished: AtomicU64,
     /// Directories not entered because they were already visited.
     pub revisits: AtomicU64,
+    /// Directories that waited in the spill file.
+    pub spilled: AtomicU64,
     /// Directories queued or being read.
     pub pending: AtomicU64,
     /// Workers currently without progress for at least
@@ -177,6 +188,74 @@ struct DirTask {
 }
 
 impl DirTask {
+    /// Approximate memory held while queued.
+    fn memory(&self) -> i64 {
+        (std::mem::size_of::<Self>() + self.path.len()) as i64
+    }
+
+    fn encode(&self, out: &mut Vec<u8>) {
+        out.clear();
+        let s = &self.stat;
+        let mut e = Encode(out);
+        e.bytes(&self.path)
+            .u64(self.name_start as u64)
+            .u64(self.dir_id)
+            .u64(self.parent_id)
+            .u32(self.depth)
+            .u32(u32::from(self.is_mount_point))
+            .u64(s.dev)
+            .u64(s.ino)
+            .u32(s.mode)
+            .u64(s.nlink)
+            .u32(s.uid)
+            .u32(s.gid)
+            .u64(s.rdev)
+            .i64(s.size)
+            .u64(s.blocks);
+        for t in [s.atime, s.mtime, s.ctime, s.btime.unwrap_or_default()] {
+            e.i64(t.sec).u32(t.nsec);
+        }
+        e.u32(u32::from(s.btime.is_some()));
+    }
+
+    fn decode(record: &[u8]) -> std::io::Result<Self> {
+        let mut d = Decode(record);
+        let path = d.bytes()?.into_boxed_slice();
+        let name_start = usize::try_from(d.u64()?).map_err(std::io::Error::other)?;
+        let (dir_id, parent_id, depth) = (d.u64()?, d.u64()?, d.u32()?);
+        let is_mount_point = d.u32()? != 0;
+        let mut stat = Stat {
+            dev: d.u64()?,
+            ino: d.u64()?,
+            mode: d.u32()?,
+            nlink: d.u64()?,
+            uid: d.u32()?,
+            gid: d.u32()?,
+            rdev: d.u64()?,
+            size: d.i64()?,
+            blocks: d.u64()?,
+            ..Stat::default()
+        };
+        let mut times = [Timestamp::default(); 4];
+        for t in &mut times {
+            *t = Timestamp {
+                sec: d.i64()?,
+                nsec: d.u32()?,
+            };
+        }
+        [stat.atime, stat.mtime, stat.ctime] = [times[0], times[1], times[2]];
+        stat.btime = (d.u32()? != 0).then_some(times[3]);
+        Ok(Self {
+            path,
+            name_start,
+            dir_id,
+            parent_id,
+            depth,
+            stat,
+            is_mount_point,
+        })
+    }
+
     fn parent_path(&self) -> &[u8] {
         parent_of(&self.path, self.name_start)
     }
@@ -313,6 +392,9 @@ struct WalkShared<B: Backend> {
     /// Directories whose worker was abandoned. They stay pending forever, so
     /// workers finish once only these are left.
     abandoned_tasks: AtomicU64,
+    /// Approximate memory held by queued directories.
+    queued_bytes: AtomicI64,
+    spill: Option<Spill>,
 }
 
 impl<B: Backend> WalkShared<B> {
@@ -367,6 +449,10 @@ where
     let mut sinks: Vec<S> = (0..threads).map(&mut make_sink).collect();
     let mut main_sink = make_sink(threads);
     let deques: Vec<Worker<DirTask>> = (0..threads).map(|_| Worker::new_lifo()).collect();
+    // Without a spill file (an unwritable directory), queued directories
+    // simply stay in memory.
+    let spill_dir = options.spill_dir.clone().unwrap_or_else(std::env::temp_dir);
+    let spill = Spill::create(&spill_dir).ok();
     let shared = Arc::new(WalkShared {
         backend,
         visited: options.detect_cycles.then(Visited::new),
@@ -380,6 +466,8 @@ where
         statuses: (0..threads).map(|_| WorkerStatus::default()).collect(),
         started: Instant::now(),
         abandoned_tasks: AtomicU64::new(0),
+        queued_bytes: AtomicI64::new(0),
+        spill,
     });
 
     let mut main_tally = Tally::default();
@@ -510,7 +598,7 @@ fn add_roots<B: Backend, S: Sink>(
             }
             Ok(stat) if stat.kind() == EntryKind::Dir => {
                 shared.counters.pending.fetch_add(1, Ordering::Relaxed);
-                shared.injector.push(DirTask {
+                let task = DirTask {
                     path: root.clone().into_boxed_slice(),
                     name_start: start,
                     dir_id: shared.next_id.fetch_add(1, Ordering::Relaxed),
@@ -518,7 +606,11 @@ fn add_roots<B: Backend, S: Sink>(
                     depth: 0,
                     stat,
                     is_mount_point: false,
-                });
+                };
+                shared
+                    .queued_bytes
+                    .fetch_add(task.memory(), Ordering::Relaxed);
+                shared.injector.push(task);
             }
             Ok(stat) => {
                 row(&stat, None, None, sink);
@@ -739,6 +831,12 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
                 self.run_task(task);
                 continue;
             }
+            // Only once memory has drained, read back spilled directories.
+            if let Some(task) = self.pop_spilled() {
+                backoff.reset();
+                self.run_task(task);
+                continue;
+            }
             if self.shared.finished() {
                 break;
             }
@@ -766,8 +864,60 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
         self.tally.record_error(&info);
     }
 
+    /// The oldest spilled directory, if any.
+    fn pop_spilled(&mut self) -> Option<DirTask> {
+        let spill = self.shared.spill.as_ref()?;
+        let mut record = std::mem::take(&mut self.child_path);
+        let popped = spill.pop(&mut record);
+        let task = match popped {
+            Ok(true) => DirTask::decode(&record).ok(),
+            Ok(false) => None,
+            Err(_) => None,
+        };
+        if let (Ok(true), None) = (&popped, &task) {
+            // A record we can't decode is a directory that will never be
+            // read; count it as done so the walk can finish.
+            self.lost_spilled(1);
+        } else if popped.is_err() {
+            self.lost_spilled(spill.waiting() + 1);
+        }
+        self.child_path = record;
+        let task = task?;
+        self.shared
+            .queued_bytes
+            .fetch_add(task.memory(), Ordering::Relaxed);
+        Some(task)
+    }
+
+    /// Records directories lost from an unreadable spill file.
+    fn lost_spilled(&mut self, count: u64) {
+        let info = ErrorInfo {
+            op: Op::Internal,
+            errno: None,
+            message: format!("{count} queued directories were lost from the spill file"),
+        };
+        let path = self
+            .shared
+            .options
+            .spill_dir
+            .as_ref()
+            .map_or_else(Vec::new, |p| p.as_os_str().as_bytes().to_vec());
+        self.sink.error(&ErrorRecord {
+            path: &path,
+            info: &info,
+        });
+        self.tally.record_error(&info);
+        self.shared
+            .counters
+            .pending
+            .fetch_sub(count, Ordering::AcqRel);
+    }
+
     fn run_task(&mut self, task: DirTask) {
         let shared = Arc::clone(&self.shared);
+        shared
+            .queued_bytes
+            .fetch_sub(task.memory(), Ordering::Relaxed);
         let status = &shared.statuses[self.index];
         let path = task.path.clone();
         status.begin(Work::Task(task.clone()), shared.now());
@@ -1067,8 +1217,9 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
                     .as_ref()
                     .is_some_and(|v| !v.insert((stat.dev, stat.ino)));
             if descend && !revisit {
-                self.shared.counters.pending.fetch_add(1, Ordering::AcqRel);
-                self.deque.push(DirTask {
+                let shared = Arc::clone(&self.shared);
+                shared.counters.pending.fetch_add(1, Ordering::AcqRel);
+                let task = DirTask {
                     path: path.into(),
                     name_start,
                     dir_id,
@@ -1076,7 +1227,21 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
                     depth,
                     stat,
                     is_mount_point,
-                });
+                };
+                let size = task.memory();
+                let over_budget = shared.queued_bytes.load(Ordering::Relaxed) + size
+                    > i64::try_from(shared.options.queue_budget).unwrap_or(i64::MAX);
+                if over_budget && let Some(spill) = &shared.spill {
+                    let mut record = Vec::new();
+                    task.encode(&mut record);
+                    if spill.push(&record).is_ok() {
+                        shared.counters.spilled.fetch_add(1, Ordering::Relaxed);
+                        return;
+                    }
+                    // A full or failing disk: keep the directory in memory.
+                }
+                shared.queued_bytes.fetch_add(size, Ordering::Relaxed);
+                self.deque.push(task);
                 return;
             }
             let error = revisit.then(revisit_info);

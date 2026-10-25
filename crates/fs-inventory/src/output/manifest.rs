@@ -62,6 +62,9 @@ pub struct Totals {
     /// Directories not entered again because `--detect-cycles` had already
     /// seen them.
     pub revisits: u64,
+    /// Directories that waited in the spill file because the queue was over
+    /// its memory budget.
+    pub spilled: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

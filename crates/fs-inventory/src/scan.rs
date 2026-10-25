@@ -37,6 +37,41 @@ use crate::output::{Destination, Format as OutputFormat, Output, OutputConfig, O
 use crate::parse::Compression;
 use crate::progress::{self, Reporter, Snapshot, Style};
 
+/// How `--max-memory` is divided.
+struct MemoryBudgets {
+    /// Directories waiting to be read; more wait in a spill file.
+    queue: usize,
+    /// The crawl threads' row buffers, together.
+    sinks: usize,
+    /// In-progress Parquet row groups, across all writers.
+    row_groups: usize,
+}
+
+impl MemoryBudgets {
+    /// Half for queued directories, an eighth for row buffers, and the rest
+    /// for row groups; without a limit, the defaults.
+    fn new(max_memory: Option<u64>) -> Self {
+        match max_memory.map(|m| usize::try_from(m).unwrap_or(usize::MAX)) {
+            None => Self {
+                queue: 1 << 30,
+                sinks: crate::output::SINK_BUDGET_BYTES,
+                row_groups: usize::MAX,
+            },
+            Some(m) => Self {
+                queue: m / 2,
+                sinks: (m / 8).min(crate::output::SINK_BUDGET_BYTES),
+                row_groups: m / 4,
+            },
+        }
+    }
+
+    /// The row group limit for each of `writers` writers.
+    fn row_group(&self, writers: usize) -> usize {
+        (self.row_groups / writers.max(1))
+            .clamp(8 << 20, crate::output::parquet::MAX_ROW_GROUP_BYTES)
+    }
+}
+
 /// Report a crawl thread as stalled after this long without progress.
 const STALL_REPORT: Duration = Duration::from_secs(60);
 
@@ -76,6 +111,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
     reject_unimplemented(args)?;
     let selection = Selection::parse(&args.output.columns).map_err(SetupError::usage)?;
     let fields = args.metadata.fields.unwrap_or_default();
+    let budgets = MemoryBudgets::new(args.robustness.max_memory);
     let compression = args.output.compression.unwrap_or(match args.output.format {
         Format::Parquet => Compression::Zstd(3),
         Format::Csv | Format::Jsonl => Compression::None,
@@ -145,6 +181,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             settings: ParquetSettings {
                 compression,
                 row_group_rows: usize::try_from(args.output.row_group_rows).unwrap_or(usize::MAX),
+                max_row_group_bytes: budgets.row_group(writers),
                 metadata: vec![
                     (
                         "fs_inventory.schema_version".into(),
@@ -217,6 +254,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             compression,
             writers,
             crawl_threads: usize::from(args.traversal.threads),
+            sink_budget: budgets.sinks,
             limits: RollLimits {
                 max_bytes: args.output.part_max_bytes,
                 max_rows: args.output.part_max_rows,
@@ -250,6 +288,12 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         detect_cycles: args.traversal.detect_cycles,
         stall_report: STALL_REPORT,
         stall_timeout: args.robustness.stall_timeout,
+        queue_budget: budgets.queue,
+        // Next to the output, on storage the user chose; else the temp dir.
+        spill_dir: match &destination {
+            Destination::Dir(dir) => Some(dir.clone()),
+            Destination::Stdout => None,
+        },
     };
     let result = walker::walk(
         &roots,
@@ -327,8 +371,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
 /// Options that parse but do nothing yet. Accepting them silently would be
 /// worse than refusing them.
 fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 5] = [
-        (args.robustness.max_memory.is_some(), "--max-memory", "M3"),
+    let pending: [(bool, &str, &str); 4] = [
         (
             args.robustness.checkpoint_interval.is_some(),
             "--checkpoint-interval",
@@ -513,6 +556,7 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<&'static str, s
         ),
         ("include_snapshots", json!(args.traversal.include_snapshots)),
         ("detect_cycles", json!(args.traversal.detect_cycles)),
+        ("max_memory", json!(args.robustness.max_memory)),
         ("statx_dont_sync", json!(args.metadata.statx_dont_sync)),
         (
             "fields",
@@ -552,6 +596,7 @@ fn finalize_manifest(
         errors: snapshot.errors,
         vanished: snapshot.vanished,
         revisits: snapshot.revisits,
+        spilled: snapshot.spilled,
     };
     manifest.errors_by_kind = result
         .errors

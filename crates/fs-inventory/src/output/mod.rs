@@ -43,10 +43,10 @@ use self::parts::{PartInfo, PartWriter, RollLimits, compression_suffix};
 use self::schema::{ERROR_COLUMNS, Selection, arrow_schema};
 use crate::parse::Compression;
 
-/// Memory shared by every worker's row buffer. Each worker sends its rows
-/// once a directory ends past its share, so memory doesn't grow with the
-/// thread count.
-const SINK_BUDGET_BYTES: usize = 64 << 20;
+/// Default memory shared by every worker's row buffer. Each worker sends its
+/// rows once a directory ends past its share, so memory doesn't grow with
+/// the thread count.
+pub const SINK_BUDGET_BYTES: usize = 64 << 20;
 /// Bounds on one worker's share.
 const MIN_FLUSH_BYTES: usize = 64 << 10;
 const MAX_FLUSH_BYTES: usize = 1 << 20;
@@ -90,6 +90,8 @@ pub struct OutputConfig {
     pub writers: usize,
     /// Crawl threads, each with its own sink.
     pub crawl_threads: usize,
+    /// Memory shared by the sinks' row buffers.
+    pub sink_budget: usize,
     pub limits: RollLimits,
 }
 
@@ -217,7 +219,7 @@ impl Output {
         };
         let (tx, rx) = crossbeam_channel::bounded::<Chunk>(max_writers * BACKLOG_PER_WRITER);
         let (shutdown, shutdown_rx) = crossbeam_channel::bounded::<()>(0);
-        let flush_bytes = (SINK_BUDGET_BYTES / config.crawl_threads.max(1))
+        let flush_bytes = (config.sink_budget / config.crawl_threads.max(1))
             .clamp(MIN_FLUSH_BYTES, MAX_FLUSH_BYTES);
         let shared = Arc::new(Shared {
             format: config.format.clone(),
@@ -845,6 +847,7 @@ mod tests {
             compression: Compression::None,
             writers: 2,
             crawl_threads: 2,
+            sink_budget: SINK_BUDGET_BYTES,
             limits: RollLimits {
                 max_bytes: u64::MAX,
                 max_rows: None,

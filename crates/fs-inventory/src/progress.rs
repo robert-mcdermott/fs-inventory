@@ -31,6 +31,7 @@ pub struct Snapshot {
     pub errors: u64,
     pub vanished: u64,
     pub revisits: u64,
+    pub spilled: u64,
     pub queued: u64,
 }
 
@@ -44,6 +45,7 @@ impl Snapshot {
             errors: counters.errors.load(Ordering::Relaxed),
             vanished: counters.vanished.load(Ordering::Relaxed),
             revisits: counters.revisits.load(Ordering::Relaxed),
+            spilled: counters.spilled.load(Ordering::Relaxed),
             queued: counters.pending.load(Ordering::Relaxed),
         }
     }

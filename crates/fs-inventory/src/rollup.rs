@@ -530,6 +530,7 @@ fn rollup(args: &RollupArgs) -> io::Result<String> {
     let settings = ParquetSettings {
         compression: Compression::Zstd(3),
         row_group_rows: 1 << 20,
+        max_row_group_bytes: crate::output::parquet::MAX_ROW_GROUP_BYTES,
         metadata: vec![
             (
                 "fs_inventory.schema_version".into(),

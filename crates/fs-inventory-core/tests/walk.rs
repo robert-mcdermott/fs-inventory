@@ -819,3 +819,48 @@ fn stalled_directories_are_abandoned() {
     let after = shared.lock().unwrap().rows.len();
     assert_eq!(after, 0, "rows written after abandonment (had {before})");
 }
+
+#[test]
+fn spilled_directories_are_all_read() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("tree");
+    fs::create_dir(&root).unwrap();
+    make_tree(&root, 4, 3, 2); // 85 directories
+    let spill_dir = tmp.path().join("spill");
+    fs::create_dir(&spill_dir).unwrap();
+
+    // A one-byte budget sends every queued directory through the spill file.
+    let opts = WalkOptions {
+        queue_budget: 1,
+        spill_dir: Some(spill_dir.clone()),
+        ..options(4)
+    };
+    let shared = Arc::new(Mutex::new(Collected::default()));
+    let counters = Arc::new(Counters::default());
+    let sink_shared = Arc::clone(&shared);
+    let result = walk(
+        &[bytes(&root)],
+        opts,
+        Arc::new(NativeBackend::new(BackendOptions::default())),
+        move |_| CollectingSink {
+            shared: Arc::clone(&sink_shared),
+            batch: Vec::new(),
+            rows: Vec::new(),
+            errors: Vec::new(),
+        },
+        Arc::clone(&counters),
+        Arc::new(AtomicBool::new(false)),
+    );
+    assert!(result.complete);
+    assert!(counters.spilled.load(std::sync::atomic::Ordering::Relaxed) >= 80);
+    let got = shared.lock().unwrap();
+    let paths: BTreeSet<&Vec<u8>> = got.rows.iter().map(|r| &r.path).collect();
+    assert_eq!(paths.len(), got.rows.len(), "duplicate rows");
+    let expected: BTreeSet<Vec<u8>> = oracle(&root).into_keys().collect();
+    assert_eq!(
+        paths.into_iter().cloned().collect::<BTreeSet<_>>(),
+        expected
+    );
+    // The spill file was unlinked from the start.
+    assert_eq!(fs::read_dir(&spill_dir).unwrap().count(), 0);
+}
