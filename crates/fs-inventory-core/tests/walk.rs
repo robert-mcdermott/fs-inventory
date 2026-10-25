@@ -514,3 +514,60 @@ fn failures_are_recorded_and_never_stop_the_walk() {
     assert_eq!(boom.totals.map(|t| t.entries), Some(1));
     assert!(got.rows.iter().any(|r| r.path.ends_with(b"boom-dir/child")));
 }
+
+#[test]
+fn detect_cycles_never_reads_a_directory_twice() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    make_tree(&root, 2, 2, 2);
+    let sub = root.join("dir-0");
+    let opts = || WalkOptions {
+        detect_cycles: true,
+        ..options(4)
+    };
+
+    // Overlapping roots, and the same root twice.
+    let roots = vec![bytes(&root), bytes(&sub), bytes(&root)];
+    let (got, result) = run_walk(
+        roots,
+        opts(),
+        NativeBackend::new(BackendOptions::default()),
+        false,
+    );
+    assert!(result.complete);
+    let revisits: Vec<&Row> = got
+        .rows
+        .iter()
+        .filter(|r| r.error == Some(Op::Revisit))
+        .collect();
+    // dir-0 is found again inside the first root, and the root is repeated.
+    assert_eq!(revisits.len(), 2, "{revisits:?}");
+    assert!(
+        revisits
+            .iter()
+            .all(|r| r.totals.is_none() && r.dir_id.is_some())
+    );
+    // Everything below dir-0 appears once.
+    let below: Vec<&Vec<u8>> = got
+        .rows
+        .iter()
+        .map(|r| &r.path)
+        .filter(|p| p.starts_with(&bytes(&sub)) && p.len() > bytes(&sub).len())
+        .collect();
+    let unique: BTreeSet<&Vec<u8>> = below.iter().copied().collect();
+    assert_eq!(below.len(), unique.len());
+    assert!(!below.is_empty());
+
+    // Without detection, the overlap is read twice.
+    let (got, _) = run_walk(
+        vec![bytes(&root), bytes(&sub)],
+        options(4),
+        NativeBackend::new(BackendOptions::default()),
+        false,
+    );
+    let leaf = sub.join("file-0.dat");
+    assert_eq!(
+        got.rows.iter().filter(|r| r.path == bytes(&leaf)).count(),
+        2
+    );
+}

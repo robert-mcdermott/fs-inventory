@@ -44,7 +44,7 @@ One row per file, directory, or other entry.
 | `dir_alloc_bytes` | BIGINT | yes | For directories that were read: sum of `alloc_bytes` over immediate children that aren't directories. |
 | `is_mount_point` | BOOLEAN |  | True when this directory is on a different device from its parent. |
 | `time_flags` | INTEGER |  | Bitmask of timestamps that couldn't be represented and were clamped: 1 `atime`, 2 `mtime`, 4 `ctime`, 8 `btime`. |
-| `error` | VARCHAR | yes | For directories that couldn't be fully read: the failed operation and error, such as `open: EACCES`. |
+| `error` | VARCHAR | yes | For directories that couldn't be fully read: the failed operation and error, such as `open: EACCES`. With `--detect-cycles`, `revisit: already visited through another path` marks a directory that was reached again and not re-read. |
 
 ## `errors`
 

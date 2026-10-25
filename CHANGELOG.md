@@ -9,6 +9,7 @@ All notable changes to this project are documented in this file. The format foll
 - `fs-inventory rollup SCAN_DIR` writes two Parquet tables into the scan: `rollup`, with totals over every directory's whole subtree (entries, files, directories, bytes, allocated bytes, oldest and newest times, and how many directories weren't fully read), and `rollup_ages`, with file counts and bytes by age for directories down to `--age-depth` (default 4), in buckets set by `--age-buckets` (default `30d,90d,1y,2y,3y,5y,10y`) and measured from the scan's start time. The manifest lists both, `verify` checks them, and running it again replaces them. DuckDB macros `fs_rollup` and `fs_rollup_ages`, and heat-map examples in `sql/examples.sql`.
 
 - `--fields` chooses which optional metadata to read (size, blocks, atime, mtime, ctime, btime). Skipped fields are written as null, and on Linux they aren't requested from the kernel, so `--fields -size,-blocks` avoids a round trip per file to Lustre's storage servers. `size`, `alloc_bytes`, `atime`, `mtime`, and `ctime` are now nullable.
+- `--detect-cycles` remembers every directory entered (by device and inode) and never enters one twice, guarding against bind-mount loops, hard-linked directories, and overlapping roots. A directory reached again gets a row with the error `revisit`, and the manifest counts them.
 
 ### Changed
 

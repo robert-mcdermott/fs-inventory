@@ -465,7 +465,10 @@ fn rollup(args: &RollupArgs) -> io::Result<String> {
                 if kind.value(i) != "dir" || dir_id.is_null(i) {
                     continue;
                 }
-                let incomplete = dir_entries.is_null(i) || !error.is_null(i);
+                // A revisited directory's contents were counted where it was
+                // first found, so it isn't missing anything.
+                let revisit = !error.is_null(i) && error.value(i).starts_with("revisit");
+                let incomplete = !revisit && (dir_entries.is_null(i) || !error.is_null(i));
                 state.add_dir(
                     dir_id.value(i).max(0) as u64,
                     parent.value(i).max(0) as u64,

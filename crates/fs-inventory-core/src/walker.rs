@@ -10,11 +10,12 @@
 //! its rows (ending with its own row) reach that worker's [`Sink`] before
 //! [`Sink::end_dir`] is called.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -47,6 +48,10 @@ pub struct WalkOptions {
     /// Directories to skip entirely, by `(dev, ino)`, such as the scan's own
     /// output directory.
     pub skip_dirs: Vec<(u64, u64)>,
+    /// Remember every directory entered, by `(dev, ino)`, and never enter
+    /// one twice. Guards against bind-mount loops, hard-linked directories,
+    /// and overlapping roots, at about 50 bytes per directory.
+    pub detect_cycles: bool,
 }
 
 impl Default for WalkOptions {
@@ -58,6 +63,7 @@ impl Default for WalkOptions {
             excludes: None,
             include_snapshots: false,
             skip_dirs: Vec::new(),
+            detect_cycles: false,
         }
     }
 }
@@ -90,6 +96,8 @@ pub struct Counters {
     pub errors: AtomicU64,
     /// Entries deleted between being listed and being read.
     pub vanished: AtomicU64,
+    /// Directories not entered because they were already visited.
+    pub revisits: AtomicU64,
     /// Directories queued or being read.
     pub pending: AtomicU64,
 }
@@ -173,6 +181,7 @@ where
     let mut sinks: Vec<S> = (0..threads).map(&mut make_sink).collect();
     let injector = Injector::new();
     let next_id = AtomicU64::new(1);
+    let visited = options.detect_cycles.then(Visited::new);
 
     // Roots are read on this thread; errors and non-directory roots go to
     // the first worker's sink.
@@ -180,6 +189,28 @@ where
     for root in roots {
         let start = name_start(root);
         match backend.stat_root(root) {
+            Ok(stat)
+                if stat.kind() == EntryKind::Dir
+                    && visited
+                        .as_ref()
+                        .is_some_and(|v| !v.insert((stat.dev, stat.ino))) =>
+            {
+                let info = revisit_info();
+                sinks[0].entry(&Entry {
+                    path: root,
+                    parent_path: parent_of(root, start),
+                    name: &root[start..],
+                    depth: 0,
+                    dir_id: Some(next_id.fetch_add(1, Ordering::Relaxed)),
+                    parent_id: 0,
+                    stat: &stat,
+                    is_mount_point: false,
+                    totals: None,
+                    error: Some(&info),
+                });
+                root_tally.entries += 1;
+                root_tally.revisits += 1;
+            }
             Ok(stat) if stat.kind() == EntryKind::Dir => {
                 counters.pending.fetch_add(1, Ordering::Relaxed);
                 injector.push(DirTask {
@@ -239,6 +270,7 @@ where
                     options,
                     counters,
                     next_id: &next_id,
+                    visited: visited.as_ref(),
                     deque,
                     injector: &injector,
                     stealers: &stealers,
@@ -283,6 +315,7 @@ struct Tally {
     bytes: u64,
     errors_total: u64,
     vanished: u64,
+    revisits: u64,
     errors: HashMap<(Op, Option<i32>), u64>,
 }
 
@@ -304,6 +337,42 @@ impl Tally {
         add(&counters.bytes, &mut self.bytes);
         add(&counters.errors, &mut self.errors_total);
         add(&counters.vanished, &mut self.vanished);
+        add(&counters.revisits, &mut self.revisits);
+    }
+}
+
+/// Directories already entered, by `(dev, ino)`, sharded to keep lock
+/// contention low.
+struct Visited {
+    shards: Vec<Mutex<HashSet<(u64, u64)>>>,
+}
+
+impl Visited {
+    const SHARDS: usize = 64;
+
+    fn new() -> Self {
+        Self {
+            shards: (0..Self::SHARDS).map(|_| Mutex::default()).collect(),
+        }
+    }
+
+    /// Records a directory. Returns `false` if it was already recorded.
+    fn insert(&self, key: (u64, u64)) -> bool {
+        let shard = (key.1 ^ key.0.rotate_left(17)) as usize % Self::SHARDS;
+        match self.shards[shard].lock() {
+            Ok(mut set) => set.insert(key),
+            // A poisoned shard can only come from a panic mid-insert; treat
+            // the directory as new rather than skip it.
+            Err(_) => true,
+        }
+    }
+}
+
+fn revisit_info() -> ErrorInfo {
+    ErrorInfo {
+        op: Op::Revisit,
+        errno: None,
+        message: "already visited through another path".into(),
     }
 }
 
@@ -313,6 +382,7 @@ struct WorkerState<'a, B: Backend, S: Sink> {
     options: &'a WalkOptions,
     counters: &'a Counters,
     next_id: &'a AtomicU64,
+    visited: Option<&'a Visited>,
     deque: Worker<DirTask>,
     injector: &'a Injector<DirTask>,
     stealers: &'a [Stealer<DirTask>],
@@ -531,7 +601,11 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
             let within_depth = self.options.max_depth.is_none_or(|max| depth < max);
             let descend = within_depth && (self.options.cross_mounts || !is_mount_point);
             let dir_id = self.next_id.fetch_add(1, Ordering::Relaxed);
-            if descend {
+            let revisit = descend
+                && self
+                    .visited
+                    .is_some_and(|v| !v.insert((stat.dev, stat.ino)));
+            if descend && !revisit {
                 self.counters.pending.fetch_add(1, Ordering::AcqRel);
                 self.deque.push(DirTask {
                     path: path.into(),
@@ -544,6 +618,8 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
                 });
                 return;
             }
+            let error = revisit.then(revisit_info);
+            self.tally.revisits += u64::from(revisit);
             self.emit(
                 path,
                 name_start,
@@ -552,10 +628,20 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
                 task.dir_id,
                 &stat,
                 is_mount_point,
+                error.as_ref(),
             );
         } else {
             self.tally.bytes += stat.size.max(0) as u64;
-            self.emit(path, name_start, depth, None, task.dir_id, &stat, false);
+            self.emit(
+                path,
+                name_start,
+                depth,
+                None,
+                task.dir_id,
+                &stat,
+                false,
+                None,
+            );
         }
     }
 
@@ -569,6 +655,7 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
         parent_id: u64,
         stat: &Stat,
         is_mount_point: bool,
+        error: Option<&ErrorInfo>,
     ) {
         self.sink.entry(&Entry {
             path,
@@ -580,7 +667,7 @@ impl<B: Backend, S: Sink> WorkerState<'_, B, S> {
             stat,
             is_mount_point,
             totals: None,
-            error: None,
+            error,
         });
         self.tally.entries += 1;
     }

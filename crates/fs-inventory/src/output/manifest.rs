@@ -46,6 +46,9 @@ pub struct Totals {
     pub errors: u64,
     /// Entries deleted between being listed and being read.
     pub vanished: u64,
+    /// Directories not entered again because `--detect-cycles` had already
+    /// seen them.
+    pub revisits: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]

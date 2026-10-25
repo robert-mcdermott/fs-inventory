@@ -293,6 +293,9 @@ pub enum Op {
     Verify,
     /// An internal error, such as a caught panic.
     Internal,
+    /// A directory already visited through another path (a bind mount, a
+    /// hard-linked directory, or overlapping roots); not read again.
+    Revisit,
 }
 
 impl Op {
@@ -304,6 +307,7 @@ impl Op {
             Self::Stat => "stat",
             Self::Verify => "verify",
             Self::Internal => "internal",
+            Self::Revisit => "revisit",
         }
     }
 }

@@ -258,7 +258,7 @@ pub const ENTRY_COLUMNS: [Column; 31] = [
         "error",
         Text,
         true,
-        "For directories that couldn't be fully read: the failed operation and error, such as `open: EACCES`.",
+        "For directories that couldn't be fully read: the failed operation and error, such as `open: EACCES`. With `--detect-cycles`, `revisit: already visited through another path` marks a directory that was reached again and not re-read.",
     ),
 ];
 

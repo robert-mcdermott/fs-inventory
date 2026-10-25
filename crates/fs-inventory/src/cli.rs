@@ -133,8 +133,10 @@ pub struct TraversalOptions {
     #[arg(long)]
     pub include_snapshots: bool,
 
-    /// Track directory identities to break cycles from bind mounts or
-    /// hard-linked directories.
+    /// Never enter a directory twice (by device and inode), guarding against
+    /// bind-mount loops, hard-linked directories, and overlapping roots.
+    /// A directory reached again gets a row with the error `revisit`. Costs
+    /// about 50 bytes of memory per directory.
     #[arg(long)]
     pub detect_cycles: bool,
 }

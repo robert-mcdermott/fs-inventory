@@ -29,6 +29,7 @@ pub struct Snapshot {
     pub bytes: u64,
     pub errors: u64,
     pub vanished: u64,
+    pub revisits: u64,
     pub queued: u64,
 }
 
@@ -41,6 +42,7 @@ impl Snapshot {
             bytes: counters.bytes.load(Ordering::Relaxed),
             errors: counters.errors.load(Ordering::Relaxed),
             vanished: counters.vanished.load(Ordering::Relaxed),
+            revisits: counters.revisits.load(Ordering::Relaxed),
             queued: counters.pending.load(Ordering::Relaxed),
         }
     }

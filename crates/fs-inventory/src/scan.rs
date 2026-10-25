@@ -243,6 +243,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         excludes,
         include_snapshots: args.traversal.include_snapshots,
         skip_dirs,
+        detect_cycles: args.traversal.detect_cycles,
     };
     let result = walker::walk(
         &roots,
@@ -305,8 +306,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
 /// Options that parse but do nothing yet. Accepting them silently would be
 /// worse than refusing them.
 fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 7] = [
-        (args.traversal.detect_cycles, "--detect-cycles", "M3"),
+    let pending: [(bool, &str, &str); 6] = [
         (
             args.robustness.stall_timeout.is_some(),
             "--stall-timeout",
@@ -496,6 +496,7 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<&'static str, s
             ),
         ),
         ("include_snapshots", json!(args.traversal.include_snapshots)),
+        ("detect_cycles", json!(args.traversal.detect_cycles)),
         ("statx_dont_sync", json!(args.metadata.statx_dont_sync)),
         (
             "fields",
@@ -534,6 +535,7 @@ fn finalize_manifest(
         bytes: snapshot.bytes,
         errors: snapshot.errors,
         vanished: snapshot.vanished,
+        revisits: snapshot.revisits,
     };
     manifest.errors_by_kind = result
         .errors
