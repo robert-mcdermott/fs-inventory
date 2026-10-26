@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- Release binaries: each release has static Linux binaries (x86_64 and ARM) and macOS binaries (Apple silicon and Intel), with a `SHA256SUMS` file. Pushing a version tag builds them and drafts the release.
+- `install.sh` installs a release with `curl ... | sh`: it verifies the SHA-256 checksum and the binary's version before installing to `~/.local/bin` (or `--install-dir`), and never uses `sudo` or changes `PATH`.
+
 ## [0.4.0] - 2026-10-25
 
 Milestone M4: resumable scans.

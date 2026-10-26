@@ -420,7 +420,7 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 | **M2: Parquet** ✅ | Arrow builders, Parquet writer pool, key-value metadata, `--columns`, `sql/` macros and example queries, `verify`, `schema` (also generates `docs/schema.md`), mimalloc | Output size per entry measured on 1.24M real entries (§5.2), and DuckDB 2.0 loads Parquet, CSV, and JSON Lines scans. A 100M-entry scan has not been run yet; that happens on the Linux server. |
 | **M3: Scale** (features done) | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, `--fields`, `--detect-cycles`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat. The features are in and tested on a laptop and in a Linux container; the large scan and default tuning happen on the Linux server. |
 | **M4: Resume** ✅ | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run: tested by resuming from every checkpoint of a walk, and by `kill -9` at several points of real scans |
-| **M5: Platform and extras** | `diff` between two scans (§11), macOS `getattrlistbulk` backend (if benchmarks justify it), `--guess-encoding`, symlink targets, statx attributes, `--resolve-ids`, `convert`, release packaging (static binaries, .deb/.rpm, Homebrew), documentation site | Release 1.0 |
+| **M5: Platform and extras** | `diff` between two scans (§11), macOS `getattrlistbulk` backend (if benchmarks justify it), `--guess-encoding`, symlink targets, statx attributes, `--resolve-ids`, `convert`, release packaging (static binaries and `install.sh` ✅; .deb/.rpm, Homebrew), documentation site | Release 1.0 |
 
 ### Future ideas (post-1.0)
 
@@ -455,7 +455,7 @@ fs-inventory will feed a separate file inventory and analytics web application: 
 | 5 | Timestamp precision | Microseconds by default, `--time-unit ns` optional |
 | 6 | v1 platforms | Linux (primary) and macOS. Windows later |
 | 7 | Binary name | `fs-inventory` (optionally also install a short `fsinv` alias) |
-| 8 | Versioning | **Decided:** the tool version follows Semantic Versioning. Each milestone is released as `0.N.0` (M3 is 0.3.0), fixes in between as patch releases, and M5 as 1.0.0. The version changes only in a release commit, which is then tagged `vX.Y.Z`. The schema version is separate (§11) and changes only when the output format breaks readers. |
+| 8 | Versioning | **Decided:** the tool version follows Semantic Versioning. Each milestone is released as `0.N.0` (M3 is 0.3.0), fixes in between as patch releases, and M5 as 1.0.0. The version changes only in a release commit, which is then tagged `vX.Y.Z`. Pushing the tag runs `.github/workflows/release.yml`, which builds the binaries and drafts the release with that version's changelog section; publishing the draft makes it the latest release, which `install.sh` installs. The schema version is separate (§11) and changes only when the output format breaks readers. |
 
 ---
 
