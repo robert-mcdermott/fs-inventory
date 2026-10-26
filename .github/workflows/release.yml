@@ -1,0 +1,143 @@
+name: Release
+
+# Pushing a tag such as v0.5.0 checks that it matches the version in Cargo.toml and has a
+# CHANGELOG.md section, runs the tests, and builds the binaries: static Linux binaries, which run
+# on any distribution, and macOS binaries. It attaches them, with SHA256SUMS, to a draft release
+# whose notes are that version's CHANGELOG.md section. Review the draft and publish it.
+#
+# To attach binaries to a release that already exists, run this workflow by hand with its tag:
+#   gh workflow run release.yml -f tag=v0.4.0
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and release, such as v0.4.0
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  check:
+    name: Check the version and test
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - name: The tag matches the version
+        id: version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          if [ "v$version" != "$TAG" ]; then
+            echo "Tag $TAG, Cargo.toml $version: they must agree."
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\] " CHANGELOG.md; then
+            echo "CHANGELOG.md has no section for $version."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-features --locked
+
+  build:
+    name: Build ${{ matrix.asset }}
+    needs: check
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset: fs-inventory-linux-amd64
+            target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - asset: fs-inventory-linux-arm64
+            target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          - asset: fs-inventory-darwin-arm64
+            target: aarch64-apple-darwin
+            os: macos-latest
+          - asset: fs-inventory-darwin-amd64
+            target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+      - run: rustup toolchain install
+      - run: rustup target add ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Check the binary
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          bin=target/${{ matrix.target }}/release/fs-inventory
+          file "$bin"
+          if [ "${{ runner.os }}" = Linux ]; then
+            file "$bin" | grep -Eq 'statically linked|static-pie linked'
+          fi
+          # The Intel macOS binary can't run on the Apple silicon runner.
+          if [ "${{ matrix.target }}" = x86_64-apple-darwin ]; then
+            file "$bin" | grep -q x86_64
+          else
+            test "$("$bin" --version)" = "fs-inventory $VERSION"
+          fi
+          mkdir dist
+          cp "$bin" dist/${{ matrix.asset }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: Draft the release
+    needs: [check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          # Every tag, to find the previous release.
+          fetch-depth: 0
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: fs-inventory-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: cd dist && sha256sum fs-inventory-* > SHA256SUMS && cat SHA256SUMS
+      - name: Draft the release, or add the binaries to an existing one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          # The version's section of CHANGELOG.md. Relative links point into the repository;
+          # on a release page they would resolve against the release URL, so they become links
+          # to the tagged files.
+          awk -v heading="## [$VERSION] " 'index($0, heading) == 1 { found = 1; next } /^## \[/ && found { exit } found' CHANGELOG.md |
+            sed -E "s|\]\(([^):#]+)(#[^)]*)?\)|](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/\1\2)|g" > notes.md
+          # The release just before this one, by version.
+          previous="$(git tag --list 'v*' --sort=v:refname | awk -v tag="$TAG" '$0 == tag { print prev; exit } { prev = $0 }')"
+          if [ -n "$previous" ]; then
+            printf '\n**Full changelog:** [%s...%s](https://github.com/%s/compare/%s...%s)\n' \
+              "$previous" "$TAG" "$GITHUB_REPOSITORY" "$previous" "$TAG" >> notes.md
+          fi
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* --draft --verify-tag --title "fs-inventory $VERSION" --notes-file notes.md
+          fi
