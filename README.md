@@ -13,8 +13,9 @@ A high-performance, crash-resilient file system inventory tool and Rust library.
 - **Lossless names:** every name is kept byte for byte. Text columns are always valid UTF-8; when a name isn't valid UTF-8, or contains control characters, its exact bytes are kept as well. `name_flags` marks names that will cause trouble (legacy encodings, control characters, Windows-reserved names, and so on).
 - **Never stops on errors:** an unreadable directory or vanished file is recorded in an errors table and the crawl continues. A thread stuck on a hung NFS server is reported, and with `--stall-timeout` the scan gives up on that directory and finishes the rest.
 - **Bounded memory:** directories waiting to be read spill to a temporary file beyond a budget (`--max-memory`), so huge trees don't exhaust memory.
+- **Any format, any time:** scans write Parquet, CSV, or JSON Lines, and `convert` turns a Parquet scan into either text format later, exactly as a text scan would have written it.
 - **Heat-map ready:** `rollup` adds per-directory totals over whole subtrees and file counts by age, so dashboards read a small table instead of every file.
-- **Read-only:** never follows symlinks, never reads file contents, doesn't trigger automounts, and on Linux doesn't update directory access times when it has permission.
+- **Read-only:** never follows symlinks (`--symlink-targets` records where they point), never reads file contents, doesn't trigger automounts, and on Linux doesn't update directory access times when it has permission.
 - **Paths of any length:** paths longer than the 4,096-byte system limit are opened one directory at a time.
 - **Safe output:** part files appear only once complete and synced to disk, and Ctrl-C finishes the directories in progress and writes the manifest before exiting.
 - **Resumable:** a scan takes a checkpoint every 10 minutes. After Ctrl-C, `kill -9`, or a crash, `fs-inventory resume` continues it, and the result matches an uninterrupted scan, with every row exactly once.

@@ -113,6 +113,7 @@ The walker only uses the `Backend` trait (`crates/fs-inventory-core/src/backend/
 | `dir_stat` | Stat an open directory (for the replaced-directory check) |
 | `read_names` | Append the next batch of names, never `.` or `..` |
 | `stat_at` | Stat a name relative to an open directory, without following symlinks or triggering automounts |
+| `read_link_at` | Read a symlink's target relative to an open directory (`readlinkat`), for `--symlink-targets` |
 
 An open directory (`Backend::Dir`) must be shareable across threads, because huge directories are stat'ed by several workers at once. Tests wrap the native backend to inject failures, trace calls, or hang (section 9), and scale tests replace it with a generated tree (section 3.4).
 
@@ -348,13 +349,13 @@ Each directory row carries totals for its immediate children. `rollup` (`crates/
    - Then, deepest first, each directory's totals and histograms are added into its parent.
 3. **Paths:** `dir_id`, `parent_id`, `depth`, `path`, `path_raw`. The `rollup` rows are written in this pass, then `rollup_ages` rows for each slot.
 
-Memory grows with the number of directories, not files: about 100 bytes per directory. The tables are written with the same part writer and commit protocol into `.rollup-staging/`. They replace any previous `rollup/` and `rollup_ages/` only once both are complete. A `rollup` section is then added to the manifest, written atomically. It records the bucket labels, reference time, depth, directory count, incomplete directories, unattached rows, and parts. `rollup` refuses CSV and JSON Lines scans, scans made with `--columns` that leave out a column it needs, and other schema versions.
+Memory grows with the number of directories, not files: about 100 bytes per directory. The tables are written with the same part writer and commit protocol into `.rollup-staging/`. They replace any previous `rollup/` and `rollup_ages/` only once both are complete. A `rollup` section is then added to the manifest, written atomically. It records the bucket labels, reference time, depth, directory count, incomplete directories, unattached rows, and parts. `rollup` refuses CSV and JSON Lines scans, scans made with `--columns` that leave out a column it needs, and schema versions it can't read.
 
 ### 7.2 `verify`
 
 `verify` (`crates/fs-inventory/src/verify.rs`) checks a scan before anything ingests it:
 
-- The manifest can be read and has the schema version this build reads.
+- The manifest can be read and has a schema version this build reads: the current one or an older one it understands (`readable_schema` in `fs-inventory-core`).
 - The status is `complete`.
 - Every listed part exists and has the size the manifest records.
 - Every part has the row count the manifest records. For Parquet that comes from the footer. For text it comes from counting lines, after decompressing if needed, except CSV written with `--csv-raw-controls`, whose records can span lines.
@@ -366,11 +367,21 @@ The rollup tables are checked the same way when present. `verify` exits 0 when e
 
 ### 7.3 `schema` and the DuckDB macros
 
-`fs-inventory schema` prints the schema as DuckDB SQL, JSON, or Markdown from the same column definitions the writers use. `docs/schema.md` is that Markdown. Unit tests in `output/schema.rs` fail if `docs/schema.md` is out of date, or if the column lists in the CSV and JSON Lines macros in `sql/fs_inventory.sql` differ from the schema. Another test checks that only `dev`, `ino`, and `rdev` are unsigned.
+`fs-inventory schema` prints the schema as DuckDB SQL, JSON, or Markdown from the same column definitions the writers use. The schema version changes when columns are added or change. Version 3 added `symlink_target` and `symlink_target_raw` at the end of the entries table, so the CSV macro reads version 2 scans too, filling the missing trailing columns with null (`null_padding`). `verify`, `rollup`, and `convert` read versions 2 and 3; `resume` needs the version it writes, so a resumed scan's parts all match. `docs/schema.md` is that Markdown. Unit tests in `output/schema.rs` fail if `docs/schema.md` is out of date, or if the column lists in the CSV and JSON Lines macros in `sql/fs_inventory.sql` differ from the schema. Another test checks that only `dev`, `ino`, and `rdev` are unsigned.
 
 ### 7.4 `probe`
 
 `probe` (`crates/fs-inventory/src/probe.rs`) runs the real walker with a sink that discards rows, once per thread count. A timer thread sets the stop flag after `--duration`. It reports entries per second for each count and suggests the smallest thread count within 90% of the best rate. On Linux, `--drop-caches` (root only) syncs and drops the page, dentry, and inode caches before each run, so later runs don't read metadata cached by earlier ones.
+
+### 7.5 `convert`
+
+`convert` (`crates/fs-inventory/src/convert.rs`) re-exports a Parquet scan as CSV or JSON Lines. Rather than formatting Arrow values itself, it turns each Parquet row back into the walker's `Entry` and hands it to the same `Encoder` a text scan uses, so the output equals what that scan would have written. The integration tests check this byte for byte, for every encoding option.
+
+- **Exact bytes:** a row's path bytes are `path_raw` when set, else the `path` text (which equals the bytes then). The parent path and name are split from those bytes with the walker's own functions, and symlink targets come from `symlink_target_raw` the same way.
+- **Settings:** fields, column selection, raw-path and control-character rules, time unit, and time format come from the manifest's `options`. A `time_flags` bit set in the Parquet scan (a time clamped to the nanosecond range) is kept.
+- **Missing columns:** scans made with `--columns` lack some columns; their values are left empty, and an entry's type comes from `kind` when `mode` is missing. `path` is required.
+- **Errors:** each `error` value is `op: detail`, which an `ErrorInfo` without an errno renders back exactly.
+- **Parallelism:** up to 8 threads convert part files, each writing its own output parts through `PartWriter`; streaming to stdout converts in order on one thread.
 
 ## 8. Performance notes
 

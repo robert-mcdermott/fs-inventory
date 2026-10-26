@@ -441,6 +441,12 @@ fs-inventory scan /data/projects -o /scratch/inventory/projects-csv -f csv --com
 
 Text output is several times larger than Parquet and slower to query. Parquet with zstd takes about 25 bytes per entry; a billion-entry scan is about 25 GB.
 
+To get text from a Parquet scan you already have, convert it instead of scanning again ([5.7](#57-convert)):
+
+```bash
+fs-inventory convert /scratch/inventory/projects-2026-10-25 --to csv -o /scratch/inventory/projects-csv --compression zstd
+```
+
 ### 4.12 Interrupted, crashed, and stalled scans
 
 **Every scan into a directory takes checkpoints,** every 10 minutes by default (`--checkpoint-interval`). A checkpoint pauses the crawl for a moment, makes every row written so far durable, and records the directories still to read, in `checkpoint/` inside the scan directory. That directory is removed when the scan finishes.
@@ -488,7 +494,7 @@ The rows of every directory the stuck thread finished before it got stuck are st
 
 - **Run as a user who can read the whole tree** (often root) for a complete inventory. Directories the user can't read are recorded with `error` set to `open: EACCES` and an `errors` row, and everything else is still scanned.
 - **Read-only:** fs-inventory never opens files, only directories, so file access times don't change. On Linux it opens directories with `O_NOATIME` when allowed (the owner, or root), so directory access times don't change either.
-- **No symlinks are followed.** A symlink gets its own row; its `size` is the length of the target path.
+- **No symlinks are followed.** A symlink gets its own row; its `size` is the length of the target path. With `--symlink-targets`, `symlink_target` records where it points, at the cost of one more call per symlink.
 - **No automounts are triggered,** and other file systems aren't entered without `--cross-mounts`.
 
 ---
@@ -502,6 +508,7 @@ fs-inventory rollup   SCAN_DIR           Add subtree totals and age histograms t
 fs-inventory schema                      Print the inventory schema
 fs-inventory probe    PATH               Time crawls at several thread counts
 fs-inventory resume   SCAN_DIR           Continue an interrupted scan from its checkpoint
+fs-inventory convert  SCAN_DIR --to F    Re-export a Parquet scan as CSV or JSON Lines
 ```
 
 `fs-inventory COMMAND --help` lists every option. Sizes accept `K`, `M`, `G`, `T` (or `KiB`, `MiB`, `GiB`, `TiB`) for powers of 1024 and `KB`, `MB`, `GB`, `TB` for powers of 1000, such as `512MiB`. Durations accept forms such as `30s`, `10m`, `1h 30m`, `7d`, and `1y`.
@@ -545,6 +552,7 @@ Roots are made absolute (relative paths are taken from the current directory) an
 |---|---|---|
 | `--fields LIST` | all | Optional metadata to read; see [4.3](#43-fast-namespace-only-scans-on-lustre) |
 | `--statx-dont-sync` | off | Linux: accept cached attributes on network file systems (faster, possibly stale) |
+| `--symlink-targets` | off | Record where each symlink points in `symlink_target` (one more call per symlink) |
 
 **Encoding**
 
@@ -655,6 +663,27 @@ Continues a scan from its last checkpoint; see [4.12](#412-interrupted-crashed-a
 
 `resume` exits like `scan` ([exit codes](#exit-codes)). A scan that's already complete, or finished except for stalled directories, has nothing to resume: `resume` says so and exits with code 0. It exits with code 2 if the scan has no checkpoint (it was run with `--checkpoint-interval 0`), or if another fs-inventory process is still writing the scan.
 
+### 5.7 convert
+
+```
+fs-inventory convert [OPTIONS] --to <csv|jsonl> --output <DIR|-> <SCAN_DIR>
+```
+
+Re-exports a Parquet scan as CSV or JSON Lines, for tools that only read text. The result is what the same scan would have written in that format: the same columns, escaping, `path_b64` exact bytes, and time formatting, taken from the scan's own settings (`--columns`, `--fields`, `--raw-paths`, `--csv-raw-controls`, `--time-unit`, and `--time-format`).
+
+| Option | Effect |
+|---|---|
+| `--to csv\|jsonl` | Target format |
+| `-o, --output DIR\|-` | A new or empty directory, laid out like a scan with its own manifest, or `-` to stream entries to stdout (errors go to stderr, as for `scan -o -`) |
+| `--compression CODEC` | `zstd`, `zstd:LEVEL`, `gzip`, `gzip:LEVEL`, or `none` (the default) |
+
+- **Both tables:** `entries` and `errors` are converted; `rollup` tables aren't.
+- **The manifest** is the scan's own, with the new format, columns, and parts, and a `converted_from` record of the source directory, its schema version, and when it was converted. `verify` checks the result like any scan.
+- **Older scans:** scans written with schema version 2 (fs-inventory 0.5.0 and earlier) convert too, and get the symlink target columns, empty.
+- **Unfinished scans:** a scan that's still `running` is refused; resume or finish it first. An `interrupted` or `incomplete` scan converts with that status.
+
+It exits with code 0 when done, 2 for a usage problem (not a Parquet scan, a non-empty output directory), and 4 if writing fails.
+
 ---
 
 ## 6. Output reference
@@ -704,7 +733,7 @@ Parquet files use zstd compression, row groups of up to 1,048,576 rows or 128 Mi
 | Control characters (newline, tab, ...) | As is | JSON escapes (`\n`) | `\n`, `\t`, `\r`, or `\xNN`; as is with `--csv-raw-controls` |
 | Not valid UTF-8 | Each bad byte as `\xNN` | Each bad byte as `\xNN` | Each bad byte as `\xNN` |
 
-Whenever the text differs from the exact bytes, those bytes are also stored: in `path_raw` in Parquet, and base64-encoded in `path_b64` in CSV and JSON Lines. In every format, `coalesce(path_raw, encode(path))` is the exact path (the text macros decode `path_b64` into `path_raw` for you). With `--raw-paths always`, every row gets the exact bytes. For example, a name with a newline in CSV:
+Whenever the text differs from the exact bytes, those bytes are also stored: in `path_raw` in Parquet, and base64-encoded in `path_b64` in CSV and JSON Lines. Symlink targets (`--symlink-targets`) follow the same rules, in `symlink_target` with `symlink_target_raw` or `symlink_target_b64`. In every format, `coalesce(path_raw, encode(path))` is the exact path (the text macros decode `path_b64` into `path_raw` for you). With `--raw-paths always`, every row gets the exact bytes. For example, a name with a newline in CSV:
 
 ```
 path,path_b64
@@ -770,7 +799,7 @@ Entries deleted between being listed and being read are counted as *vanished* in
   "rollup": { "age_buckets": ["future", "<30d", "...", ">=10y"], "age_depth": 4, "...": "..." },
   "roots": [ { "path": "/data/projects", "path_b64": null } ],
   "scan_id": "01a1758c-51da-709d-bafb-c8feaa458bf3",
-  "schema_version": 2,
+  "schema_version": 3,
   "stalled": [],
   "started_at": "2026-10-26T00:11:32.698582Z",
   "status": "complete",
@@ -803,6 +832,7 @@ Entries deleted between being listed and being read are counted as *vanished* in
 | `errors_by_kind` | Error counts by operation and error number |
 | `stalled` | Directories given up on with `--stall-timeout` |
 | `rollup` | Added by `rollup`: buckets, depth, reference time, and its part files |
+| `converted_from` | Added by `convert`: the source scan directory, its format and schema version, when it was converted, and the fs-inventory version that converted it |
 | `resumes` | Each resume: when it started, when the checkpoint it continued from was taken, and the fs-inventory version. Absent if the scan was never resumed. |
 
 | Status | Meaning | Exit code |
@@ -1368,7 +1398,7 @@ Each checkpoint pauses the crawl while every thread finishes the directory it's 
 
 **`size` is null**: the scan was run with `--fields` leaving size out. The manifest's `options.fields` lists what was read.
 
-**`verify` says `schema version is 1`**: the scan was written by a build before schema version 2 (which made integer columns signed). Scan again with this release.
+**`verify` says `schema version is 1`**: the scan was written by a build before schema version 2 (which made integer columns signed). Scan again with this release. Schema version 2 scans (fs-inventory 0.5.0 and earlier) still work with `verify`, `rollup`, and `convert`; they lack only the symlink target columns.
 
 **`scan status is running`**: the scan is still going, or the process was killed (`kill -9`, out of memory, power loss). In the second case, run `fs-inventory resume` on it ([4.12](#412-interrupted-crashed-and-stalled-scans)).
 
@@ -1380,18 +1410,16 @@ Each checkpoint pauses the crawl while every thread finishes the directory it's 
 
 **The scan stops making progress**: look for `stalled` in the progress output. A hung NFS server blocks its thread until the server returns. Use `--stall-timeout` so the scan gives up on that directory and finishes ([4.12](#412-interrupted-crashed-and-stalled-scans)).
 
-**`--resolve-ids is not implemented yet`** (or `--symlink-targets`): these options are planned; see below.
+**`--resolve-ids is not implemented yet`**: this option is planned; see below.
 
 ---
 
 ## 10. Not yet available
 
-These appear in `--help` but aren't implemented in 0.5.0. Using them prints `not implemented yet` and exits with code 4 (commands) or 2 (options).
+This appears in `--help` but isn't implemented yet. Using it prints `not implemented yet` and exits with code 2.
 
 | Feature | What it will do | Planned |
 |---|---|---|
-| `fs-inventory convert` | Re-export a Parquet scan as CSV or JSON Lines | Milestone M5 |
-| `--symlink-targets` | Record where each symlink points | Milestone M5 |
 | `--resolve-ids` | Write `users` and `groups` tables that map user and group IDs to names, looked up once per ID when the scan ends (off by default) | Milestone M5 |
 
-Until `--resolve-ids` arrives, join user names in DuckDB ([7.5](#75-recipes)). Until `convert` arrives, DuckDB can export any scan: `COPY (SELECT * FROM fs_entries('...')) TO 'entries.csv' (HEADER)`.
+Until `--resolve-ids` arrives, join user names in DuckDB ([7.5](#75-recipes)).

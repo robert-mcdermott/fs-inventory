@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- `fs-inventory convert` re-exports a Parquet scan as CSV or JSON Lines, into a new scan directory or to stdout, with optional zstd or gzip compression. The output equals what the scan would have written in that format, using the scan's own column, encoding, and time settings. Older (schema version 2) scans convert too.
+- `--symlink-targets` records where each symlink points, in a new `symlink_target` column, with the exact bytes in `symlink_target_raw` (`symlink_target_b64` in text) when the target isn't plain UTF-8. It costs one more call per symlink, and a failed read is recorded in the errors table as `readlink`.
+
+### Changed
+
+- Schema version 3: the entries table gains `symlink_target` and `symlink_target_raw`, at the end, so the CSV and JSON Lines macros read version 2 scans too. `verify`, `rollup`, and `convert` accept version 2 scans; `resume` continues only scans of the current version.
+
 ## [0.5.0] - 2026-10-26
 
 Release binaries and an installer, a documentation website, scale tests up to a billion entries, and a `--max-memory` that budgets the whole scan.
