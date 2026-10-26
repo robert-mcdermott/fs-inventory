@@ -237,6 +237,14 @@ Its `status` is one of:
 
 Exit codes follow from the status: 0 for complete without errors, 1 for complete with errors, 2 for invalid usage, 3 for interrupted or incomplete, and 4 for fatal (`crates/fs-inventory/src/exit.rs`).
 
+### 5.7 User and group names
+
+With `--resolve-ids`, `crates/fs-inventory/src/ids.rs` adds two small tables, `users` and `groups`:
+
+- **Collecting:** each sink keeps an `IdCollector`, a set of the user and group IDs of its rows. Entries in a directory usually share an owner, so the collector skips a pair equal to the last one with a single comparison. A checkpoint merges every sink's IDs, with those of earlier runs, into its header, so a resumed scan's tables cover the whole scan.
+- **Looking up:** once the scan finishes (complete or incomplete, not interrupted), each unique ID is looked up once. `getent passwd` and `getent group` take up to 1,000 IDs per call and print the ones that exist; through the host's name service switch they reach LDAP, sssd, and NIS, which the static binary can't load itself. Where there's no `getent` (macOS), `dscacheutil` answers one ID per call through Directory Services. Each command gets 60 seconds; one that times out or fails leaves names null with a warning.
+- **Writing:** the tables use the scan's format and part writers, one part each, before the checkpoint is removed, so a scan killed during a slow lookup can still be resumed. The manifest lists their parts and an `ids` summary, `verify` checks them, and `convert` converts them.
+
 ## 6. Robustness
 
 ### 6.1 Errors and vanished entries

@@ -14,6 +14,7 @@ A high-performance, crash-resilient file system inventory tool and Rust library.
 - **Never stops on errors:** an unreadable directory or vanished file is recorded in an errors table and the crawl continues. A thread stuck on a hung NFS server is reported, and with `--stall-timeout` the scan gives up on that directory and finishes the rest.
 - **Bounded memory:** directories waiting to be read spill to a temporary file beyond a budget (`--max-memory`), so huge trees don't exhaust memory.
 - **Any format, any time:** scans write Parquet, CSV, or JSON Lines, and `convert` turns a Parquet scan into either text format later, exactly as a text scan would have written it.
+- **Owner names:** `--resolve-ids` adds tables of user and group names, looked up once per ID when the scan finishes, through LDAP and sssd too, so dashboards show names and deleted accounts stand out.
 - **Heat-map ready:** `rollup` adds per-directory totals over whole subtrees and file counts by age, so dashboards read a small table instead of every file.
 - **Read-only:** never follows symlinks (`--symlink-targets` records where they point), never reads file contents, doesn't trigger automounts, and on Linux doesn't update directory access times when it has permission.
 - **Paths of any length:** paths longer than the 4,096-byte system limit are opened one directory at a time.

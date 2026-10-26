@@ -19,7 +19,6 @@ Related documents:
 7. [Querying scans with DuckDB](#7-querying-scans-with-duckdb)
 8. [Performance tuning](#8-performance-tuning)
 9. [Troubleshooting](#9-troubleshooting)
-10. [Not yet available](#10-not-yet-available)
 
 ---
 
@@ -497,6 +496,23 @@ The rows of every directory the stuck thread finished before it got stuck are st
 - **No symlinks are followed.** A symlink gets its own row; its `size` is the length of the target path. With `--symlink-targets`, `symlink_target` records where it points, at the cost of one more call per symlink.
 - **No automounts are triggered,** and other file systems aren't entered without `--cross-mounts`.
 
+### 4.14 User and group names
+
+Entries record numeric user and group IDs. To have names too, add `--resolve-ids`:
+
+```bash
+fs-inventory scan /data/projects -o /scratch/inventory/projects-2026-10-25 --resolve-ids
+```
+
+The scan directory then has two more tables, in the scan's format: `users`, with a `uid` and `name` for every user ID in `entries`, and `groups`, with a `gid` and `name` for every group ID. An ID with no account on the scanning host, such as a deleted user's, gets a null name.
+
+- **Looked up once per ID.** Each crawl thread notes the IDs it sees, at almost no cost, and the names are looked up once the scan finishes: thousands of IDs take seconds, however many files they own. On Linux this uses `getent`, which asks every source the host is configured for (local files, LDAP, sssd, NIS), so it works from the static binary. On macOS it uses `dscacheutil`.
+- **Names as the scanning host sees them,** when the scan finishes. Run the scan on a host that has the same accounts as the file system's users.
+- **Interrupted scans** get their tables when they're resumed to completion; checkpoints keep the IDs seen so far. A lookup that gets no answer within a minute (a directory server that's down) is given up on, with a warning, and leaves those names null.
+- **Not with `-o -`,** since the tables need a directory.
+
+`fs_entries_named` in the DuckDB macros adds `user_name` and `group_name` to every entry ([7.5](#75-recipes)), and the manifest's `ids` section counts the IDs and those without names.
+
 ---
 
 ## 5. Command reference
@@ -553,6 +569,7 @@ Roots are made absolute (relative paths are taken from the current directory) an
 | `--fields LIST` | all | Optional metadata to read; see [4.3](#43-fast-namespace-only-scans-on-lustre) |
 | `--statx-dont-sync` | off | Linux: accept cached attributes on network file systems (faster, possibly stale) |
 | `--symlink-targets` | off | Record where each symlink points in `symlink_target` (one more call per symlink) |
+| `--resolve-ids` | off | Write `users` and `groups` tables of the scan's IDs and their names, looked up when the scan finishes; see [4.14](#414-user-and-group-names) |
 
 **Encoding**
 
@@ -832,6 +849,7 @@ Entries deleted between being listed and being read are counted as *vanished* in
 | `errors_by_kind` | Error counts by operation and error number |
 | `stalled` | Directories given up on with `--stall-timeout` |
 | `rollup` | Added by `rollup`: buckets, depth, reference time, and its part files |
+| `ids` | With `--resolve-ids`: how many user and group IDs the scan saw, how many had no name, and the command that looked them up (`getent` or `dscacheutil`) |
 | `converted_from` | Added by `convert`: the source scan directory, its format and schema version, when it was converted, and the fs-inventory version that converted it |
 | `resumes` | Each resume: when it started, when the checkpoint it continued from was taken, and the fs-inventory version. Absent if the scan was never resumed. |
 
@@ -900,10 +918,12 @@ SELECT count(*) FROM read_parquet('/scratch/inventory/projects-2026-10-25/entrie
 |---|---|
 | `fs_entries(scan_dir)` | The `entries` table of a Parquet scan |
 | `fs_errors(scan_dir)` | The `errors` table of a Parquet scan. It fails with "No files found" if the scan had no errors. |
+| `fs_users(scan_dir)`, `fs_groups(scan_dir)` | The `users` and `groups` tables of a Parquet scan made with `--resolve-ids` |
+| `fs_entries_named(scan_dir)` | `fs_entries` plus `user_name` and `group_name`, for a Parquet scan made with `--resolve-ids` |
 | `fs_rollup(scan_dir)` | Subtree totals, after `fs-inventory rollup` |
 | `fs_rollup_ages(scan_dir)` | Age histograms, after `fs-inventory rollup` |
-| `fs_entries_csv(scan_dir)`, `fs_errors_csv(scan_dir)` | CSV scans, compressed or not |
-| `fs_entries_jsonl(scan_dir)`, `fs_errors_jsonl(scan_dir)` | JSON Lines scans, compressed or not |
+| `fs_entries_csv(scan_dir)`, `fs_errors_csv(scan_dir)`, `fs_users_csv(scan_dir)`, `fs_groups_csv(scan_dir)` | CSV scans, compressed or not |
+| `fs_entries_jsonl(scan_dir)`, `fs_errors_jsonl(scan_dir)`, `fs_users_jsonl(scan_dir)`, `fs_groups_jsonl(scan_dir)` | JSON Lines scans, compressed or not |
 | `fs_name_flags(flags)` | Not a table: turns a `name_flags` value into a list of flag names |
 
 The CSV and JSON Lines macros give every column's type explicitly, instead of letting DuckDB guess from a sample of rows. A guess can go wrong; a column of numeric-looking file names would be read as numbers, for example. They also add `path_raw`, decoded from `path_b64`, so queries work the same in every format. They need every column, so for text scans written with `--columns`, use `read_csv` or `read_json` with your own column list.
@@ -1060,20 +1080,13 @@ FROM fs_entries(getvariable('scan')) WHERE kind = 'file' GROUP BY year ORDER BY 
 └───────┴───────┴───────────┘
 ```
 
-**Usage by owner, with user names.** Scans record numeric user IDs. To show names, save the system's user list on a machine that sees the same accounts, and join it:
-
-```bash
-getent passwd > /scratch/inventory/passwd.txt
-```
+**Usage by owner, with user names.** For a scan made with `--resolve-ids` ([4.14](#414-user-and-group-names)), `fs_entries_named` has the names:
 
 ```sql
-SELECT coalesce(u.user, e.uid::VARCHAR) AS owner, count(*) AS files,
-       format_bytes(sum(e.size)::BIGINT) AS size, format_bytes(sum(e.alloc_bytes)::BIGINT) AS on_disk
-FROM fs_entries(getvariable('scan')) e
-LEFT JOIN read_csv('/scratch/inventory/passwd.txt', delim = ':', header = false, quote = '',
-    columns = {'user': 'VARCHAR', 'password': 'VARCHAR', 'uid': 'BIGINT', 'gid': 'BIGINT',
-               'gecos': 'VARCHAR', 'home': 'VARCHAR', 'shell': 'VARCHAR'}) u USING (uid)
-WHERE e.kind = 'file' GROUP BY ALL ORDER BY sum(e.size) DESC;
+SELECT coalesce(user_name, uid::VARCHAR) AS owner, count(*) AS files,
+       format_bytes(sum(size)::BIGINT) AS size, format_bytes(sum(alloc_bytes)::BIGINT) AS on_disk
+FROM fs_entries_named(getvariable('scan'))
+WHERE kind = 'file' GROUP BY ALL ORDER BY sum(size) DESC;
 ```
 
 ```
@@ -1088,7 +1101,32 @@ WHERE e.kind = 'file' GROUP BY ALL ORDER BY sum(e.size) DESC;
 └─────────┴───────┴───────────┴───────────┘
 ```
 
-Users whose IDs aren't in the list (deleted accounts, for example) show as their number. Groups work the same way with `getent group`.
+Users whose IDs have no account (deleted accounts, for example) show as their number. For a scan made without `--resolve-ids`, save the user list on a host that sees the same accounts, and join it instead:
+
+```bash
+getent passwd > /scratch/inventory/passwd.txt
+```
+
+```sql
+SELECT coalesce(u.user, e.uid::VARCHAR) AS owner, count(*) AS files,
+       format_bytes(sum(e.size)::BIGINT) AS size
+FROM fs_entries(getvariable('scan')) e
+LEFT JOIN read_csv('/scratch/inventory/passwd.txt', delim = ':', header = false, quote = '',
+    columns = {'user': 'VARCHAR', 'password': 'VARCHAR', 'uid': 'BIGINT', 'gid': 'BIGINT',
+               'gecos': 'VARCHAR', 'home': 'VARCHAR', 'shell': 'VARCHAR'}) u USING (uid)
+WHERE e.kind = 'file' GROUP BY ALL ORDER BY sum(e.size) DESC;
+```
+
+Groups work the same way, with `getent group`.
+
+**Files of deleted accounts.** With `--resolve-ids`, an owner with no name has no account on the scanning host:
+
+```sql
+SELECT e.uid, count(*) AS files, format_bytes(sum(e.size)::BIGINT) AS size
+FROM fs_entries(getvariable('scan')) e JOIN fs_users(getvariable('scan')) u USING (uid)
+WHERE u.name IS NULL AND e.kind = 'file'
+GROUP BY ALL ORDER BY sum(e.size) DESC;
+```
 
 **Who changed the most data recently.** Use `ctime`, because copies and restores preserve `mtime` but can't set `ctime`:
 
@@ -1410,16 +1448,5 @@ Each checkpoint pauses the crawl while every thread finishes the directory it's 
 
 **The scan stops making progress**: look for `stalled` in the progress output. A hung NFS server blocks its thread until the server returns. Use `--stall-timeout` so the scan gives up on that directory and finishes ([4.12](#412-interrupted-crashed-and-stalled-scans)).
 
-**`--resolve-ids is not implemented yet`**: this option is planned; see below.
+**`cannot look up passwd names`** (or `group`): with `--resolve-ids`, neither `getent` nor `dscacheutil` could be run, or a directory server didn't answer within a minute. The `users` and `groups` tables still list every ID, with null names.
 
----
-
-## 10. Not yet available
-
-This appears in `--help` but isn't implemented yet. Using it prints `not implemented yet` and exits with code 2.
-
-| Feature | What it will do | Planned |
-|---|---|---|
-| `--resolve-ids` | Write `users` and `groups` tables that map user and group IDs to names, looked up once per ID when the scan ends (off by default) | Milestone M5 |
-
-Until `--resolve-ids` arrives, join user names in DuckDB ([7.5](#75-recipes)).

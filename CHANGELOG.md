@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file. The format foll
 ### Added
 
 - `fs-inventory convert` re-exports a Parquet scan as CSV or JSON Lines, into a new scan directory or to stdout, with optional zstd or gzip compression. The output equals what the scan would have written in that format, using the scan's own column, encoding, and time settings. Older (schema version 2) scans convert too.
+- `--resolve-ids` writes `users` and `groups` tables with the name of every user and group ID in a scan (null for IDs with no account, such as deleted users). Crawl threads collect the IDs as they go, and each is looked up once when the scan finishes: with `getent` on Linux, which reaches LDAP, sssd, and NIS even from the static binary, and `dscacheutil` on macOS. Checkpoints keep the IDs, so resumed scans get complete tables. New DuckDB macros: `fs_users`, `fs_groups`, and `fs_entries_named`, which adds `user_name` and `group_name` to every entry.
 - `--symlink-targets` records where each symlink points, in a new `symlink_target` column, with the exact bytes in `symlink_target_raw` (`symlink_target_b64` in text) when the target isn't plain UTF-8. It costs one more call per symlink, and a failed read is recorded in the errors table as `readlink`.
 
 ### Changed
