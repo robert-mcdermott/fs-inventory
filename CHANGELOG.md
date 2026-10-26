@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-26
+
+Compare two scans with the `fs_diff` DuckDB macros, much faster scans of very deep trees, and directories deleted while they're read counted as vanished instead of as errors. New tests check the output against GNU `find`, scans of a tree that changes throughout, random names through every text encoder, and trees 2,000 levels deep or with a million entries in one directory.
+
+From 1.0 on, the command line, the output tables and their columns, the manifest, and the DuckDB macros follow semantic versioning: 1.x releases can add options, columns (at the end of a table, with a new `schema_version`), and macros, but won't remove or rename them.
+
+### Added
+
+- `fs_diff` and `fs_diff_summary` DuckDB macros compare two Parquet scans of the same roots: one row per added, removed, or changed entry, with the columns that changed and the rows before and after, or the counts and net size change by kind. Entries are matched by their exact path bytes; `atime` and `dev` are ignored unless `ignore := []` is given. They work on version 2 scans too.
+
+### Changed
+
+- `convert` takes its output format with `-f`/`--format`, like `scan`. `--to`, its name in 0.6.0, still works.
+
+### Fixed
+
+- Directories whose paths are longer than `PATH_MAX` (4,096 bytes on Linux, 1,024 on macOS) are opened in a few calls instead of one call per path component. Opening every directory of a 2,000-level tree took millions of calls: scanning one on macOS went from 7.5 minutes to 6 seconds.
+- A directory deleted while it was being read counts as vanished, like other deletions during a scan, instead of as a `readdir` error (Linux reports it as `ENOENT`). Busy file systems no longer end a scan with exit code 1 for routine churn.
+
 ## [0.6.0] - 2026-10-26
 
 Re-export Parquet scans as CSV or JSON Lines with `convert`, record symlink targets, and look up user and group names.
@@ -98,7 +117,8 @@ The first tagged release. Version numbers follow the milestones, so 0.3.0 comple
 - Writer threads start one at a time and are added, up to `--writers`, only when output backs up. Small scans now write one part file per table instead of one per CPU core.
 - Schema version 2: integer columns are now signed (`INTEGER` or `BIGINT`), so scans load into databases without unsigned types and DuckDB functions such as `format_bytes()` work without casts. Only `dev`, `ino`, and `rdev` stay unsigned (`UBIGINT`). Values above the signed maximum are capped, not wrapped. `verify` reports scans written with schema version 1.
 
-[Unreleased]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/robert-mcdermott/fs-inventory/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.6.0...v1.0.0
 [0.6.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.3.0...v0.4.0

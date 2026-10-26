@@ -297,15 +297,15 @@ pub struct ScanDirArgs {
 }
 
 #[derive(Debug, Args)]
-#[allow(dead_code, reason = "consumed when convert is implemented")]
 pub struct ConvertArgs {
     /// Scan output directory (Parquet).
     #[arg(value_name = "SCAN_DIR")]
     pub scan_dir: PathBuf,
 
-    /// Target format.
-    #[arg(long, value_enum)]
-    pub to: TextFormat,
+    /// Output format.
+    // `--to`, its name before 1.0, still works but isn't shown.
+    #[arg(short, long, value_enum, alias = "to")]
+    pub format: TextFormat,
 
     /// Output directory, or `-` for stdout.
     #[arg(short, long, value_name = "DIR|-")]

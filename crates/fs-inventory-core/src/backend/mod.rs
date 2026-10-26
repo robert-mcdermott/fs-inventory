@@ -171,26 +171,42 @@ fn open_path(path: &[u8], flags: OFlags) -> Result<OwnedFd, Errno> {
     }
 }
 
-/// Opens a path too long for a single `open` by walking it one component at
-/// a time with `openat`. Like `open`, symlinks in leading components are
-/// followed; `flags` applies to the final component.
+/// The longest path `open` takes, counting the terminating NUL.
+#[cfg(target_os = "linux")]
+const PATH_MAX: usize = 4096;
+#[cfg(not(target_os = "linux"))]
+const PATH_MAX: usize = 1024;
+
+/// Opens a path too long for a single `open` in pieces of under `PATH_MAX`
+/// bytes, split at `/`, each opened relative to the one before: a few calls
+/// even 2,000 levels down, where opening one component at a time would take
+/// 2,000. Like `open`, symlinks in leading components are followed; `flags`
+/// applies to the final component.
 fn open_long_path(path: &[u8], flags: OFlags) -> Result<OwnedFd, Errno> {
     let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC;
-    let (start, rest): (&[u8], &[u8]) = match path.strip_prefix(b"/") {
+    let (start, mut rest): (&[u8], &[u8]) = match path.strip_prefix(b"/") {
         Some(rest) => (b"/", rest),
         None => (b".", path),
     };
     let mut fd = rustix::fs::open(start, dir_flags, Mode::empty())?;
-    let mut components = rest
-        .split(|&b| b == b'/')
-        .filter(|c| !c.is_empty())
-        .peekable();
-    while let Some(component) = components.next() {
-        let last = components.peek().is_none();
-        let component_flags = if last { flags } else { dir_flags };
-        fd = rustix::fs::openat(&fd, component, component_flags, Mode::empty())?;
+    loop {
+        // A leading `/` would make the piece absolute.
+        while let Some(r) = rest.strip_prefix(b"/") {
+            rest = r;
+        }
+        if rest.is_empty() {
+            return Ok(fd);
+        }
+        if rest.len() < PATH_MAX {
+            return rustix::fs::openat(&fd, rest, flags, Mode::empty());
+        }
+        let cut = rest[..PATH_MAX - 1]
+            .iter()
+            .rposition(|&b| b == b'/')
+            .ok_or(Errno::NAMETOOLONG)?;
+        fd = rustix::fs::openat(&fd, &rest[..cut], dir_flags, Mode::empty())?;
+        rest = &rest[cut..];
     }
-    Ok(fd)
 }
 
 #[cfg(test)]
@@ -248,5 +264,24 @@ mod tests {
             (actual.st_dev, actual.st_ino),
             (expected.st_dev, expected.st_ino)
         );
+        // Doubled and trailing slashes change nothing.
+        let mut slashes = path.clone();
+        let at = path[..2000].iter().rposition(|&b| b == b'/').unwrap();
+        slashes.splice(at..at, *b"//");
+        slashes.push(b'/');
+        let opened = DirOpener::new().open(&slashes, false).unwrap();
+        assert_eq!(rustix::fs::fstat(&opened).unwrap().st_ino, expected.st_ino);
+
+        // Symlinks are followed on the way, and at the end only if asked.
+        rustix::fs::symlinkat(".", &fd, "link").unwrap();
+        let mut link = path.clone();
+        link.extend_from_slice(b"/link");
+        assert!(DirOpener::new().open(&link, false).is_err());
+        let opened = DirOpener::new().open(&link, true).unwrap();
+        assert_eq!(rustix::fs::fstat(&opened).unwrap().st_ino, expected.st_ino);
+        let mut through = link.clone();
+        through.extend_from_slice(b"/link/link/");
+        let opened = DirOpener::new().open(&through, true).unwrap();
+        assert_eq!(rustix::fs::fstat(&opened).unwrap().st_ino, expected.st_ino);
     }
 }

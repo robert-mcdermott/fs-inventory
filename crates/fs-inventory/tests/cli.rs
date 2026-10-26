@@ -50,7 +50,7 @@ fn usage_errors_exit_2() {
 
 #[test]
 fn convert_reports_a_missing_scan() {
-    let out = fs_inventory(&["convert", "/nonexistent/scan", "--to", "csv", "-o", "-"]);
+    let out = fs_inventory(&["convert", "/nonexistent/scan", "--format", "csv", "-o", "-"]);
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("manifest"), "{stderr}");

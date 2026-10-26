@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains how fs-inventory 0.6.0 is built and why. It is for engineers who maintain or extend the code, and for administrators who want to know what the tool does to their file systems before they run it. For how to use it, see the [user guide](user-guide.md). For every column, see the [schema reference](schema.md). [PLAN.md](../PLAN.md) holds the original design and the roadmap; this document describes the code as it is.
+This document explains how fs-inventory 1.0.0 is built and why. It is for engineers who maintain or extend the code, and for administrators who want to know what the tool does to their file systems before they run it. For how to use it, see the [user guide](user-guide.md). For every column, see the [schema reference](schema.md). [PLAN.md](../PLAN.md) holds the original design and the roadmap; this document describes the code as it is.
 
 ## 1. Overview
 
@@ -133,7 +133,7 @@ An open directory (`Backend::Dir`) must be shareable across threads, because hug
 
 ### 3.3 Long paths
 
-Paths can exceed `PATH_MAX` (4,096 bytes), and `open` then fails with `ENAMETOOLONG`. `DirOpener` retries by walking the path one component at a time with `openat`, applying the caller's flags only to the final component. Paths are stored in full regardless of length, and `name_flags` marks them with `long_path`.
+Paths can exceed `PATH_MAX` (4,096 bytes on Linux, 1,024 on macOS), and `open` then fails with `ENAMETOOLONG`. `DirOpener` retries by splitting the path at `/` into pieces shorter than `PATH_MAX` and opening each with `openat` relative to the one before, applying the caller's flags only to the final piece. An 8,000-byte path takes two or three calls on Linux, rather than one per component, which made opening every directory of a 2,000-level tree cost millions of calls. Paths are stored in full regardless of length, and `name_flags` marks them with `long_path`.
 
 ### 3.4 Generated trees
 
@@ -250,6 +250,8 @@ With `--resolve-ids`, `crates/fs-inventory/src/ids.rs` adds two small tables, `u
 ### 6.1 Errors and vanished entries
 
 Per-entry failures go to the errors table, with the path, the failed operation (`open`, `readdir`, `stat`, `verify`, `stall`, or `internal`), the errno and its name, and a message. Directories that failed also carry the error in their own `entries` row. A revisit (`--detect-cycles`) isn't a failure: it appears only in the directory's own row, as `revisit: ...` in `error`, and in the manifest's `revisits` count. Workers keep their counts locally and add them to the shared counters once per directory. The manifest summarizes errors by operation and errno.
+
+Deletions aren't failures. An entry deleted between being listed and being stat'ed, or a directory deleted before it's opened, counts as vanished. So does a directory deleted while it's being read, which Linux reports as `ENOENT` from `getdents64`: a directory can only be deleted once it's empty, so nothing that remained unread is missing, and its row is written with the entries that were read. `tests/churn.rs` deletes, recreates, and renames files and directories throughout a scan and checks the output.
 
 ### 6.2 The stall watchdog
 
@@ -376,6 +378,8 @@ The rollup tables are checked the same way when present. `verify` exits 0 when e
 ### 7.3 `schema` and the DuckDB macros
 
 `fs-inventory schema` prints the schema as DuckDB SQL, JSON, or Markdown from the same column definitions the writers use. The schema version changes when columns are added or change. Version 3 added `symlink_target` and `symlink_target_raw` at the end of the entries table, so the CSV macro reads version 2 scans too, filling the missing trailing columns with null (`null_padding`). `verify`, `rollup`, and `convert` read versions 2 and 3; `resume` needs the version it writes, so a resumed scan's parts all match. `docs/schema.md` is that Markdown. Unit tests in `output/schema.rs` fail if `docs/schema.md` is out of date, or if the column lists in the CSV and JSON Lines macros in `sql/fs_inventory.sql` differ from the schema. Another test checks that only `dev`, `ino`, and `rdev` are unsigned.
+
+Comparing two scans is a macro too, not a subcommand. `fs_diff` joins the entries of two Parquet scans on their exact path bytes, `coalesce(path_raw, encode(path))`, with a full outer join, and lists the columns that differ for each entry in both; DuckDB runs the join in parallel and spills to disk when it doesn't fit in memory. It adds the symlink target columns to a version 2 scan, so scans of either version compare. `tests/diff.rs` scans a tree, changes it, scans it again, and checks that the diff holds exactly those changes; CI installs DuckDB on Linux so the macro tests run there.
 
 ### 7.4 `probe`
 

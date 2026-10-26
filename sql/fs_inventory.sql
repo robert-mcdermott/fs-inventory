@@ -226,6 +226,83 @@ SELECT * FROM read_json(
     }
 );
 
+-- What changed between two Parquet scans of the same roots, matching entries
+-- by their exact path bytes. One row per entry that was added, removed, or
+-- changed, with `changes` listing the columns that differ and the whole row
+-- before (`old`) and after (`new`) as structs. Columns named in `ignore` don't
+-- count as changes: by default `atime`, which reading files updates, and
+-- `dev`, which can change when a file system is remounted. Pass
+-- `ignore := []` for every difference, as an exact copy of the new scan needs.
+-- Directory and parent IDs differ between scans and are never compared.
+--   SELECT change, changes, path FROM fs_diff('/scans/monday', '/scans/tuesday');
+--   COPY (FROM fs_diff('/scans/monday', '/scans/tuesday')) TO 'changes.parquet';
+CREATE OR REPLACE MACRO fs_diff(old_scan, new_scan, ignore := ['atime', 'dev']) AS TABLE
+WITH
+    -- Schema version 2 scans have no symlink target columns.
+    old AS (
+        FROM read_parquet(old_scan || '/entries/*.parquet')
+        UNION ALL BY NAME
+        SELECT NULL::VARCHAR AS symlink_target, NULL::BLOB AS symlink_target_raw WHERE false
+    ),
+    new AS (
+        FROM read_parquet(new_scan || '/entries/*.parquet')
+        UNION ALL BY NAME
+        SELECT NULL::VARCHAR AS symlink_target, NULL::BLOB AS symlink_target_raw WHERE false
+    ),
+    pairs AS (
+        SELECT o, n,
+            list_filter([
+                CASE WHEN o.kind IS DISTINCT FROM n.kind THEN 'kind' END,
+                CASE WHEN o.size IS DISTINCT FROM n.size THEN 'size' END,
+                CASE WHEN o.alloc_bytes IS DISTINCT FROM n.alloc_bytes THEN 'alloc_bytes' END,
+                CASE WHEN o.mode IS DISTINCT FROM n.mode THEN 'mode' END,
+                CASE WHEN o.uid IS DISTINCT FROM n.uid THEN 'uid' END,
+                CASE WHEN o.gid IS DISTINCT FROM n.gid THEN 'gid' END,
+                CASE WHEN o.nlink IS DISTINCT FROM n.nlink THEN 'nlink' END,
+                CASE WHEN o.dev IS DISTINCT FROM n.dev THEN 'dev' END,
+                CASE WHEN o.ino IS DISTINCT FROM n.ino THEN 'ino' END,
+                CASE WHEN o.rdev IS DISTINCT FROM n.rdev THEN 'rdev' END,
+                CASE WHEN o.atime IS DISTINCT FROM n.atime THEN 'atime' END,
+                CASE WHEN o.mtime IS DISTINCT FROM n.mtime THEN 'mtime' END,
+                CASE WHEN o.ctime IS DISTINCT FROM n.ctime THEN 'ctime' END,
+                CASE WHEN o.btime IS DISTINCT FROM n.btime THEN 'btime' END,
+                CASE WHEN o.dir_entries IS DISTINCT FROM n.dir_entries THEN 'dir_entries' END,
+                CASE WHEN o.dir_files IS DISTINCT FROM n.dir_files THEN 'dir_files' END,
+                CASE WHEN o.dir_subdirs IS DISTINCT FROM n.dir_subdirs THEN 'dir_subdirs' END,
+                CASE WHEN o.dir_bytes IS DISTINCT FROM n.dir_bytes THEN 'dir_bytes' END,
+                CASE WHEN o.dir_alloc_bytes IS DISTINCT FROM n.dir_alloc_bytes THEN 'dir_alloc_bytes' END,
+                CASE WHEN o.is_mount_point IS DISTINCT FROM n.is_mount_point THEN 'is_mount_point' END,
+                CASE WHEN coalesce(o.symlink_target_raw, encode(o.symlink_target))
+                     IS DISTINCT FROM coalesce(n.symlink_target_raw, encode(n.symlink_target))
+                     THEN 'symlink_target' END,
+                CASE WHEN o.error IS DISTINCT FROM n.error THEN 'error' END
+            ], lambda c: c IS NOT NULL AND NOT list_contains(ignore, c)) AS changes
+        FROM old AS o
+        FULL OUTER JOIN new AS n
+            ON coalesce(o.path_raw, encode(o.path)) = coalesce(n.path_raw, encode(n.path))
+    )
+SELECT
+    CASE WHEN o.path IS NULL THEN 'added' WHEN n.path IS NULL THEN 'removed' ELSE 'changed' END
+        AS change,
+    CASE WHEN o.path IS NULL OR n.path IS NULL THEN [] ELSE changes END AS changes,
+    coalesce(n.path, o.path) AS path,
+    CASE WHEN n.path IS NULL THEN o.path_raw ELSE n.path_raw END AS path_raw,
+    coalesce(n.kind, o.kind) AS kind,
+    CASE WHEN o.path IS NULL THEN NULL ELSE o END AS old,
+    CASE WHEN n.path IS NULL THEN NULL ELSE n END AS new
+FROM pairs
+WHERE o.path IS NULL OR n.path IS NULL OR len(changes) > 0;
+
+-- Counts of fs_diff's rows by change and kind, with the net change in the
+-- size of everything but directories.
+CREATE OR REPLACE MACRO fs_diff_summary(old_scan, new_scan) AS TABLE
+SELECT change, kind, count(*) AS entries,
+    (sum(coalesce(new.size, 0) - coalesce(old.size, 0)) FILTER (WHERE kind <> 'dir'))::BIGINT
+        AS size_change
+FROM fs_diff(old_scan, new_scan)
+GROUP BY ALL
+ORDER BY change, kind;
+
 -- Decodes `name_flags` into a list of flag names:
 --   SELECT path, fs_name_flags(name_flags) FROM fs_entries_csv('...') WHERE name_flags <> 0;
 CREATE OR REPLACE MACRO fs_name_flags(flags) AS

@@ -92,7 +92,7 @@ fn convert(parquet: &Path, format: &str, out: &Path, extra: &[&str]) {
     let mut args = vec![
         "convert",
         parquet.to_str().unwrap(),
-        "--to",
+        "-f",
         format,
         "-o",
         out.to_str().unwrap(),
@@ -205,14 +205,7 @@ fn converts_to_stdout() {
         ]));
     }
     let mut child = Command::new(env!("CARGO_BIN_EXE_fs-inventory"))
-        .args([
-            "convert",
-            parquet.to_str().unwrap(),
-            "--to",
-            "csv",
-            "-o",
-            "-",
-        ])
+        .args(["convert", parquet.to_str().unwrap(), "-f", "csv", "-o", "-"])
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
@@ -245,6 +238,7 @@ fn refuses_what_it_cannot_convert() {
         "--progress",
         "none",
     ]));
+    // `--to`, the name before 1.0, still works.
     let out = run(&["convert", csv.to_str().unwrap(), "--to", "jsonl", "-o", "-"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("convert reads Parquet scans"));
@@ -264,7 +258,7 @@ fn refuses_what_it_cannot_convert() {
     let out = run(&[
         "convert",
         parquet.to_str().unwrap(),
-        "--to",
+        "-f",
         "csv",
         "-o",
         csv.to_str().unwrap(),

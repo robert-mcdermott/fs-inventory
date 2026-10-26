@@ -37,7 +37,7 @@ One row per file, directory, or other entry.
 | `ctime` | TIMESTAMPTZ | yes | Last change to the contents or metadata. Not creation time. Users can't set it, so it's the reliable signal of recent change. Null when skipped with `--fields`. |
 | `btime` | TIMESTAMPTZ | yes | Creation (birth) time, when the platform and file system provide it and it isn't skipped with `--fields`. |
 | `rdev` | UBIGINT | yes | Device number, for character and block devices. |
-| `dir_entries` | BIGINT | yes | For directories that were read: number of immediate children. |
+| `dir_entries` | BIGINT | yes | For directories that were read: number of immediate children. A subdirectory deleted after it was listed but before it was read is counted, though it has no row. |
 | `dir_files` | BIGINT | yes | For directories that were read: immediate children that aren't directories. |
 | `dir_subdirs` | BIGINT | yes | For directories that were read: immediate subdirectories. |
 | `dir_bytes` | BIGINT | yes | For directories that were read: sum of `size` over immediate children that aren't directories. |

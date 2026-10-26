@@ -168,6 +168,7 @@ pub fn civil_from_days(days: i64) -> (i64, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn iso(sec: i64, nsec: u32, precision: Precision) -> (String, bool) {
         let mut out = Vec::new();
@@ -279,5 +280,47 @@ mod tests {
         assert_eq!(civil_from_days(11_016), (2000, 2, 29));
         assert_eq!(civil_from_days(-719_162), (1, 1, 1));
         assert_eq!(civil_from_days(2_932_896), (9999, 12, 31));
+    }
+
+    proptest! {
+        #[test]
+        fn iso_times_round_trip_and_sort(
+            a in MIN_ISO_SECONDS..MAX_ISO_SECONDS,
+            b in MIN_ISO_SECONDS..MAX_ISO_SECONDS,
+            a_nsec in 0u32..1_000_000_000,
+            b_nsec in 0u32..1_000_000_000,
+        ) {
+            let (a, b) = (Timestamp { sec: a, nsec: a_nsec }, Timestamp { sec: b, nsec: b_nsec });
+            let (a_text, a_ok) = iso(a.sec, a.nsec, Precision::Nanos);
+            let (b_text, _) = iso(b.sec, b.nsec, Precision::Nanos);
+            prop_assert!(a_ok);
+            prop_assert_eq!(parse_iso(&a_text), Some(a));
+            // Text order is time order, so text columns sort correctly.
+            prop_assert_eq!(a_text.cmp(&b_text), (a.sec, a.nsec).cmp(&(b.sec, b.nsec)));
+            let (micros, _) = iso(a.sec, a.nsec, Precision::Micros);
+            prop_assert_eq!(parse_iso(&micros), Some(Timestamp { sec: a.sec, nsec: a.nsec / 1000 * 1000 }));
+        }
+
+        #[test]
+        fn out_of_range_times_are_clamped(sec in any::<i64>(), nsec in 0u32..1_000_000_000) {
+            let (text, ok) = iso(sec, nsec, Precision::Nanos);
+            prop_assert_eq!(ok, iso_in_range(Timestamp { sec, nsec }));
+            let parsed = parse_iso(&text).unwrap();
+            prop_assert!(iso_in_range(parsed));
+            if ok {
+                prop_assert_eq!(parsed, Timestamp { sec, nsec });
+            }
+        }
+
+        #[test]
+        fn epoch_times_are_exact(sec in any::<i64>(), nsec in 0u32..1_000_000_000) {
+            let text = epoch(sec, nsec, Precision::Nanos);
+            let (whole, fraction) = text.split_once('.').unwrap();
+            prop_assert_eq!(fraction.len(), 9);
+            let total = whole.trim_start_matches('-').parse::<i128>().unwrap() * 1_000_000_000
+                + fraction.parse::<i128>().unwrap();
+            let total = if text.starts_with('-') { -total } else { total };
+            prop_assert_eq!(total, i128::from(sec) * 1_000_000_000 + i128::from(nsec));
+        }
     }
 }

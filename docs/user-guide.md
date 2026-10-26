@@ -1,6 +1,6 @@
 # fs-inventory user guide
 
-This guide covers fs-inventory 0.6.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
+This guide covers fs-inventory 1.0.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
 
 Related documents:
 
@@ -38,13 +38,13 @@ Pass options to the installer after `sh -s --`:
 
 | Option | Environment variable | Effect |
 |---|---|---|
-| `--version VERSION` | `FS_INVENTORY_VERSION` | Install this release, such as `v0.6.0`, instead of the latest |
+| `--version VERSION` | `FS_INVENTORY_VERSION` | Install this release, such as `v1.0.0`, instead of the latest |
 | `--install-dir DIRECTORY` | `FS_INVENTORY_INSTALL_DIR` | Install here instead of `~/.local/bin` |
 
 For example, to install a pinned version for every user of a server:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v0.6.0 --install-dir /usr/local/bin
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v1.0.0 --install-dir /usr/local/bin
 ```
 
 To install without the script, download the binary and `SHA256SUMS` from the [releases page](https://github.com/robert-mcdermott/fs-inventory/releases), check the checksum, and make the binary executable:
@@ -90,7 +90,7 @@ fs-inventory --version
 ```
 
 ```
-fs-inventory 0.6.0
+fs-inventory 1.0.0
 ```
 
 On kernels older than 4.11 (such as RHEL 7), fs-inventory reads metadata with `fstatat` instead of `statx`, and `btime` (creation time) is always null.
@@ -333,7 +333,14 @@ When loading scans into another system:
 
 - **Load only scans whose `status` is `complete`.** Accept `incomplete` too only if partial data is useful to you; the `stalled` list in the manifest says which directories are missing.
 - **Record the `scan_id`** (a UUIDv7, unique per scan) to avoid loading a scan twice. Every Parquet part carries the same ID in its metadata, so a part can't be mixed up with another scan's.
-- **Check `schema_version`.** It's 2 in this release, and changes only when the output format changes in a way that would break readers. `tool_version` records the fs-inventory version.
+- **Check `schema_version`.** It's 3 in this release, and changes when columns are added. Throughout 1.x, columns are only added, at the end of a table; none are removed or renamed. `tool_version` records the fs-inventory version.
+- **Load only what changed.** `fs_diff` in the DuckDB macros compares two scans of the same roots and returns one row per entry that was added, removed, or changed, with the row before and after. Instead of reloading every row each night, apply those changes: insert or replace the `new` row of each added or changed entry, and delete each removed one, matching entries by their exact path bytes, `coalesce(path_raw, encode(path))`:
+
+  ```bash
+  duckdb -cmd ".read sql/fs_inventory.sql" -c "COPY (FROM fs_diff('/scratch/inventory/projects-2026-10-25', '/scratch/inventory/projects-2026-10-26')) TO 'changes.parquet'"
+  ```
+
+  Compare scans made with the same options; a column one scan read and the other skipped (`--fields`) shows as a change everywhere.
 - **Keep old scans side by side** to see change over time: growth, deleted files, and new files ([7.5](#75-recipes)).
 
 ### 4.8 Streaming to another program
@@ -434,16 +441,16 @@ fs-inventory scan /data/projects -o /scratch/inventory/projects-csv -f csv --com
 ```
 
 - **Text compression:** CSV and JSON Lines can be compressed with `zstd` or `gzip`, or left uncompressed (the default).
-- **Timestamps:** written as ISO-8601 UTC text by default; `--time-format epoch` writes seconds since 1970 instead.
+- **Timestamps:** written as ISO-8601 UTC text by default; `--time-format epoch` writes seconds since 1970 instead, for tools that want numbers. The DuckDB macros read ISO times. In JSON Lines, epoch times are JSON numbers, which most readers parse as doubles, keeping about a quarter of a microsecond: use ISO times or Parquet when nanoseconds matter.
 - **Fewer columns:** `--columns` keeps only the columns you list, in any format.
-- **Loading into DuckDB:** the `fs_entries_csv` and `fs_entries_jsonl` macros read these scans with the right column types ([7.2](#72-the-macros)).
+- **Loading into DuckDB:** the `fs_entries_csv` and `fs_entries_jsonl` macros read these scans, with ISO times, with the right column types ([7.2](#72-the-macros)).
 
 Text output is several times larger than Parquet and slower to query. Parquet with zstd takes about 25 bytes per entry; a billion-entry scan is about 25 GB.
 
 To get text from a Parquet scan you already have, convert it instead of scanning again ([5.7](#57-convert)):
 
 ```bash
-fs-inventory convert /scratch/inventory/projects-2026-10-25 --to csv -o /scratch/inventory/projects-csv --compression zstd
+fs-inventory convert /scratch/inventory/projects-2026-10-25 -f csv -o /scratch/inventory/projects-csv --compression zstd
 ```
 
 ### 4.12 Interrupted, crashed, and stalled scans
@@ -524,7 +531,7 @@ fs-inventory rollup   SCAN_DIR           Add subtree totals and age histograms t
 fs-inventory schema                      Print the inventory schema
 fs-inventory probe    PATH               Time crawls at several thread counts
 fs-inventory resume   SCAN_DIR           Continue an interrupted scan from its checkpoint
-fs-inventory convert  SCAN_DIR --to F    Re-export a Parquet scan as CSV or JSON Lines
+fs-inventory convert  SCAN_DIR -f F      Re-export a Parquet scan as CSV or JSON Lines
 ```
 
 `fs-inventory COMMAND --help` lists every option. Sizes accept `K`, `M`, `G`, `T` (or `KiB`, `MiB`, `GiB`, `TiB`) for powers of 1024 and `KB`, `MB`, `GB`, `TB` for powers of 1000, such as `512MiB`. Durations accept forms such as `30s`, `10m`, `1h 30m`, `7d`, and `1y`.
@@ -683,14 +690,14 @@ Continues a scan from its last checkpoint; see [4.12](#412-interrupted-crashed-a
 ### 5.7 convert
 
 ```
-fs-inventory convert [OPTIONS] --to <csv|jsonl> --output <DIR|-> <SCAN_DIR>
+fs-inventory convert [OPTIONS] --format <csv|jsonl> --output <DIR|-> <SCAN_DIR>
 ```
 
 Re-exports a Parquet scan as CSV or JSON Lines, for tools that only read text. The result is what the same scan would have written in that format: the same columns, escaping, `path_b64` exact bytes, and time formatting, taken from the scan's own settings (`--columns`, `--fields`, `--raw-paths`, `--csv-raw-controls`, `--time-unit`, and `--time-format`).
 
 | Option | Effect |
 |---|---|
-| `--to csv\|jsonl` | Target format |
+| `-f, --format csv\|jsonl` | Output format, as for `scan`. (`--to`, its name in 0.6.0, still works.) |
 | `-o, --output DIR\|-` | A new or empty directory, laid out like a scan with its own manifest, or `-` to stream entries to stdout (errors go to stderr, as for `scan -o -`) |
 | `--compression CODEC` | `zstd`, `zstd:LEVEL`, `gzip`, `gzip:LEVEL`, or `none` (the default) |
 
@@ -790,7 +797,7 @@ and in JSON Lines, where JSON's own escape keeps it exact:
 
 The `errors` table has one row per failed operation: `open`, `readdir`, `stat`, `verify` (the directory was replaced during the scan), `stall` (given up on after `--stall-timeout`), or `internal` (a bug in fs-inventory, contained to one entry). Each row has the path, the OS error number and name (such as `EACCES`), a message, and the time. The table exists only if there were errors.
 
-Entries deleted between being listed and being read are counted as *vanished* in the manifest and the progress output. They aren't errors: live file systems change during a scan.
+Entries deleted between being listed and being read, including directories deleted while they're being read, are counted as *vanished* in the manifest and the progress output. They aren't errors: live file systems change during a scan.
 
 ### The manifest
 
@@ -821,7 +828,7 @@ Entries deleted between being listed and being read are counted as *vanished* in
   "started_at": "2026-10-26T00:11:32.698582Z",
   "status": "complete",
   "tool": "fs-inventory",
-  "tool_version": "0.6.0",
+  "tool_version": "1.0.0",
   "totals": {
     "by_kind": { "dir": 36, "file": 248, "symlink": 1 },
     "bytes": 47262948364,
@@ -920,6 +927,8 @@ SELECT count(*) FROM read_parquet('/scratch/inventory/projects-2026-10-25/entrie
 | `fs_errors(scan_dir)` | The `errors` table of a Parquet scan. It fails with "No files found" if the scan had no errors. |
 | `fs_users(scan_dir)`, `fs_groups(scan_dir)` | The `users` and `groups` tables of a Parquet scan made with `--resolve-ids` |
 | `fs_entries_named(scan_dir)` | `fs_entries` plus `user_name` and `group_name`, for a Parquet scan made with `--resolve-ids` |
+| `fs_diff(old_dir, new_dir)` | What changed between two Parquet scans: one row per added, removed, or changed entry, with `changes` listing the columns that differ and the rows before and after as `old` and `new` structs ([7.5](#75-recipes)) |
+| `fs_diff_summary(old_dir, new_dir)` | `fs_diff` counted by change and kind, with the net change in size |
 | `fs_rollup(scan_dir)` | Subtree totals, after `fs-inventory rollup` |
 | `fs_rollup_ages(scan_dir)` | Age histograms, after `fs-inventory rollup` |
 | `fs_entries_csv(scan_dir)`, `fs_errors_csv(scan_dir)`, `fs_users_csv(scan_dir)`, `fs_groups_csv(scan_dir)` | CSV scans, compressed or not |
@@ -1305,32 +1314,41 @@ USING sum(files) ORDER BY path;
 
 Listing the labels in `IN (...)` keeps the columns in age order. Only buckets with files have rows, so empty cells are `NULL`. `a.time` can also be `ctime` or `atime`.
 
-**Comparing two scans:** files added, deleted, and changed between two scans of the same tree.
+**Comparing two scans.** `fs_diff` matches the entries of two scans of the same roots by their exact path bytes:
 
 ```sql
-CREATE TEMP VIEW old AS SELECT * FROM fs_entries('/scratch/inventory/projects-2026-10-25') WHERE kind = 'file';
-CREATE TEMP VIEW new AS SELECT * FROM fs_entries('/scratch/inventory/projects-2026-11-01') WHERE kind = 'file';
+SET VARIABLE old = '/scratch/inventory/projects-2026-10-25';
+SET VARIABLE new = '/scratch/inventory/projects-2026-11-01';
 
-SELECT CASE WHEN old.path IS NULL THEN 'added' WHEN new.path IS NULL THEN 'deleted' ELSE 'changed' END AS change,
-       count(*) AS files,
-       format_bytes(sum(coalesce(new.size, 0) - coalesce(old.size, 0))::BIGINT) AS size_change
-FROM old FULL JOIN new USING (path)
-WHERE old.path IS NULL OR new.path IS NULL OR old.size <> new.size OR old.mtime <> new.mtime
-GROUP BY ALL ORDER BY change;
+SELECT * FROM fs_diff_summary(getvariable('old'), getvariable('new'));
 ```
 
+An illustration:
+
 ```
-┌─────────┬───────┬─────────────┐
-│ change  │ files │ size_change │
-│ varchar │ int64 │   varchar   │
-├─────────┼───────┼─────────────┤
-│ added   │     2 │ 5.0 GiB     │
-│ changed │     1 │ 30.0 KiB    │
-│ deleted │    15 │ -9.0 GiB    │
-└─────────┴───────┴─────────────┘
+┌─────────┬─────────┬─────────┬──────────────┐
+│ change  │  kind   │ entries │ size_change  │
+│ varchar │ varchar │  int64  │    int64     │
+├─────────┼─────────┼─────────┼──────────────┤
+│ added   │ file    │       2 │   5368709120 │
+│ changed │ dir     │       3 │         NULL │
+│ changed │ file    │       1 │        30720 │
+│ removed │ file    │      15 │  -9663676416 │
+└─────────┴─────────┴─────────┴──────────────┘
 ```
 
-Replace the `SELECT` with `SELECT path, old.size, new.size, old.mtime, new.mtime` to list the files themselves. Joining on `path` treats a renamed file as one deletion plus one addition.
+To list the entries themselves, with what changed:
+
+```sql
+SELECT change, changes, path, old.size AS old_size, new.size AS new_size, new.mtime
+FROM fs_diff(getvariable('old'), getvariable('new'))
+ORDER BY path;
+```
+
+- **What counts as a change:** any difference in the columns describing an entry: kind, size, allocation, permissions, owner, link count, inode, times, directory totals, mount point, symlink target, or error. `changes` lists them, such as `[size, mtime, ctime]`. A new `ino` means the file was replaced, as editors that save by renaming do.
+- **Left out by default:** `atime`, which reading a file updates, and `dev`, which can change when a file system is remounted. `fs_diff(old, new, ignore := [])` counts every difference, and `ignore := ['atime', 'dev', 'ctime']` leaves out more.
+- **Renames** show as one removal and one addition, since entries are matched by path.
+- **Large scans:** DuckDB joins the two scans in parallel and spills to disk when memory runs out; two 10-million-entry scans take seconds on a laptop. For billion-entry scans, point `SET temp_directory` at a disk with room.
 
 **Several scans as one table.** A glob can cover many scans; `filename = true` adds each row's file name, which identifies its scan:
 
