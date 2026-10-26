@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains how fs-inventory 0.5.0 is built and why. It is for engineers who maintain or extend the code, and for administrators who want to know what the tool does to their file systems before they run it. For how to use it, see the [user guide](user-guide.md). For every column, see the [schema reference](schema.md). [PLAN.md](../PLAN.md) holds the original design and the roadmap; this document describes the code as it is.
+This document explains how fs-inventory 0.6.0 is built and why. It is for engineers who maintain or extend the code, and for administrators who want to know what the tool does to their file systems before they run it. For how to use it, see the [user guide](user-guide.md). For every column, see the [schema reference](schema.md). [PLAN.md](../PLAN.md) holds the original design and the roadmap; this document describes the code as it is.
 
 ## 1. Overview
 

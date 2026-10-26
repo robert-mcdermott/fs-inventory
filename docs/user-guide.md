@@ -1,6 +1,6 @@
 # fs-inventory user guide
 
-This guide covers fs-inventory 0.5.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
+This guide covers fs-inventory 0.6.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
 
 Related documents:
 
@@ -38,13 +38,13 @@ Pass options to the installer after `sh -s --`:
 
 | Option | Environment variable | Effect |
 |---|---|---|
-| `--version VERSION` | `FS_INVENTORY_VERSION` | Install this release, such as `v0.5.0`, instead of the latest |
+| `--version VERSION` | `FS_INVENTORY_VERSION` | Install this release, such as `v0.6.0`, instead of the latest |
 | `--install-dir DIRECTORY` | `FS_INVENTORY_INSTALL_DIR` | Install here instead of `~/.local/bin` |
 
 For example, to install a pinned version for every user of a server:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v0.5.0 --install-dir /usr/local/bin
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v0.6.0 --install-dir /usr/local/bin
 ```
 
 To install without the script, download the binary and `SHA256SUMS` from the [releases page](https://github.com/robert-mcdermott/fs-inventory/releases), check the checksum, and make the binary executable:
@@ -90,7 +90,7 @@ fs-inventory --version
 ```
 
 ```
-fs-inventory 0.5.0
+fs-inventory 0.6.0
 ```
 
 On kernels older than 4.11 (such as RHEL 7), fs-inventory reads metadata with `fstatat` instead of `statx`, and `btime` (creation time) is always null.
@@ -821,7 +821,7 @@ Entries deleted between being listed and being read are counted as *vanished* in
   "started_at": "2026-10-26T00:11:32.698582Z",
   "status": "complete",
   "tool": "fs-inventory",
-  "tool_version": "0.5.0",
+  "tool_version": "0.6.0",
   "totals": {
     "by_kind": { "dir": 36, "file": 248, "symlink": 1 },
     "bytes": 47262948364,

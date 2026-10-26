@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-26
+
+Re-export Parquet scans as CSV or JSON Lines with `convert`, record symlink targets, and look up user and group names.
+
 ### Added
 
 - `fs-inventory convert` re-exports a Parquet scan as CSV or JSON Lines, into a new scan directory or to stdout, with optional zstd or gzip compression. The output equals what the scan would have written in that format, using the scan's own column, encoding, and time settings. Older (schema version 2) scans convert too.
@@ -94,7 +98,8 @@ The first tagged release. Version numbers follow the milestones, so 0.3.0 comple
 - Writer threads start one at a time and are added, up to `--writers`, only when output backs up. Small scans now write one part file per table instead of one per CPU core.
 - Schema version 2: integer columns are now signed (`INTEGER` or `BIGINT`), so scans load into databases without unsigned types and DuckDB functions such as `format_bytes()` work without casts. Only `dev`, `ino`, and `rdev` stay unsigned (`UBIGINT`). Values above the signed maximum are capped, not wrapped. `verify` reports scans written with schema version 1.
 
-[Unreleased]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/robert-mcdermott/fs-inventory/releases/tag/v0.3.0

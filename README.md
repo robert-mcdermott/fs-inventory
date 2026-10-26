@@ -4,7 +4,7 @@ A high-performance, crash-resilient file system inventory tool and Rust library.
 
 `fs-inventory` crawls a POSIX file system in parallel and records the metadata of every file and directory, ready for analysis in tools like DuckDB. It is built for file systems with hundreds of millions to billions of entries, decades of history, and names in any language or legacy encoding.
 
-> **Status:** release 0.5.0. Scans write Parquet (the default), CSV, or JSON Lines, resume after interruptions, and have been tested on generated trees of up to a billion entries; `rollup` adds subtree totals and file-age histograms. Benchmarks on large real file systems are still to come. See the [changelog](CHANGELOG.md) for what each release contains and [PLAN.md](PLAN.md) for the roadmap.
+> **Status:** release 0.6.0. Scans write Parquet (the default), CSV, or JSON Lines, resume after interruptions, and have been tested on generated trees of up to a billion entries; `rollup` adds subtree totals and file-age histograms. Benchmarks on large real file systems are still to come. See the [changelog](CHANGELOG.md) for what each release contains and [PLAN.md](PLAN.md) for the roadmap.
 
 ## Features
 
