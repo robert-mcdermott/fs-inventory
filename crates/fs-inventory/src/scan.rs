@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::RandomState;
-use std::fs;
+use std::fs::{self, File};
 use std::hash::{BuildHasher as _, Hasher as _};
 use std::io::{self, IsTerminal as _};
 use std::os::unix::ffi::OsStringExt as _;
@@ -18,23 +18,31 @@ use std::time::{Duration, Instant, SystemTime};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use fs_inventory_core::backend::{BackendOptions, NativeBackend};
-use fs_inventory_core::model::{EntryKind, errno_name};
+use fs_inventory_core::model::{EntryKind, Fields, errno_name};
 use fs_inventory_core::names::{self, Controls};
-use fs_inventory_core::walker::{self, Counters, WalkOptions, WalkResult};
+use fs_inventory_core::walker::{
+    self, Checkpointer, Counters, Start, WalkOptions, WalkResult, WalkState,
+};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::cli::{Format, Progress, RawPaths, ScanArgs, TimeFormat, TimeUnit};
+use crate::checkpoint;
+use crate::cli::{Format, Progress, ProgressOptions, RawPaths, ScanArgs, TimeFormat, TimeUnit};
 use crate::exit::Exit;
 use crate::output::arrow::ArrowOptions;
 use crate::output::encode::{EncodeOptions, Encoder, TextFormat, TimeStyle};
-use crate::output::manifest::{ErrorSummary, Manifest, Parts, Root, StalledDir, Status, Totals};
+use crate::output::manifest::{
+    ErrorSummary, Manifest, Parts, Resume as ResumeRecord, Root, StalledDir, Status, Totals,
+};
 use crate::output::parquet::ParquetSettings;
 use crate::output::parts::{RollLimits, sync_dir};
 use crate::output::schema::{ENTRY_COLUMNS, ERROR_COLUMNS, Selection};
 use crate::output::timefmt::{self, Precision};
-use crate::output::{Destination, Format as OutputFormat, Output, OutputConfig, OutputReport, now};
-use crate::parse::Compression;
+use crate::output::{
+    Destination, Format as OutputFormat, Output, OutputConfig, OutputReport, OutputState, now,
+};
+use crate::parse::{Compression, parse_compression};
 use crate::progress::{self, Reporter, Snapshot, Style};
 
 /// How `--max-memory` is divided.
@@ -75,21 +83,24 @@ impl MemoryBudgets {
 /// Report a crawl thread as stalled after this long without progress.
 const STALL_REPORT: Duration = Duration::from_secs(60);
 
+/// Default interval between checkpoints.
+const CHECKPOINT_INTERVAL: Duration = Duration::from_secs(600);
+
 /// A problem found before the crawl starts.
-struct SetupError {
-    exit: Exit,
-    message: String,
+pub struct SetupError {
+    pub exit: Exit,
+    pub message: String,
 }
 
 impl SetupError {
-    fn usage(message: impl Into<String>) -> Self {
+    pub fn usage(message: impl Into<String>) -> Self {
         Self {
             exit: Exit::Usage,
             message: message.into(),
         }
     }
 
-    fn fatal(message: impl Into<String>) -> Self {
+    pub fn fatal(message: impl Into<String>) -> Self {
         Self {
             exit: Exit::Fatal,
             message: message.into(),
@@ -97,8 +108,9 @@ impl SetupError {
     }
 }
 
-pub fn run(args: &ScanArgs) -> Exit {
-    match run_scan(args) {
+/// Reports a setup error and turns the outcome into an exit code.
+pub fn report(outcome: Result<Exit, SetupError>) -> Exit {
+    match outcome {
         Ok(exit) => exit,
         Err(e) => {
             eprintln!("fs-inventory: {}", e.message);
@@ -107,62 +119,277 @@ pub fn run(args: &ScanArgs) -> Exit {
     }
 }
 
+/// Everything that shapes a scan's rows and files. Checkpoints store it, so
+/// a resumed scan writes exactly what the original would have.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanSettings {
+    /// Roots, as exact bytes in base64.
+    roots: Vec<String>,
+    format: Format,
+    compression: String,
+    /// `--columns` as given.
+    columns: Vec<String>,
+    part_max_bytes: u64,
+    part_max_rows: Option<u64>,
+    row_group_rows: u64,
+    cross_mounts: bool,
+    max_depth: Option<u32>,
+    /// Exclude globs, including those read from `--exclude-from` files.
+    excludes: Vec<String>,
+    include_snapshots: bool,
+    detect_cycles: bool,
+    /// Optional metadata fields read.
+    fields: Vec<String>,
+    statx_dont_sync: bool,
+    raw_paths: RawPaths,
+    csv_raw_controls: bool,
+    time_unit: TimeUnit,
+    time_format: TimeFormat,
+}
+
+impl ScanSettings {
+    fn from_args(args: &ScanArgs) -> Result<Self, SetupError> {
+        let roots = args
+            .roots
+            .iter()
+            .map(|r| normalize_root(r))
+            .collect::<Result<Vec<_>, _>>()?;
+        let excludes = read_excludes(&args.traversal.exclude, &args.traversal.exclude_from)?;
+        let compression = args.output.compression.unwrap_or(match args.output.format {
+            Format::Parquet => Compression::Zstd(3),
+            Format::Csv | Format::Jsonl => Compression::None,
+        });
+        let settings = Self {
+            roots: roots.iter().map(|r| BASE64.encode(r)).collect(),
+            format: args.output.format,
+            compression: describe_compression(compression),
+            columns: args.output.columns.clone(),
+            part_max_bytes: args.output.part_max_bytes,
+            part_max_rows: args.output.part_max_rows,
+            row_group_rows: args.output.row_group_rows,
+            cross_mounts: args.traversal.cross_mounts,
+            max_depth: args.traversal.max_depth,
+            excludes,
+            include_snapshots: args.traversal.include_snapshots,
+            detect_cycles: args.traversal.detect_cycles,
+            fields: args
+                .metadata
+                .fields
+                .unwrap_or_default()
+                .names()
+                .into_iter()
+                .map(String::from)
+                .collect(),
+            statx_dont_sync: args.metadata.statx_dont_sync,
+            raw_paths: args.encoding.raw_paths,
+            csv_raw_controls: args.encoding.csv_raw_controls,
+            time_unit: args.encoding.time_unit,
+            time_format: args.encoding.time_format,
+        };
+        // Check everything now, before creating any output.
+        settings.selection()?;
+        build_excludes(&settings.excludes)?;
+        Ok(settings)
+    }
+
+    fn roots(&self) -> Result<Vec<Vec<u8>>, SetupError> {
+        self.roots
+            .iter()
+            .map(|r| BASE64.decode(r))
+            .collect::<Result<_, _>>()
+            .map_err(|e| SetupError::fatal(format!("invalid root in checkpoint: {e}")))
+    }
+
+    fn compression(&self) -> Result<Compression, SetupError> {
+        parse_compression(&self.compression).map_err(SetupError::usage)
+    }
+
+    fn selection(&self) -> Result<Selection, SetupError> {
+        Selection::parse(&self.columns).map_err(SetupError::usage)
+    }
+
+    fn fields(&self) -> Result<Fields, SetupError> {
+        Fields::parse(&self.fields.join(",")).map_err(SetupError::usage)
+    }
+}
+
+/// Settings that only affect how a scan runs. `resume` starts from the
+/// original scan's and can change them.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSettings {
+    pub threads: u16,
+    pub writers: usize,
+    pub max_memory: Option<u64>,
+    pub stall_timeout: Option<Duration>,
+    /// `None` takes no checkpoints.
+    pub checkpoint_interval: Option<Duration>,
+}
+
+impl RunSettings {
+    fn from_args(args: &ScanArgs) -> Self {
+        Self {
+            threads: args.traversal.threads,
+            writers: args
+                .traversal
+                .writers
+                .map_or_else(default_writers, usize::from),
+            max_memory: args.robustness.max_memory,
+            stall_timeout: args.robustness.stall_timeout,
+            checkpoint_interval: match args.robustness.checkpoint_interval {
+                None => Some(CHECKPOINT_INTERVAL),
+                Some(interval) => (!interval.is_zero()).then_some(interval),
+            },
+        }
+    }
+}
+
+/// Where a run starts.
+pub enum Origin {
+    /// A new scan, recording these options in its manifest.
+    New(BTreeMap<String, serde_json::Value>),
+    /// Where a checkpoint left off, holding the scan's lock.
+    Resume {
+        header: Box<checkpoint::Header>,
+        state: WalkState,
+        lock: File,
+    },
+}
+
+pub fn run(args: &ScanArgs) -> Exit {
+    report(run_scan(args))
+}
+
 fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
     reject_unimplemented(args)?;
-    let selection = Selection::parse(&args.output.columns).map_err(SetupError::usage)?;
-    let fields = args.metadata.fields.unwrap_or_default();
-    let budgets = MemoryBudgets::new(args.robustness.max_memory);
-    let compression = args.output.compression.unwrap_or(match args.output.format {
-        Format::Parquet => Compression::Zstd(3),
-        Format::Csv | Format::Jsonl => Compression::None,
-    });
-    let roots = args
-        .roots
-        .iter()
-        .map(|r| normalize_root(r))
-        .collect::<Result<Vec<_>, _>>()?;
-    let excludes = build_excludes(&args.traversal.exclude, &args.traversal.exclude_from)?;
-
+    let settings = ScanSettings::from_args(args)?;
+    let runtime = RunSettings::from_args(args);
     let destination = if args.output.output == Path::new("-") {
         Destination::Stdout
     } else {
         Destination::Dir(prepare_output_dir(&args.output.output)?)
     };
+    let options = manifest_options(args, runtime.writers);
+    execute(
+        &settings,
+        &runtime,
+        &args.progress,
+        destination,
+        Origin::New(options),
+    )
+}
+
+/// Runs a scan, or the rest of one from a checkpoint.
+#[allow(clippy::too_many_lines, reason = "one scan, start to finish")]
+pub fn execute(
+    settings: &ScanSettings,
+    runtime: &RunSettings,
+    progress_options: &ProgressOptions,
+    destination: Destination,
+    origin: Origin,
+) -> Result<Exit, SetupError> {
+    let selection = settings.selection()?;
+    let fields = settings.fields()?;
+    let compression = settings.compression()?;
+    let roots = settings.roots()?;
+    let excludes = build_excludes(&settings.excludes)?;
+    let budgets = MemoryBudgets::new(runtime.max_memory);
+    let writers = runtime.writers.max(1);
+    let scan_dir = match &destination {
+        Destination::Dir(dir) => Some(dir.clone()),
+        Destination::Stdout => None,
+    };
+    let checkpointing = runtime.checkpoint_interval.is_some() && scan_dir.is_some();
+
     let mut skip_dirs = Vec::new();
-    if let Destination::Dir(dir) = &destination
+    if let Some(dir) = &scan_dir
         && let Ok(meta) = fs::metadata(dir)
     {
         // Never inventory our own output.
         skip_dirs.push((meta.dev(), meta.ino()));
     }
 
+    // A new scan with checkpoints takes the scan's lock; a resume has it.
+    let (_lock, resume, options) = match origin {
+        Origin::Resume {
+            header,
+            state,
+            lock,
+        } => {
+            let options = header.options.clone();
+            (Some(lock), Some((header, state)), options)
+        }
+        Origin::New(options) => {
+            let lock = match &scan_dir {
+                Some(dir) if checkpointing => Some(
+                    checkpoint::lock(dir)
+                        .map_err(|e| SetupError::fatal(format!("cannot create checkpoints: {e}")))?
+                        .ok_or_else(|| {
+                            SetupError::usage(format!(
+                                "another fs-inventory process is writing to {}",
+                                dir.display()
+                            ))
+                        })?,
+                ),
+                _ => None,
+            };
+            (lock, None, options)
+        }
+    };
+
     raise_fd_limit();
     let signaled = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
     install_signal_handlers(&signaled, &stop);
 
-    let writers = args
-        .traversal
-        .writers
-        .map_or_else(default_writers, usize::from);
-    let scan_id = new_scan_id();
-    let host = hostname();
+    let started = Instant::now();
+    let (scan_id, host, started_at, run, previous, previous_elapsed, mut resumes) = match &resume {
+        Some((header, _)) => (
+            header.scan_id.clone(),
+            header.host.clone(),
+            header.started_at.clone(),
+            header.run + 1,
+            OutputState {
+                entry_parts: header.entry_parts.clone(),
+                error_parts: header.error_parts.clone(),
+                kinds: std::array::from_fn(|i| header.kinds.get(i).copied().unwrap_or(0)),
+                error_rows: header.error_rows,
+            },
+            header.elapsed_seconds,
+            header.resumes.clone(),
+        ),
+        None => (
+            new_scan_id(),
+            hostname(),
+            iso(now()),
+            0,
+            OutputState::default(),
+            0.0,
+            Vec::new(),
+        ),
+    };
+    if let Some((header, _)) = &resume {
+        resumes.push(ResumeRecord {
+            resumed_at: iso(now()),
+            checkpoint_at: header.created_at.clone(),
+            tool_version: env!("CARGO_PKG_VERSION").into(),
+        });
+    }
     let root_records: Vec<Root> = roots.iter().map(|r| root_record(r)).collect();
-    let raw_paths_always = args.encoding.raw_paths == RawPaths::Always;
-    let format = match args.output.format {
+    let raw_paths_always = settings.raw_paths == RawPaths::Always;
+    let format = match settings.format {
         Format::Csv | Format::Jsonl => OutputFormat::Text(Encoder::new(EncodeOptions {
-            format: if args.output.format == Format::Csv {
+            format: if settings.format == Format::Csv {
                 TextFormat::Csv
             } else {
                 TextFormat::Jsonl
             },
             raw_paths_always,
-            csv_raw_controls: args.encoding.csv_raw_controls,
-            precision: match args.encoding.time_unit {
+            csv_raw_controls: settings.csv_raw_controls,
+            precision: match settings.time_unit {
                 TimeUnit::Us => Precision::Micros,
                 TimeUnit::Ns => Precision::Nanos,
             },
-            time_style: match args.encoding.time_format {
+            time_style: match settings.time_format {
                 TimeFormat::Iso => TimeStyle::Iso,
                 TimeFormat::Epoch => TimeStyle::Epoch,
             },
@@ -171,7 +398,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         })),
         Format::Parquet => OutputFormat::Parquet {
             arrow: ArrowOptions {
-                unit: match args.encoding.time_unit {
+                unit: match settings.time_unit {
                     TimeUnit::Us => arrow_schema::TimeUnit::Microsecond,
                     TimeUnit::Ns => arrow_schema::TimeUnit::Nanosecond,
                 },
@@ -180,7 +407,7 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             },
             settings: ParquetSettings {
                 compression,
-                row_group_rows: usize::try_from(args.output.row_group_rows).unwrap_or(usize::MAX),
+                row_group_rows: usize::try_from(settings.row_group_rows).unwrap_or(usize::MAX),
                 max_row_group_bytes: budgets.row_group(writers),
                 metadata: vec![
                     (
@@ -217,30 +444,32 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             ERROR_COLUMNS.iter().map(|c| c.name).collect(),
         ),
     };
-    let started_at = now();
-    let started = Instant::now();
     let mut manifest = Manifest {
         tool: "fs-inventory",
         tool_version: env!("CARGO_PKG_VERSION"),
         schema_version: fs_inventory_core::SCHEMA_VERSION,
-        scan_id,
+        scan_id: scan_id.clone(),
         status: Status::Running,
-        host,
+        host: host.clone(),
         roots: root_records,
         format: format_name,
         compression: describe_compression(compression),
         columns,
         error_columns,
-        options: manifest_options(args, writers),
-        started_at: iso(started_at),
+        options,
+        started_at: started_at.clone(),
         finished_at: None,
         duration_seconds: None,
         totals: Totals::default(),
         errors_by_kind: Vec::new(),
         stalled: Vec::new(),
-        parts: Parts::default(),
+        resumes,
+        parts: Parts {
+            entries: previous.entry_parts.clone(),
+            errors: previous.error_parts.clone(),
+        },
     };
-    if let Destination::Dir(dir) = &destination {
+    if let Some(dir) = &scan_dir {
         manifest
             .write(dir)
             .map_err(|e| SetupError::fatal(format!("cannot write the manifest: {e}")))?;
@@ -253,56 +482,109 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             selection,
             compression,
             writers,
-            crawl_threads: usize::from(args.traversal.threads),
+            crawl_threads: usize::from(runtime.threads),
             sink_budget: budgets.sinks,
             limits: RollLimits {
-                max_bytes: args.output.part_max_bytes,
-                max_rows: args.output.part_max_rows,
+                max_bytes: settings.part_max_bytes,
+                max_rows: settings.part_max_rows,
             },
+            run,
+            previous,
         },
         Arc::clone(&stop),
     )
     .map_err(|e| SetupError::fatal(format!("cannot start output writers: {e}")))?;
 
     let counters = Arc::new(Counters::default());
-    let style = progress_style(args.progress.progress);
+    let base_entries = resume.as_ref().map_or(0, |(_, state)| state.entries());
+    let style = progress_style(progress_options.progress);
+    let summary_style = match style {
+        Style::None if progress_options.progress == Progress::Auto => Style::Plain,
+        other => other,
+    };
+    if let Some((header, state)) = &resume
+        && summary_style != Style::None
+    {
+        eprintln!(
+            "fs-inventory: resuming scan {scan_id} from its checkpoint of {}: {} entries written, {} directories left",
+            header.created_at,
+            state.entries(),
+            state.pending()
+        );
+    }
     let reporter = Reporter::start(
         style,
-        args.progress.progress_interval,
+        progress_options.progress_interval,
         Arc::clone(&counters),
         started,
+        base_entries,
     );
 
-    let backend = NativeBackend::new(BackendOptions {
-        statx_dont_sync: args.metadata.statx_dont_sync,
+    let backend = scan_backend(BackendOptions {
+        statx_dont_sync: settings.statx_dont_sync,
         fields,
         ..BackendOptions::default()
     });
     let walk_options = WalkOptions {
-        threads: usize::from(args.traversal.threads),
-        cross_mounts: args.traversal.cross_mounts,
-        max_depth: args.traversal.max_depth,
+        threads: usize::from(runtime.threads),
+        cross_mounts: settings.cross_mounts,
+        max_depth: settings.max_depth,
         excludes,
-        include_snapshots: args.traversal.include_snapshots,
+        include_snapshots: settings.include_snapshots,
         skip_dirs,
-        detect_cycles: args.traversal.detect_cycles,
+        detect_cycles: settings.detect_cycles,
         stall_report: STALL_REPORT,
-        stall_timeout: args.robustness.stall_timeout,
+        stall_timeout: runtime.stall_timeout,
         queue_budget: budgets.queue,
         // Next to the output, on storage the user chose; else the temp dir.
-        spill_dir: match &destination {
-            Destination::Dir(dir) => Some(dir.clone()),
-            Destination::Stdout => None,
-        },
+        spill_dir: scan_dir.clone(),
+        checkpoint_interval: runtime.checkpoint_interval.filter(|_| checkpointing),
+        state_dir: scan_dir
+            .as_deref()
+            .filter(|_| checkpointing)
+            .map(checkpoint::dir),
+        ..WalkOptions::default()
     };
-    let result = walker::walk(
-        &roots,
+    let header = checkpoint::Header {
+        scan_id: scan_id.clone(),
+        host,
+        started_at,
+        created_at: String::new(),
+        elapsed_seconds: 0.0,
+        run,
+        settings: settings.clone(),
+        runtime: runtime.clone(),
+        options: manifest.options.clone(),
+        resumes: manifest.resumes.clone(),
+        entry_parts: Vec::new(),
+        error_parts: Vec::new(),
+        kinds: Vec::new(),
+        error_rows: 0,
+    };
+    let start = match resume {
+        Some((_, state)) => Start::Resume(state),
+        None => Start::Roots(&roots),
+    };
+    let mut checkpointer = ScanCheckpointer {
+        output: &output,
+        scan_dir: scan_dir.as_deref(),
+        header,
+        started,
+        previous_elapsed,
+        manifest: &mut manifest,
+        warned: false,
+    };
+    let result = walker::walk_from(
+        start,
         walk_options,
         Arc::new(backend),
         |_| output.sink(),
         Arc::clone(&counters),
         Arc::clone(&stop),
-    );
+        checkpointing.then_some(&mut checkpointer as &mut dyn Checkpointer),
+    )
+    .map_err(|e| SetupError::fatal(format!("cannot open the checkpoint files: {e}")))?;
+    let header = checkpointer.header;
     let report = output.finish();
     reporter.stop();
     if report.salvaged > 0 {
@@ -311,7 +593,8 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             report.salvaged
         );
     }
-    let snapshot = Snapshot::take(&counters, started);
+    let mut snapshot = Snapshot::take(&counters, started);
+    snapshot.base_entries = base_entries;
 
     let stdout_closed = matches!(destination, Destination::Stdout)
         && report
@@ -331,16 +614,46 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
         (None, false) => (Status::Complete, Exit::Success),
     };
 
-    let output_label = match &destination {
-        Destination::Dir(dir) => {
-            finalize_manifest(&mut manifest, status, &snapshot, &result, report, started);
+    let elapsed = previous_elapsed + started.elapsed().as_secs_f64();
+    let output_label = match &scan_dir {
+        Some(dir) => {
+            if checkpointing {
+                match &result.state {
+                    // Stopped early: a final checkpoint, exact because every
+                    // worker finished its directory and every part is
+                    // committed. After an output failure, the last periodic
+                    // checkpoint stays.
+                    Some(state) if report.failure.is_none() => {
+                        let header = checkpoint::Header {
+                            created_at: iso(now()),
+                            elapsed_seconds: elapsed,
+                            entry_parts: report.entry_parts.clone(),
+                            error_parts: report.error_parts.clone(),
+                            kinds: report.kinds.to_vec(),
+                            error_rows: report.error_rows,
+                            ..header
+                        };
+                        if let Err(e) = checkpoint::write(dir, &header, state) {
+                            eprintln!("fs-inventory: cannot write the final checkpoint: {e}");
+                        }
+                    }
+                    Some(_) => {}
+                    // Finished: nothing is left to resume.
+                    None => {
+                        if let Err(e) = checkpoint::remove(dir) {
+                            eprintln!("fs-inventory: cannot remove the checkpoint: {e}");
+                        }
+                    }
+                }
+            }
+            finalize_manifest(&mut manifest, status, &snapshot, &result, report, elapsed);
             if let Err(e) = manifest.write(dir).and_then(|()| sync_dir(dir)) {
                 eprintln!("fs-inventory: cannot write the manifest: {e}");
                 return Ok(Exit::Fatal);
             }
             dir.display().to_string()
         }
-        Destination::Stdout => "stdout".to_string(),
+        None => "stdout".to_string(),
     };
     let status_text = match status {
         Status::Complete => "complete",
@@ -356,27 +669,76 @@ fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
             stalled.seconds
         );
     }
-    progress::summary(
-        match style {
-            Style::None if args.progress.progress == Progress::Auto => Style::Plain,
-            other => other,
-        },
-        status_text,
-        &snapshot,
-        &output_label,
-    );
+    progress::summary(summary_style, status_text, &snapshot, &output_label);
     Ok(exit)
+}
+
+/// Writes checkpoints for a scan into its output directory.
+struct ScanCheckpointer<'a> {
+    output: &'a Output,
+    scan_dir: Option<&'a Path>,
+    /// Everything but the parts and times, which each checkpoint fills in.
+    header: checkpoint::Header,
+    started: Instant,
+    previous_elapsed: f64,
+    /// Kept up to date with the committed parts, for anyone watching.
+    manifest: &'a mut Manifest,
+    warned: bool,
+}
+
+impl Checkpointer for ScanCheckpointer<'_> {
+    fn checkpoint(&mut self, state: &WalkState) -> io::Result<()> {
+        let Some(dir) = self.scan_dir else {
+            return Ok(());
+        };
+        let result = (|| {
+            let committed = self.output.checkpoint(state.abandoned_workers())?;
+            let header = checkpoint::Header {
+                created_at: iso(now()),
+                elapsed_seconds: self.previous_elapsed + self.started.elapsed().as_secs_f64(),
+                entry_parts: committed.entry_parts.clone(),
+                error_parts: committed.error_parts.clone(),
+                kinds: committed.kinds.to_vec(),
+                error_rows: committed.error_rows,
+                ..self.header.clone()
+            };
+            checkpoint::write(dir, &header, state)?;
+            self.manifest.parts = Parts {
+                entries: committed.entry_parts,
+                errors: committed.error_parts,
+            };
+            self.manifest.write(dir)
+        })();
+        if let Err(e) = &result
+            && !std::mem::replace(&mut self.warned, true)
+        {
+            eprintln!("fs-inventory: cannot write a checkpoint (will keep trying): {e}");
+        }
+        result
+    }
+
+    fn skipped(&mut self) {
+        eprintln!(
+            "fs-inventory: skipped a checkpoint: a crawl thread has made no progress for 30 seconds"
+        );
+    }
+}
+
+/// The file system backend. Debug builds can slow it down for tests.
+#[cfg(debug_assertions)]
+fn scan_backend(options: BackendOptions) -> crate::debug::Delayed<NativeBackend> {
+    crate::debug::Delayed::from_env(NativeBackend::new(options))
+}
+
+#[cfg(not(debug_assertions))]
+fn scan_backend(options: BackendOptions) -> NativeBackend {
+    NativeBackend::new(options)
 }
 
 /// Options that parse but do nothing yet. Accepting them silently would be
 /// worse than refusing them.
 fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 4] = [
-        (
-            args.robustness.checkpoint_interval.is_some(),
-            "--checkpoint-interval",
-            "M4",
-        ),
+    let pending: [(bool, &str, &str); 3] = [
         (args.metadata.symlink_targets, "--symlink-targets", "M5"),
         (args.metadata.resolve_ids, "--resolve-ids", "M5"),
         (args.encoding.guess_encoding, "--guess-encoding", "M5"),
@@ -398,7 +760,8 @@ fn normalize_root(root: &Path) -> Result<Vec<u8>, SetupError> {
     Ok(normalized.into_os_string().into_vec())
 }
 
-fn build_excludes(globs: &[String], files: &[PathBuf]) -> Result<Option<GlobSet>, SetupError> {
+/// Exclude globs from `--exclude` and the files named by `--exclude-from`.
+fn read_excludes(globs: &[String], files: &[PathBuf]) -> Result<Vec<String>, SetupError> {
     let mut patterns: Vec<String> = globs.to_vec();
     for file in files {
         let text = fs::read_to_string(file).map_err(|e| {
@@ -411,11 +774,15 @@ fn build_excludes(globs: &[String], files: &[PathBuf]) -> Result<Option<GlobSet>
                 .map(String::from),
         );
     }
+    Ok(patterns)
+}
+
+fn build_excludes(patterns: &[String]) -> Result<Option<GlobSet>, SetupError> {
     if patterns.is_empty() {
         return Ok(None);
     }
     let mut builder = GlobSetBuilder::new();
-    for pattern in &patterns {
+    for pattern in patterns {
         let full = if pattern.contains('/') {
             pattern.clone()
         } else {
@@ -533,7 +900,7 @@ fn describe_compression(compression: Compression) -> String {
     }
 }
 
-fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<&'static str, serde_json::Value> {
+fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<String, serde_json::Value> {
     fn enum_name(v: &impl clap::ValueEnum) -> String {
         v.to_possible_value()
             .map_or_else(String::new, |p| p.get_name().to_string())
@@ -570,6 +937,9 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<&'static str, s
         ("part_max_rows", json!(args.output.part_max_rows)),
         ("row_group_rows", json!(args.output.row_group_rows)),
     ])
+    .into_iter()
+    .map(|(key, value)| (key.to_string(), value))
+    .collect()
 }
 
 fn finalize_manifest(
@@ -578,11 +948,11 @@ fn finalize_manifest(
     snapshot: &Snapshot,
     result: &WalkResult,
     report: OutputReport,
-    started: Instant,
+    elapsed: f64,
 ) {
     manifest.status = status;
     manifest.finished_at = Some(iso(now()));
-    manifest.duration_seconds = Some(started.elapsed().as_secs_f64());
+    manifest.duration_seconds = Some(elapsed);
     manifest.totals = Totals {
         entries: report.kinds.iter().sum(),
         by_kind: EntryKind::ALL
@@ -680,7 +1050,7 @@ mod tests {
 
     #[test]
     fn excludes_match_names_and_paths() {
-        let set = build_excludes(&["*.tmp".into(), "/data/*/scratch".into()], &[])
+        let set = build_excludes(&["*.tmp".into(), "/data/*/scratch".into()])
             .ok()
             .flatten()
             .unwrap();
@@ -689,7 +1059,7 @@ mod tests {
         assert!(set.is_match("/data/proj/scratch"));
         assert!(!set.is_match("/data/proj/sub/scratch"));
         assert!(!set.is_match("/data/file.txt"));
-        assert!(build_excludes(&["[".into()], &[]).is_err());
+        assert!(build_excludes(&["[".into()]).is_err());
     }
 
     #[test]

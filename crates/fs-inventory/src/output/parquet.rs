@@ -158,6 +158,13 @@ impl ParquetPartWriter {
         Ok(self.committed)
     }
 
+    /// Commits the open part, if any, and returns every part committed so
+    /// far. The next batch starts a new part.
+    pub fn checkpoint(&mut self) -> io::Result<Vec<PartInfo>> {
+        self.commit()?;
+        Ok(self.committed.clone())
+    }
+
     fn start_part(&mut self) -> io::Result<OpenPart> {
         let dir = self.scan_dir.join(self.table);
         fs::create_dir_all(&dir)?;

@@ -186,6 +186,11 @@ pub struct WalkState {
 impl WalkState {
     const VERSION: u32 = 1;
 
+    /// Entry rows written before the checkpoint.
+    pub fn entries(&self) -> u64 {
+        self.totals.entries
+    }
+
     /// Directories still to read.
     pub fn pending(&self) -> u64 {
         self.tasks.len() as u64 + self.spill.map_or(0, |s| s.waiting)
