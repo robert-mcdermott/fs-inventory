@@ -1,0 +1,43 @@
+<div class="hero">
+  <div class="hero-copy">
+    <p class="eyebrow">Release {{VERSION}} · Linux and macOS · Apache-2.0</p>
+    <h1>fs-inventory</h1>
+    <p class="lede">A fast, parallel inventory of file systems with hundreds of millions to billions of files. It records every file's metadata as <strong>Parquet</strong> for <strong>DuckDB</strong>, keeps every name byte for byte, works around hung NFS servers, and <strong>resumes</strong> after a crash.</p>
+    <div class="hero-meta">
+      <span class="chip">Parquet · CSV · JSON Lines</span>
+      <span class="chip">Resumable checkpoints</span>
+      <span class="chip">Static Linux binary</span>
+      <span class="chip">File-age heat maps</span>
+    </div>
+  </div>
+  <figure class="terminal" aria-label="Quick start terminal session">
+    <div class="terminal-bar"><span></span><span></span><span></span><em>quick start</em></div>
+<pre class="terminal-body"><span class="t-c"># install the latest release (Linux or macOS)</span>
+<span class="t-p">$</span> curl --proto '=https' --tlsv1.2 -fsSL \
+    https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh \
+    | sh
+<span class="t-c"># inventory a tree, check it, add subtree totals</span>
+<span class="t-p">$</span> fs-inventory scan /data/projects -o /scratch/inventory/projects-2026-10-25
+<span class="t-o">fs-inventory: complete: 285 entries in 0:00:00 (33.3k/s), 35 dirs, 44.02 GiB, 1 error, …</span>
+<span class="t-p">$</span> fs-inventory verify /scratch/inventory/projects-2026-10-25
+<span class="t-o">ok</span>
+<span class="t-p">$</span> fs-inventory rollup /scratch/inventory/projects-2026-10-25
+<span class="t-c"># query it with DuckDB</span>
+<span class="t-p">$</span> duckdb -c "SELECT kind, count(*) FROM read_parquet(
+    '/scratch/inventory/projects-2026-10-25/entries/*.parquet') GROUP BY kind"</pre>
+  </figure>
+</div>
+
+<section class="paths" aria-labelledby="pathsTitle">
+  <h2 class="paths-title" id="pathsTitle">Jump to a task</h2>
+  <div class="paths-grid">
+    <a class="path" href="guide.html#install-a-release"><span class="path-k">Install a release</span><code>curl … install.sh | sh</code></a>
+    <a class="path" href="guide.html#42-scan-a-large-network-file-system"><span class="path-k">Scan a large NFS file system</span><code>fs-inventory probe /nfs/projects</code></a>
+    <a class="path" href="guide.html#412-interrupted-crashed-and-stalled-scans"><span class="path-k">Resume after a crash</span><code>fs-inventory resume SCAN_DIR</code></a>
+    <a class="path" href="guide.html#43-fast-namespace-only-scans-on-lustre"><span class="path-k">Fast scans on Lustre</span><code>--fields -size,-blocks</code></a>
+    <a class="path" href="guide.html#49-subtree-totals-and-file-age-heat-maps"><span class="path-k">File-age heat maps</span><code>fs-inventory rollup SCAN_DIR</code></a>
+    <a class="path" href="guide.html#75-recipes"><span class="path-k">Query with DuckDB</span><code>fs_entries(scan_dir)</code></a>
+    <a class="path" href="guide.html#410-finding-names-that-will-break-a-migration"><span class="path-k">Find names that break migrations</span><code>fs_name_flags(name_flags)</code></a>
+    <a class="path" href="guide.html#47-scheduled-scans-for-a-database-or-web-application"><span class="path-k">Scheduled scans</span><code>scan, verify, rollup</code></a>
+  </div>
+</section>
