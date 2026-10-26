@@ -251,6 +251,8 @@ With `--resolve-ids`, `crates/fs-inventory/src/ids.rs` adds two small tables, `u
 
 Per-entry failures go to the errors table, with the path, the failed operation (`open`, `readdir`, `stat`, `verify`, `stall`, or `internal`), the errno and its name, and a message. Directories that failed also carry the error in their own `entries` row. A revisit (`--detect-cycles`) isn't a failure: it appears only in the directory's own row, as `revisit: ...` in `error`, and in the manifest's `revisits` count. Workers keep their counts locally and add them to the shared counters once per directory. The manifest summarizes errors by operation and errno.
 
+Deletions aren't failures. An entry deleted between being listed and being stat'ed, or a directory deleted before it's opened, counts as vanished. So does a directory deleted while it's being read, which Linux reports as `ENOENT` from `getdents64`: a directory can only be deleted once it's empty, so nothing that remained unread is missing, and its row is written with the entries that were read. `tests/churn.rs` deletes, recreates, and renames files and directories throughout a scan and checks the output.
+
 ### 6.2 The stall watchdog
 
 A thread stuck in a system call to a hung NFS server can't be interrupted. The walker can't free that thread, but it can stop waiting for it.

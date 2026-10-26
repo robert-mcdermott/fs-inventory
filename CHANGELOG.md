@@ -11,6 +11,7 @@ All notable changes to this project are documented in this file. The format foll
 ### Fixed
 
 - Directories whose paths are longer than `PATH_MAX` (4,096 bytes on Linux, 1,024 on macOS) are opened in a few calls instead of one call per path component. Opening every directory of a 2,000-level tree took millions of calls: scanning one on macOS went from 7.5 minutes to 6 seconds.
+- A directory deleted while it was being read counts as vanished, like other deletions during a scan, instead of as a `readdir` error (Linux reports it as `ENOENT`). Busy file systems no longer end a scan with exit code 1 for routine churn.
 
 ## [0.6.0] - 2026-10-26
 

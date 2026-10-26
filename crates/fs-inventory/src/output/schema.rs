@@ -216,7 +216,7 @@ pub const ENTRY_COLUMNS: [Column; 33] = [
         "dir_entries",
         Int64,
         true,
-        "For directories that were read: number of immediate children.",
+        "For directories that were read: number of immediate children. A subdirectory deleted after it was listed but before it was read is counted, though it has no row.",
     ),
     col(
         "dir_files",

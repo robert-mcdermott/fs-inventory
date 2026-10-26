@@ -797,7 +797,7 @@ and in JSON Lines, where JSON's own escape keeps it exact:
 
 The `errors` table has one row per failed operation: `open`, `readdir`, `stat`, `verify` (the directory was replaced during the scan), `stall` (given up on after `--stall-timeout`), or `internal` (a bug in fs-inventory, contained to one entry). Each row has the path, the OS error number and name (such as `EACCES`), a message, and the time. The table exists only if there were errors.
 
-Entries deleted between being listed and being read are counted as *vanished* in the manifest and the progress output. They aren't errors: live file systems change during a scan.
+Entries deleted between being listed and being read, including directories deleted while they're being read, are counted as *vanished* in the manifest and the progress output. They aren't errors: live file systems change during a scan.
 
 ### The manifest
 

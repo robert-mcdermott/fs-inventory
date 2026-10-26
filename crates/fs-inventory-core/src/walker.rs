@@ -1758,6 +1758,13 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
                 .read_names(&shared.dir, &mut self.scratch, &mut names)
             {
                 Ok(more) => more,
+                // Linux's answer when the directory was deleted while being
+                // read. Only an empty directory can be deleted, so whatever
+                // wasn't read yet was deleted first: nothing is missing.
+                Err(e) if e.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => {
+                    self.tally.vanished += 1;
+                    false
+                }
                 Err(e) => {
                     error = Some(ErrorInfo::from_io(Op::ReadDir, &e));
                     false
