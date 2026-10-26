@@ -738,7 +738,7 @@ Entries deleted between being listed and being read are counted as *vanished* in
   "started_at": "2026-10-26T00:11:32.698582Z",
   "status": "complete",
   "tool": "fs-inventory",
-  "tool_version": "0.3.0",
+  "tool_version": "0.4.0",
   "totals": {
     "by_kind": { "dir": 36, "file": 248, "symlink": 1 },
     "bytes": 47262948364,

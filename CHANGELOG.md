@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-25
+
+Milestone M4: resumable scans.
+
 ### Added
 
 - Checkpoints and `fs-inventory resume`. Every `--checkpoint-interval` (10 minutes by default; `0` disables them), a scan pauses as each crawl thread finishes its current directory, commits every open part file, and records the directories still to read in `checkpoint/` inside the scan directory. `fs-inventory resume SCAN_DIR` continues a scan that was interrupted, killed, or on a machine that went down. It deletes the parts written after the last checkpoint and reads their directories again, so the finished scan matches an uninterrupted one, with every row once. After Ctrl-C, a final checkpoint makes resuming exact. Resume can change threads, writers, memory, the stall timeout, the checkpoint interval, and progress; the manifest records each resume under `resumes`. A lock keeps two processes from writing one scan.
@@ -55,5 +59,6 @@ The first tagged release. Version numbers follow the milestones, so 0.3.0 comple
 - Writer threads start one at a time and are added, up to `--writers`, only when output backs up. Small scans now write one part file per table instead of one per CPU core.
 - Schema version 2: integer columns are now signed (`INTEGER` or `BIGINT`), so scans load into databases without unsigned types and DuckDB functions such as `format_bytes()` work without casts. Only `dev`, `ino`, and `rdev` stay unsigned (`UBIGINT`). Values above the signed maximum are capped, not wrapped. `verify` reports scans written with schema version 1.
 
-[Unreleased]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/robert-mcdermott/fs-inventory/releases/tag/v0.3.0
