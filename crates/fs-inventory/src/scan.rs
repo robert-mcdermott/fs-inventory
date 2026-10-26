@@ -188,6 +188,9 @@ pub struct ScanSettings {
     excludes: Vec<String>,
     include_snapshots: bool,
     detect_cycles: bool,
+    /// `--symlink-targets`.
+    #[serde(default)]
+    symlink_targets: bool,
     /// Optional metadata fields read.
     fields: Vec<String>,
     statx_dont_sync: bool,
@@ -225,6 +228,7 @@ impl ScanSettings {
             excludes,
             include_snapshots: args.traversal.include_snapshots,
             detect_cycles: args.traversal.detect_cycles,
+            symlink_targets: args.metadata.symlink_targets,
             fields: args
                 .metadata
                 .fields
@@ -636,6 +640,7 @@ pub fn execute(
         include_snapshots: settings.include_snapshots,
         skip_dirs,
         detect_cycles: settings.detect_cycles,
+        symlink_targets: settings.symlink_targets,
         stall_report: STALL_REPORT,
         stall_timeout: runtime.stall_timeout,
         queue_budget: budgets.queue,
@@ -860,10 +865,7 @@ impl Walk<'_> {
 /// Options that parse but do nothing yet. Accepting them silently would be
 /// worse than refusing them.
 fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 2] = [
-        (args.metadata.symlink_targets, "--symlink-targets", "M5"),
-        (args.metadata.resolve_ids, "--resolve-ids", "M5"),
-    ];
+    let pending: [(bool, &str, &str); 1] = [(args.metadata.resolve_ids, "--resolve-ids", "M5")];
     match pending.iter().find(|(set, _, _)| *set) {
         Some((_, what, milestone)) => Err(SetupError::usage(format!(
             "{what} is not implemented yet (planned for milestone {milestone})"
@@ -1044,6 +1046,7 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<String, serde_j
         ),
         ("include_snapshots", json!(args.traversal.include_snapshots)),
         ("detect_cycles", json!(args.traversal.detect_cycles)),
+        ("symlink_targets", json!(args.metadata.symlink_targets)),
         ("max_memory", json!(args.robustness.max_memory)),
         ("statx_dont_sync", json!(args.metadata.statx_dont_sync)),
         (

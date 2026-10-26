@@ -170,7 +170,8 @@ pub struct MetadataOptions {
     #[arg(long)]
     pub statx_dont_sync: bool,
 
-    /// Record symlink targets.
+    /// Record where each symlink points, in `symlink_target`: one more call
+    /// per symlink.
     #[arg(long)]
     pub symlink_targets: bool,
 

@@ -194,6 +194,13 @@ impl Encoder {
         row.uint("time_flags", u64::from(time_flags));
         let error = e.error.map(error_summary);
         row.opt_text("error", error.as_deref());
+        let target = e.symlink_target.map(|t| names::to_text(t, controls));
+        let target_b64 = e.symlink_target.zip(target.as_ref()).and_then(|(t, text)| {
+            (self.options.raw_paths_always || matches!(text, Cow::Owned(_)))
+                .then(|| BASE64.encode(t))
+        });
+        row.opt_text("symlink_target", target.as_deref());
+        row.opt_text("symlink_target_b64", target_b64.as_deref());
         row.end();
     }
 
@@ -453,6 +460,7 @@ mod tests {
             is_mount_point: false,
             totals: None,
             error: None,
+            symlink_target: None,
         };
         let mut out = Vec::new();
         Encoder::new(options(format)).entry(&entry, &mut out);
@@ -466,7 +474,7 @@ mod tests {
             row,
             "/data/Report.PDF,/data,Report.PDF,pdf,,0,file,1,,7,66,1234,1,1000,100,33188,42,4096,\
              1970-01-01T00:00:00.000000Z,1970-01-01T00:00:00.000001Z,1970-01-01T00:00:00.000000Z,\
-             ,,,,,,,false,0,\n"
+             ,,,,,,,false,0,,,\n"
         );
         assert_eq!(row.split(',').count(), ENTRY_COLUMNS.len());
     }
@@ -539,6 +547,7 @@ mod tests {
                 alloc_bytes: 4096,
             }),
             error: Some(&info),
+            symlink_target: None,
         };
         let mut out = Vec::new();
         Encoder::new(options(TextFormat::Jsonl)).entry(&entry, &mut out);
@@ -619,6 +628,7 @@ mod tests {
                 is_mount_point: false,
                 totals: None,
                 error: None,
+                symlink_target: None,
             };
             let mut out = Vec::new();
             encoder.entry(&entry, &mut out);

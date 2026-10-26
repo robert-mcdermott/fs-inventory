@@ -531,7 +531,7 @@ fn parquet_is_the_default_and_matches_std_exactly() {
 
     let batches = read_parquet(&out_dir, "entries");
     let schema = batches[0].schema();
-    assert_eq!(schema.fields().len(), 31);
+    assert_eq!(schema.fields().len(), 33);
     assert_eq!(
         schema.field_with_name("mtime").unwrap().data_type(),
         &arrow_schema::DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()))

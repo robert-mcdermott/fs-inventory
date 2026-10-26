@@ -94,7 +94,7 @@ const fn bytes(name: &'static str, text_name: &'static str, description: &'stati
 use ColumnType::*;
 
 /// The entries table: one row per file, directory, or other entry.
-pub const ENTRY_COLUMNS: [Column; 31] = [
+pub const ENTRY_COLUMNS: [Column; 33] = [
     col(
         "path",
         Text,
@@ -260,6 +260,17 @@ pub const ENTRY_COLUMNS: [Column; 31] = [
         true,
         "For directories that couldn't be fully read: the failed operation and error, such as `open: EACCES`. With `--detect-cycles`, `revisit: already visited through another path` marks a directory that was reached again and not re-read. With `--stall-timeout`, `stall: ...` marks a directory the scan gave up on.",
     ),
+    col(
+        "symlink_target",
+        Text,
+        true,
+        "Where a symlink points, with `--symlink-targets`, rendered like `path`; null otherwise. Added in schema version 3, and last so that older CSV readers can ignore it.",
+    ),
+    bytes(
+        "symlink_target_raw",
+        "symlink_target_b64",
+        "Exact target bytes, when `symlink_target` differs from them (every symlink with `--raw-paths always`). Base64 in CSV and JSON Lines, as `symlink_target_b64`.",
+    ),
 ];
 
 /// The errors table: one row per failed operation.
@@ -279,7 +290,7 @@ pub const ERROR_COLUMNS: [Column; 7] = [
         "op",
         Text,
         false,
-        "The failed operation: `open`, `readdir`, `stat`, `verify` (the directory was replaced during the scan), `stall` (no progress for `--stall-timeout`, so the scan gave up on the directory), or `internal`.",
+        "The failed operation: `open`, `readdir`, `stat`, `verify` (the directory was replaced during the scan), `stall` (no progress for `--stall-timeout`, so the scan gave up on the directory), `readlink` (reading a symlink's target, with `--symlink-targets`), or `internal`.",
     ),
     col(
         "errno",

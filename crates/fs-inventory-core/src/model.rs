@@ -280,6 +280,9 @@ pub struct Entry<'a> {
     pub totals: Option<DirTotals>,
     /// For directories that could not be read, why.
     pub error: Option<&'a ErrorInfo>,
+    /// For symlinks, with [`crate::walker::WalkOptions::symlink_targets`],
+    /// the target's exact bytes.
+    pub symlink_target: Option<&'a [u8]>,
 }
 
 impl Entry<'_> {
@@ -308,11 +311,13 @@ pub enum Op {
     /// A worker made no progress for `--stall-timeout` reading this
     /// directory, so the scan gave up on it.
     Stall,
+    /// Reading a symlink's target.
+    ReadLink,
 }
 
 impl Op {
     /// Every operation.
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Open,
         Self::ReadDir,
         Self::Stat,
@@ -320,6 +325,7 @@ impl Op {
         Self::Internal,
         Self::Revisit,
         Self::Stall,
+        Self::ReadLink,
     ];
 
     /// The operation named `name` by [`Self::as_str`].
@@ -337,6 +343,7 @@ impl Op {
             Self::Internal => "internal",
             Self::Revisit => "revisit",
             Self::Stall => "stall",
+            Self::ReadLink => "readlink",
         }
     }
 }

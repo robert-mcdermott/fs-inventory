@@ -109,6 +109,8 @@ pub struct EntryBatchBuilder {
     is_mount_point: BooleanBuilder,
     time_flags: Int32Builder,
     error: StringBuilder,
+    symlink_target: StringBuilder,
+    symlink_target_raw: BinaryBuilder,
 }
 
 impl EntryBatchBuilder {
@@ -149,6 +151,8 @@ impl EntryBatchBuilder {
             is_mount_point: BooleanBuilder::new(),
             time_flags: Int32Builder::new(),
             error: StringBuilder::new(),
+            symlink_target: StringBuilder::new(),
+            symlink_target_raw: BinaryBuilder::new(),
         }
     }
 
@@ -203,7 +207,17 @@ impl EntryBatchBuilder {
         let is_device = matches!(e.kind(), EntryKind::CharDevice | EntryKind::BlockDevice);
         let totals = e.totals;
         let error = e.error.map(error_summary);
-        let bytes = path.len() + parent_path.len() + name.len() + raw.map_or(0, <[u8]>::len);
+        let target = e
+            .symlink_target
+            .map(|t| (names::to_text(t, Controls::Keep), t));
+        let target_raw = target
+            .as_ref()
+            .and_then(|(text, t)| raw_path(t, text, self.options.raw_paths_always));
+        let bytes = path.len()
+            + parent_path.len()
+            + name.len()
+            + raw.map_or(0, <[u8]>::len)
+            + target.as_ref().map_or(0, |(_, t)| t.len() * 2);
 
         self.path.append_value(&path);
         self.parent_path.append_value(&parent_path);
@@ -239,6 +253,9 @@ impl EntryBatchBuilder {
         self.is_mount_point.append_value(e.is_mount_point);
         self.time_flags.append_value(time_flags);
         self.error.append_option(error.as_deref());
+        self.symlink_target
+            .append_option(target.as_ref().map(|(text, _)| text.as_ref()));
+        self.symlink_target_raw.append_option(target_raw);
 
         // Strings plus about 200 bytes of fixed-width columns.
         self.bytes += bytes + 200;
@@ -279,6 +296,8 @@ impl EntryBatchBuilder {
             Arc::new(self.is_mount_point.finish()),
             Arc::new(self.time_flags.finish()),
             Arc::new(self.error.finish()),
+            Arc::new(self.symlink_target.finish()),
+            Arc::new(self.symlink_target_raw.finish()),
         ];
         self.bytes = 0;
         let batch = RecordBatch::try_new(Arc::clone(&self.schema), columns)?;
@@ -420,6 +439,7 @@ mod tests {
                 is_mount_point: false,
                 totals: None,
                 error: None,
+                symlink_target: None,
             });
         }
         let batch = builder.finish().unwrap();
@@ -457,6 +477,7 @@ mod tests {
             is_mount_point: false,
             totals: None,
             error: None,
+            symlink_target: None,
         });
         let batch = builder.finish().unwrap();
         assert_eq!(batch.schema(), entry_schema(options(), selection));

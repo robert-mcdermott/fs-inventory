@@ -1081,6 +1081,7 @@ mod tests {
             is_mount_point: false,
             totals: None,
             error: None,
+            symlink_target: None,
         });
     }
 

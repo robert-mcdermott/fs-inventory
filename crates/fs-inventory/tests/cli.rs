@@ -58,9 +58,9 @@ fn unimplemented_commands_exit_4() {
 
 #[test]
 fn unimplemented_or_invalid_scan_options_are_refused() {
-    let out = fs_inventory(&["scan", "/data", "-o", "out", "--symlink-targets"]);
+    let out = fs_inventory(&["scan", "/data", "-o", "out", "--resolve-ids"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--symlink-targets"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--resolve-ids"));
     let out = fs_inventory(&["scan", "/data", "-o", "out", "--columns", "path,bogus"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("bogus"));
@@ -79,7 +79,7 @@ fn schema_describes_every_format() {
     }
     let json: serde_json::Value =
         serde_json::from_slice(&fs_inventory(&["schema", "--format", "json"]).stdout).unwrap();
-    assert_eq!(json["entries"].as_array().unwrap().len(), 31);
+    assert_eq!(json["entries"].as_array().unwrap().len(), 33);
 }
 
 #[test]

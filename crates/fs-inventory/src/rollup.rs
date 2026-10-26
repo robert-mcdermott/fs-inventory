@@ -420,10 +420,11 @@ fn rollup(args: &RollupArgs) -> io::Result<String> {
             manifest["format"]
         )));
     }
-    if manifest["schema_version"].as_u64() != Some(u64::from(fs_inventory_core::SCHEMA_VERSION)) {
+    if !fs_inventory_core::readable_schema(manifest["schema_version"].as_u64()) {
         return Err(fail(format!(
-            "the scan has schema version {}, but this fs-inventory reads version {}; scan again",
+            "the scan has schema version {}, but this fs-inventory reads versions {} to {}; scan again",
             manifest["schema_version"],
+            fs_inventory_core::OLDEST_READABLE_SCHEMA,
             fs_inventory_core::SCHEMA_VERSION
         )));
     }

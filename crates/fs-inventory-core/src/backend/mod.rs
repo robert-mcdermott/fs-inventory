@@ -86,6 +86,9 @@ pub trait Backend: Send + Sync {
     /// Reads metadata for the entry `name` in `dir` without following symlinks
     /// or triggering automounts.
     fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat>;
+
+    /// Reads the target of the symlink `name` in `dir`, as exact bytes.
+    fn read_link_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Vec<u8>>;
 }
 
 /// A batch of directory entry names stored in one buffer.

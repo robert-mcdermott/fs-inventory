@@ -14,8 +14,8 @@
 -- The _csv and _jsonl variants read the text formats. They give column types
 -- explicitly, so DuckDB never guesses them from a sample (a column of
 -- numeric-looking file names would otherwise be read as numbers), read
--- compressed parts (.zst, .gz) transparently, and add `path_raw` decoded from
--- `path_b64`. The CSV macros need every column; for scans made with
+-- compressed parts (.zst, .gz) transparently, and add `path_raw` and
+-- `symlink_target_raw` decoded from their base64 columns. The CSV macros need every column; for scans made with
 -- --columns, use read_csv with your own column list, or Parquet. Timestamps
 -- assume the default --time-format iso.
 --
@@ -36,11 +36,14 @@ CREATE OR REPLACE MACRO fs_rollup_ages(scan_dir) AS TABLE
 SELECT * FROM read_parquet(scan_dir || '/rollup_ages/*.parquet');
 
 CREATE OR REPLACE MACRO fs_entries_csv(scan_dir) AS TABLE
-SELECT *, from_base64(path_b64) AS path_raw
+SELECT *, from_base64(path_b64) AS path_raw,
+    from_base64(symlink_target_b64) AS symlink_target_raw
 FROM read_csv(
     scan_dir || '/entries/*.csv*',
     header = true,
     auto_detect = false,
+    -- Scans before schema version 3 lack the last two columns.
+    null_padding = true,
     delim = ',',
     quote = '"',
     escape = '"',
@@ -75,12 +78,15 @@ FROM read_csv(
         'dir_alloc_bytes': 'BIGINT',
         'is_mount_point': 'BOOLEAN',
         'time_flags': 'INTEGER',
-        'error': 'VARCHAR'
+        'error': 'VARCHAR',
+        'symlink_target': 'VARCHAR',
+        'symlink_target_b64': 'VARCHAR'
     }
 );
 
 CREATE OR REPLACE MACRO fs_entries_jsonl(scan_dir) AS TABLE
-SELECT *, from_base64(path_b64) AS path_raw
+SELECT *, from_base64(path_b64) AS path_raw,
+    from_base64(symlink_target_b64) AS symlink_target_raw
 FROM read_json(
     scan_dir || '/entries/*.jsonl*',
     format = 'newline_delimited',
@@ -115,7 +121,9 @@ FROM read_json(
         'dir_alloc_bytes': 'BIGINT',
         'is_mount_point': 'BOOLEAN',
         'time_flags': 'INTEGER',
-        'error': 'VARCHAR'
+        'error': 'VARCHAR',
+        'symlink_target': 'VARCHAR',
+        'symlink_target_b64': 'VARCHAR'
     }
 );
 

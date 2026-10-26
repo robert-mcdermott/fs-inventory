@@ -55,11 +55,11 @@ pub fn check(scan_dir: &Path) -> Report {
         }
     };
 
-    let schema_version = manifest["schema_version"].as_u64();
-    if schema_version != Some(u64::from(fs_inventory_core::SCHEMA_VERSION)) {
+    if !fs_inventory_core::readable_schema(manifest["schema_version"].as_u64()) {
         report.problems.push(format!(
-            "schema version is {}, but this fs-inventory reads version {}",
+            "schema version is {}, but this fs-inventory reads versions {} to {}",
             manifest["schema_version"],
+            fs_inventory_core::OLDEST_READABLE_SCHEMA,
             fs_inventory_core::SCHEMA_VERSION
         ));
     }
