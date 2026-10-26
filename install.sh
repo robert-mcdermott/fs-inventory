@@ -245,5 +245,5 @@ cat <<EOF
 Scan a directory tree into a new output directory:
   $RUN_COMMAND scan /data -o ./inventory-\$(date +%F)
 
-User guide: https://github.com/$REPOSITORY/blob/main/docs/user-guide.md
+User guide: https://robert-mcdermott.github.io/fs-inventory/guide.html
 EOF

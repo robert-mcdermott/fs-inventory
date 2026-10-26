@@ -91,6 +91,15 @@ jobs:
           file "$bin" | grep -Eq 'statically linked|static-pie linked'
           "$bin" --version
 
+  site:
+    name: Docs site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+      # Fails on a broken link to a page or a section.
+      - run: uv run --no-project --with markdown-it-py==4.2.0 site/build.py --out _site
+
   deny:
     name: cargo-deny (${{ matrix.checks }})
     runs-on: ubuntu-latest

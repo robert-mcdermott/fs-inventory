@@ -16,7 +16,7 @@ The boundary between them is the `Sink` trait in `crates/fs-inventory-core/src/w
 A scan flows like this:
 
 ```mermaid
-flowchart LR
+flowchart TB
     R[Roots] --> I[(Injector)]
     subgraph Crawl["Crawl threads (--threads)"]
         W1["Worker 1: LIFO deque"]

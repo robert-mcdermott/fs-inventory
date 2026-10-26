@@ -82,6 +82,8 @@ Only treat a scan as complete when its `manifest.json` has `"status": "complete"
 
 ## Documentation
 
+The documentation is also a website, with search: **<https://robert-mcdermott.github.io/fs-inventory/>**.
+
 | Document | Contents |
 |---|---|
 | [User guide](docs/user-guide.md) | Installing; common scenarios (NFS, Lustre, scheduled scans, migrations); every command and option; the output formats, manifest, and exit codes; querying scans with DuckDB |

@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file. The format foll
 ### Added
 
 - Release binaries: each release has static Linux binaries (x86_64 and ARM) and macOS binaries (Apple silicon and Intel), with a `SHA256SUMS` file. Pushing a version tag builds them and drafts the release.
+- A documentation website, <https://robert-mcdermott.github.io/fs-inventory/>, generated from the repository's Markdown: the user guide, schema, architecture, and changelog, with navigation, search across every page, copy buttons, and dark mode. Publishing a release rebuilds it from that release's docs, and CI fails a pull request that breaks a link between pages or sections.
 - `install.sh` installs a release with `curl ... | sh`: it verifies the SHA-256 checksum and the binary's version before installing to `~/.local/bin` (or `--install-dir`), and never uses `sudo` or changes `PATH`.
 
 ## [0.4.0] - 2026-10-25

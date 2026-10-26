@@ -4,9 +4,9 @@ This guide covers fs-inventory 0.4.0: how to install it, how to run it in the si
 
 Related documents:
 
-- [schema.md](schema.md): every column of every table.
-- [architecture.md](architecture.md): how fs-inventory works inside.
-- [../CHANGELOG.md](../CHANGELOG.md): what changed in each release.
+- [Schema](schema.md): every column of every table.
+- [Architecture](architecture.md): how fs-inventory works inside.
+- [Changelog](../CHANGELOG.md): what changed in each release.
 
 ## Contents
 
@@ -932,7 +932,7 @@ SET VARIABLE scan = '/scratch/inventory/projects-2026-10-25';
 
 ### 7.4 What's in a row
 
-Every column is described in [schema.md](schema.md). The ones most queries use:
+Every column is described in the [schema reference](schema.md). The ones most queries use:
 
 | Column | Use |
 |---|---|
