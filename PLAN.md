@@ -128,7 +128,7 @@ Deep trees regularly exceed the 4096-byte `PATH_MAX`. Paths are kept as growable
 The walker talks to a `FsBackend` trait. This also enables deterministic fault-injection tests (§9).
 
 - **Linux (primary):** `statx`, `getdents64`, `O_NOATIME`, and `AT_NO_AUTOMOUNT`. Built with `rustix` raw syscalls, so the static musl binary has no glibc version dependency.
-- **macOS:** `fstatat` plus `st_birthtime` in M1. M5 adds a `getattrlistbulk` backend (one call returns names and attributes for many entries), adopted only if benchmarks on APFS, SMB, and NFS justify it.
+- **macOS:** `fstatat` plus `st_birthtime` in M1. A `getattrlistbulk` backend (one call returns names and attributes for many entries) is parked until after 1.0 (decision 12).
 - **FreeBSD and other Unix:** generic `fstatat` backend, best effort.
 
 ---
@@ -429,7 +429,7 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 | **M2: Parquet** ✅ | Arrow builders, Parquet writer pool, key-value metadata, `--columns`, `sql/` macros and example queries, `verify`, `schema` (also generates `docs/schema.md`), mimalloc | Output size per entry measured on 1.24M real entries (§5.2), and DuckDB 2.0 loads Parquet, CSV, and JSON Lines scans. A 100M-entry scan of a generated tree ran on the laptop (§9.2); scans of real storage at that scale happen on the Linux server. |
 | **M3: Scale** (features done) | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, `--fields`, `--detect-cycles`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat: met with a generated billion-entry tree on the laptop (§9.2). Default tuning from real storage happens on the Linux server. |
 | **M4: Resume** ✅ | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run: tested by resuming from every checkpoint of a walk, and by `kill -9` at several points of real scans |
-| **M5: Platform and extras** | `diff` between two scans (§11), `convert` ✅, `--symlink-targets` ✅ (schema version 3), `--resolve-ids` ✅ (decision 10) (all in 0.6.0), macOS `getattrlistbulk` backend (if benchmarks justify it), static release binaries and `install.sh` ✅, documentation site ✅, scale tests and the `--max-memory` budget ✅ (0.5.0), then hardening and a final review of the CLI and schema | Release 1.0 |
+| **M5: Platform and extras** | `diff` between two scans (§11), `convert` ✅, `--symlink-targets` ✅ (schema version 3), `--resolve-ids` ✅ (decision 10) (all in 0.6.0), static release binaries and `install.sh` ✅, documentation site ✅, scale tests and the `--max-memory` budget ✅ (0.5.0), then hardening and a final review of the CLI and schema | Release 1.0 |
 
 ### Future ideas (post-1.0)
 
@@ -439,6 +439,7 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 - **Windows backend** using `NtQueryDirectoryFile`, which returns names and metadata in bulk.
 - **File attributes** (immutable, append-only, compressed, encrypted) from `statx` and macOS file flags. Parked (decision 12): `alloc_bytes` already shows compression and sparse files, and NFS reports few attributes.
 - **Packages:** `.deb` and `.rpm`, and a Homebrew tap. Parked (decision 12): the static binaries and `install.sh` cover installation.
+- **macOS bulk listing:** a backend using `getattrlistbulk`, which returns names and metadata for many entries per call, as macOS `find` does. Parked (decision 12): Linux is the main target, it needs hand-written unsafe code to decode the attribute buffers, and adopting it needs benchmarks on APFS, SMB, and NFS.
 
 ---
 
@@ -470,7 +471,7 @@ fs-inventory will feed a separate file inventory and analytics web application: 
 | 9 | Default stall timeout | **Decided:** none. A stalled directory is reported after 60 seconds, and the scan waits for it; `--stall-timeout DURATION` opts in to giving up on it. An unattended scan can hang on a dead server, but never skips part of a tree unless asked to. |
 | 10 | User and group names | **Decided:** opt-in `--resolve-ids`, off by default. Each crawl thread collects the IDs it sees, and when the scan ends each unique ID is looked up once with `getent`, which reaches LDAP and sssd even from the static binary. The names go in `users` and `groups` tables next to the entries; entry rows keep numeric IDs only. |
 | 11 | Guessing legacy encodings | **Decided:** dropped (`--guess-encoding`). Guesses are unreliable on short names, and the exact bytes are kept. |
-| 12 | Parked until after 1.0 | File attributes, `.deb` and `.rpm` packages, and a Homebrew tap (§10, future ideas). |
+| 12 | Parked until after 1.0 | File attributes, `.deb` and `.rpm` packages, a Homebrew tap, and a macOS `getattrlistbulk` backend (§10, future ideas). |
 
 ---
 
