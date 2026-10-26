@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-26
+
+Release binaries and an installer, a documentation website, scale tests up to a billion entries, and a `--max-memory` that budgets the whole scan.
+
 ### Added
 
 - Release binaries: each release has static Linux binaries (x86_64 and ARM) and macOS binaries (Apple silicon and Intel), with a `SHA256SUMS` file. Pushing a version tag builds them and drafts the release.
@@ -16,6 +20,10 @@ All notable changes to this project are documented in this file. The format foll
 ### Changed
 
 - `--max-memory` budgets the whole scan. It first sets aside what the crawl threads and Parquet writers need (memory grows with threads, measured at about 1.7 GB with 64 threads and 3 GB with 256 without a budget), uses only as many writers as fit unless `--writers` is given, and shrinks row buffers as threads are added. It also has the allocator return freed memory at once, which cut peak memory by 40 to 50% on Linux for 5 to 8% more CPU time. A budget too small for the threads gets a warning with the budget they need. Scans without `--max-memory` run exactly as before.
+
+### Removed
+
+- `--guess-encoding`, which was never implemented. Guesses of a name's legacy character set are unreliable on short names, and the exact bytes of every name are kept, so they can be decoded later with the right character set.
 
 ### Fixed
 
@@ -76,6 +84,7 @@ The first tagged release. Version numbers follow the milestones, so 0.3.0 comple
 - Writer threads start one at a time and are added, up to `--writers`, only when output backs up. Small scans now write one part file per table instead of one per CPU core.
 - Schema version 2: integer columns are now signed (`INTEGER` or `BIGINT`), so scans load into databases without unsigned types and DuckDB functions such as `format_bytes()` work without casts. Only `dev`, `ino`, and `rdev` stay unsigned (`UBIGINT`). Values above the signed maximum are capped, not wrapped. `verify` reports scans written with schema version 1.
 
-[Unreleased]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/robert-mcdermott/fs-inventory/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/robert-mcdermott/fs-inventory/releases/tag/v0.3.0
