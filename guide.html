@@ -1,0 +1,1739 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>User guide · fs-inventory</title>
+<meta name="description" content="Installing fs-inventory, common scenarios, every command and option, the output, and querying scans with DuckDB.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&family=Schibsted+Grotesk:wght@600;700;800&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.12.0/highlight.min.js"></script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="icon-btn nav-toggle" id="navToggle" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+    </button>
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true">fs</span>
+      <span class="brand-text">fs-inventory</span>
+    </a>
+    <nav class="tabs" aria-label="Pages"><a href="index.html">Overview</a><a href="guide.html" aria-current="page">User guide</a><a href="schema.html">Schema</a><a href="architecture.html">Architecture</a><a href="changelog.html">Changelog</a></nav>
+    <button class="search-trigger" id="searchOpen" type="button" aria-haspopup="dialog">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span class="search-trigger-text">Search the docs</span>
+      <kbd class="kbd" id="searchKbd">/</kbd>
+    </button>
+    <div class="topbar-right">
+      <a class="chip chip-version" href="changelog.html" title="Release these docs describe">v1.0.0</a>
+      <a class="icon-btn" href="https://github.com/robert-mcdermott/fs-inventory" target="_blank" rel="noopener" aria-label="Source on GitHub">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.86v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>
+      </a>
+      <button class="icon-btn" id="themeToggle" type="button" aria-label="Toggle dark mode">
+        <svg class="i-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <svg class="i-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+</header>
+
+<div class="layout" id="top">
+  <nav class="sidebar" id="sidebar" aria-label="Sections">
+    <div class="sidebar-inner">
+      <nav class="side-tabs" aria-label="Pages"><a href="index.html">Overview</a><a href="guide.html" aria-current="page">User guide</a><a href="schema.html">Schema</a><a href="architecture.html">Architecture</a><a href="changelog.html">Changelog</a></nav>
+      <div class="nav-group"><p class="nav-label">On this page</p><ul><li class="nav-sec"><a href="#1-install" data-target="1-install"><span class="nav-num">01</span><span>Install</span></a><ul class="nav-sub"><li><a href="#install-a-release" data-target="install-a-release">Install a release</a></li><li><a href="#build-from-source" data-target="build-from-source">Build from source</a></li><li><a href="#check-the-installation" data-target="check-the-installation">Check the installation</a></li></ul></li><li class="nav-sec"><a href="#2-quick-start" data-target="2-quick-start"><span class="nav-num">02</span><span>Quick start</span></a></li><li class="nav-sec"><a href="#3-concepts" data-target="3-concepts"><span class="nav-num">03</span><span>Concepts</span></a></li><li class="nav-sec"><a href="#4-common-scenarios" data-target="4-common-scenarios"><span class="nav-num">04</span><span>Common scenarios</span></a><ul class="nav-sub"><li><a href="#41-inventory-a-directory-tree" data-target="41-inventory-a-directory-tree">4.1 Inventory a directory tree</a></li><li><a href="#42-scan-a-large-network-file-system" data-target="42-scan-a-large-network-file-system">4.2 Scan a large network file system</a></li><li><a href="#43-fast-namespace-only-scans-on-lustre" data-target="43-fast-namespace-only-scans-on-lustre">4.3 Fast namespace-only scans on Lustre</a></li><li><a href="#44-several-roots-bind-mounts-and-loops" data-target="44-several-roots-bind-mounts-and-loops">4.4 Several roots, bind mounts, and loops</a></li><li><a href="#45-excluding-paths" data-target="45-excluding-paths">4.5 Excluding paths</a></li><li><a href="#46-depth-limits-and-mount-points" data-target="46-depth-limits-and-mount-points">4.6 Depth limits and mount points</a></li><li><a href="#47-scheduled-scans-for-a-database-or-web-application" data-target="47-scheduled-scans-for-a-database-or-web-application">4.7 Scheduled scans for a database or web application</a></li><li><a href="#48-streaming-to-another-program" data-target="48-streaming-to-another-program">4.8 Streaming to another program</a></li><li><a href="#49-subtree-totals-and-file-age-heat-maps" data-target="49-subtree-totals-and-file-age-heat-maps">4.9 Subtree totals and file-age heat maps</a></li><li><a href="#410-finding-names-that-will-break-a-migration" data-target="410-finding-names-that-will-break-a-migration">4.10 Finding names that will break a migration</a></li><li><a href="#411-text-output-for-spreadsheets-and-other-tools" data-target="411-text-output-for-spreadsheets-and-other-tools">4.11 Text output for spreadsheets and other tools</a></li><li><a href="#412-interrupted-crashed-and-stalled-scans" data-target="412-interrupted-crashed-and-stalled-scans">4.12 Interrupted, crashed, and stalled scans</a></li><li><a href="#413-permissions-and-side-effects" data-target="413-permissions-and-side-effects">4.13 Permissions and side effects</a></li><li><a href="#414-user-and-group-names" data-target="414-user-and-group-names">4.14 User and group names</a></li></ul></li><li class="nav-sec"><a href="#5-command-reference" data-target="5-command-reference"><span class="nav-num">05</span><span>Command reference</span></a><ul class="nav-sub"><li><a href="#51-scan" data-target="51-scan">5.1 scan</a></li><li><a href="#52-verify" data-target="52-verify">5.2 verify</a></li><li><a href="#53-rollup" data-target="53-rollup">5.3 rollup</a></li><li><a href="#54-schema" data-target="54-schema">5.4 schema</a></li><li><a href="#55-probe" data-target="55-probe">5.5 probe</a></li><li><a href="#56-resume" data-target="56-resume">5.6 resume</a></li><li><a href="#57-convert" data-target="57-convert">5.7 convert</a></li></ul></li><li class="nav-sec"><a href="#6-output-reference" data-target="6-output-reference"><span class="nav-num">06</span><span>Output reference</span></a><ul class="nav-sub"><li><a href="#part-files" data-target="part-files">Part files</a></li><li><a href="#the-checkpoint-directory" data-target="the-checkpoint-directory">The checkpoint directory</a></li><li><a href="#formats" data-target="formats">Formats</a></li><li><a href="#names-and-exact-bytes" data-target="names-and-exact-bytes">Names and exact bytes</a></li><li><a href="#timestamps" data-target="timestamps">Timestamps</a></li><li><a href="#nulls" data-target="nulls">Nulls</a></li><li><a href="#errors-and-vanished-entries" data-target="errors-and-vanished-entries">Errors and vanished entries</a></li><li><a href="#the-manifest" data-target="the-manifest">The manifest</a></li><li><a href="#progress-output" data-target="progress-output">Progress output</a></li><li><a href="#exit-codes" data-target="exit-codes">Exit codes</a></li></ul></li><li class="nav-sec"><a href="#7-querying-scans-with-duckdb" data-target="7-querying-scans-with-duckdb"><span class="nav-num">07</span><span>Querying scans with DuckDB</span></a><ul class="nav-sub"><li><a href="#71-reading-a-scan-directly" data-target="71-reading-a-scan-directly">7.1 Reading a scan directly</a></li><li><a href="#72-the-macros" data-target="72-the-macros">7.2 The macros</a></li><li><a href="#73-settings-and-pitfalls" data-target="73-settings-and-pitfalls">7.3 Settings and pitfalls</a></li><li><a href="#74-whats-in-a-row" data-target="74-whats-in-a-row">7.4 What's in a row</a></li><li><a href="#75-recipes" data-target="75-recipes">7.5 Recipes</a></li></ul></li><li class="nav-sec"><a href="#8-performance-tuning" data-target="8-performance-tuning"><span class="nav-num">08</span><span>Performance tuning</span></a><ul class="nav-sub"><li><a href="#81-threads" data-target="81-threads">8.1 Threads</a></li><li><a href="#82-fields-and-caching" data-target="82-fields-and-caching">8.2 Fields and caching</a></li><li><a href="#83-memory" data-target="83-memory">8.3 Memory</a></li><li><a href="#84-checkpoints" data-target="84-checkpoints">8.4 Checkpoints</a></li><li><a href="#85-output" data-target="85-output">8.5 Output</a></li></ul></li><li class="nav-sec"><a href="#9-troubleshooting" data-target="9-troubleshooting"><span class="nav-num">09</span><span>Troubleshooting</span></a></li></ul></div>
+      <div class="nav-group nav-extra">
+        <p class="nav-label">More</p>
+        <ul>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory/releases/latest" target="_blank" rel="noopener">Latest release</a></li>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory" target="_blank" rel="noopener">Source on GitHub</a></li>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory/issues" target="_blank" rel="noopener">Report an issue</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <main class="main" id="main">
+    <header class="page-header"><p class="eyebrow">fs-inventory 1.0.0</p><h1>User guide</h1><p class="lede">Installing fs-inventory, common scenarios, every command and option, the output, and querying scans with DuckDB.</p></header>
+    <article class="doc" id="doc">
+      <section class="doc-section" data-section="intro">
+<p>This guide covers fs-inventory 1.0.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at <code><span class="nobr">/data/</span><wbr><span class="nobr">projects</span></code> on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.</p>
+<p>Related documents:</p>
+<ul>
+<li><a href="schema.html">Schema</a>: every column of every table.</li>
+<li><a href="architecture.html">Architecture</a>: how fs-inventory works inside.</li>
+<li><a href="changelog.html">Changelog</a>: what changed in each release.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="1-install">
+<h2 id="1-install">1. Install<a class="anchor" href="#1-install" aria-label="Link to this section">#</a></h2>
+<p>fs-inventory is a single executable with no runtime dependencies. Each release has binaries for Linux (x86_64 and ARM) and macOS (Apple silicon and Intel). The Linux binaries are static: they run on any distribution with kernel 3.2 or later, including RHEL 7.</p>
+<h3 id="install-a-release">Install a release<a class="anchor" href="#install-a-release" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sh
+</code></pre></div>
+<p>The installer downloads the binary for your system and the release's <code><span class="nobr">SHA256SUMS</span></code> file. It checks the binary's SHA-256 checksum, runs it to check its version, and only then installs it as <code><span class="nobr">~/.local/</span><wbr><span class="nobr">bin/</span><wbr><span class="nobr">fs-inventory</span></code>, replacing an existing copy in one step. It doesn't use <code><span class="nobr">sudo</span></code> or change <code><span class="nobr">PATH</span></code>. If <code><span class="nobr">~/.local/</span><wbr><span class="nobr">bin</span></code> isn't on your <code><span class="nobr">PATH</span></code>, it says so and prints the full path to run.</p>
+<p>Pass options to the installer after <code><span class="nobr">sh</span> <span class="nobr">-s</span> <span class="nobr">--</span></code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Environment variable</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">--version</span> <span class="nobr">VERSION</span></code></td>
+<td><code><span class="nobr">FS_INVENTORY_VERSION</span></code></td>
+<td>Install this release, such as <code><span class="nobr">v1.0.0</span></code>, instead of the latest</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--install-dir</span> <span class="nobr">DIRECTORY</span></code></td>
+<td><code><span class="nobr">FS_INVENTORY_INSTALL_DIR</span></code></td>
+<td>Install here instead of <code><span class="nobr">~/.local/</span><wbr><span class="nobr">bin</span></code></td>
+</tr>
+</tbody>
+</table></div>
+<p>For example, to install a pinned version for every user of a server:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v1.0.0 --install-dir /usr/local/bin
+</code></pre></div>
+<p>To install without the script, download the binary and <code><span class="nobr">SHA256SUMS</span></code> from the <a href="https://github.com/robert-mcdermott/fs-inventory/releases" target="_blank" rel="noopener">releases page</a>, check the checksum, and make the binary executable:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">grep ' fs-inventory-linux-amd64$' SHA256SUMS | sha256sum --check
+</code></pre></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">chmod +x fs-inventory-linux-amd64
+</code></pre></div>
+<p>On macOS, use <code><span class="nobr">shasum</span> <span class="nobr">-a</span> <span class="nobr">256</span> <span class="nobr">--check</span></code> in place of <code><span class="nobr">sha256sum</span> <span class="nobr">--check</span></code>. A binary downloaded with a web browser is quarantined by macOS; remove that with <code><span class="nobr">xattr</span> <span class="nobr">-d</span> <span class="nobr">com.apple.quarantine</span> <span class="nobr">fs-inventory-darwin-arm64</span></code>, or use the installer, which downloads with <code><span class="nobr">curl</span></code>.</p>
+<p>To uninstall, delete the binary.</p>
+<h3 id="build-from-source">Build from source<a class="anchor" href="#build-from-source" aria-label="Link to this section">#</a></h3>
+<p>Build with Rust 1.88 or later; the toolchain named in <code><span class="nobr">rust-toolchain.toml</span></code> installs automatically through rustup.</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">cargo build --release
+</code></pre></div>
+<p>The binary is <code><span class="nobr">target/</span><wbr><span class="nobr">release/</span><wbr><span class="nobr">fs-inventory</span></code>. Copy it anywhere on your <code><span class="nobr">PATH</span></code>.</p>
+<p>A normal Linux build links against the system's glibc and runs only on systems with that glibc version or newer. To build a static binary like the released ones, build on a Linux machine (or in a Linux container) with the musl C tools installed (<code><span class="nobr">musl-tools</span></code> on Debian and Ubuntu):</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">rustup target add x86_64-unknown-linux-musl
+</code></pre></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">cargo build --release --target x86_64-unknown-linux-musl
+</code></pre></div>
+<p>The binary is <code><span class="nobr">target/</span><wbr><span class="nobr">x86_64-unknown-linux-musl/</span><wbr><span class="nobr">release/</span><wbr><span class="nobr">fs-inventory</span></code>. Use <code><span class="nobr">aarch64-unknown-linux-musl</span></code> for ARM servers. The static build crawls as fast as the glibc build.</p>
+<h3 id="check-the-installation">Check the installation<a class="anchor" href="#check-the-installation" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory --version
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory 1.0.0
+</code></pre></div>
+<p>On kernels older than 4.11 (such as RHEL 7), fs-inventory reads metadata with <code><span class="nobr">fstatat</span></code> instead of <code><span class="nobr">statx</span></code>, and <code><span class="nobr">btime</span></code> (creation time) is always null.</p>
+</section>
+<section class="doc-section" data-section="2-quick-start">
+<h2 id="2-quick-start">2. Quick start<a class="anchor" href="#2-quick-start" aria-label="Link to this section">#</a></h2>
+<p>Scan a directory tree into a new output directory:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data/projects -o /scratch/inventory/projects-2026-10-25
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory: complete: 285 entries in 0:00:00 (33.3k/s), 35 dirs, 44.02 GiB, 1 error, 0 vanished; output: /scratch/inventory/projects-2026-10-25
+</code></pre></div>
+<p>Check that the scan is complete and consistent:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory verify /scratch/inventory/projects-2026-10-25
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">scan 01a1758c-51da-709d-bafb-c8feaa458bf3: complete, 285 entries in 1 part, 1 error in 1 part (parquet)
+ok
+</code></pre></div>
+<p>Query it with DuckDB:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">duckdb -c &quot;SELECT kind, count(*) AS entries, sum(size) AS bytes
+           FROM read_parquet('/scratch/inventory/projects-2026-10-25/entries/*.parquet')
+           GROUP BY kind ORDER BY entries DESC&quot;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌─────────┬─────────┬─────────────┐
+│  kind   │ entries │    bytes    │
+│ varchar │  int64  │   int128    │
+├─────────┼─────────┼─────────────┤
+│ file    │     248 │ 47262948352 │
+│ dir     │      36 │       34749 │
+│ symlink │       1 │          12 │
+└─────────┴─────────┴─────────────┘
+</code></pre></div>
+<p>The <code><span class="nobr">1</span> <span class="nobr">error</span></code> above is a directory the scanning user wasn't allowed to read. It's recorded in the <code><span class="nobr">errors</span></code> table, and the scan still completed. That is why <code><span class="nobr">scan</span></code> exited with code 1 rather than 0 (see <a href="#exit-codes">exit codes</a>).</p>
+</section>
+<section class="doc-section" data-section="3-concepts">
+<h2 id="3-concepts">3. Concepts<a class="anchor" href="#3-concepts" aria-label="Link to this section">#</a></h2>
+<p><strong>A scan is one output directory.</strong> Each run of <code><span class="nobr">fs-inventory</span> <span class="nobr">scan</span></code> writes a new directory holding <code><span class="nobr">manifest.json</span></code> and one subdirectory per table:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">/scratch/inventory/projects-2026-10-25/
+  manifest.json                        scan ID, status, roots, options, totals, list of part files
+  entries/part-w00-000000.parquet      one row per file, directory, symlink, ...
+  errors/part-w00-000000.parquet       one row per failed operation (only if there were any)
+  rollup/part-000000.parquet           subtree totals per directory (after `fs-inventory rollup`)
+  rollup_ages/part-000000.parquet      file counts and bytes by age (after `fs-inventory rollup`)
+</code></pre></div>
+<p><strong>Tables are split into part files.</strong> A large scan writes many parts per table, so no single file grows without bound. DuckDB, Spark, and most Parquet readers read a glob such as <code><span class="nobr">entries/</span><wbr><span class="nobr">*.parquet</span></code> as one table.</p>
+<p><strong>Every entry gets a row.</strong> Files, directories, symlinks, devices, pipes, and sockets each get one row in <code><span class="nobr">entries</span></code>, with their full path, owner, permissions, size, allocated space, and timestamps. A directory's row comes after its contents, and carries totals over its <em>immediate</em> children: <code><span class="nobr">dir_entries</span></code>, <code><span class="nobr">dir_files</span></code>, <code><span class="nobr">dir_subdirs</span></code>, <code><span class="nobr">dir_bytes</span></code>, and <code><span class="nobr">dir_alloc_bytes</span></code>. <code><span class="nobr">fs-inventory</span> <span class="nobr">rollup</span></code> adds totals over each directory's <em>whole subtree</em>.</p>
+<p><strong>Rows link to their parent directory.</strong> Each directory gets a <code><span class="nobr">dir_id</span></code>, unique within the scan, and every row's <code><span class="nobr">parent_id</span></code> is its parent's <code><span class="nobr">dir_id</span></code> (0 for a root). Joining <code><span class="nobr">parent_id</span></code> to <code><span class="nobr">dir_id</span></code> walks the tree.</p>
+<p><strong>Names are kept exactly.</strong> File names are bytes, not text, and some aren't valid UTF-8 (names from old systems, or corrupted ones). <code><span class="nobr">path</span></code> is always valid text. When it can't show the name exactly, the exact bytes are kept in <code><span class="nobr">path_raw</span></code> (or <code><span class="nobr">path_b64</span></code> in CSV and JSON Lines). <code><span class="nobr">name_flags</span></code> marks names that cause trouble for other systems.</p>
+<p><strong>Failures don't stop a scan.</strong> An unreadable directory gets a row with <code><span class="nobr">error</span></code> set and a row in the <code><span class="nobr">errors</span></code> table, and the scan continues. Entries deleted while the scan runs are counted as <em>vanished</em>, not as errors.</p>
+<p><strong>Long scans can be resumed.</strong> Every 10 minutes, a scan takes a checkpoint: a record of everything written so far and every directory still to read, in <code><span class="nobr">checkpoint/</span></code> inside the output directory. If the scan is interrupted or killed, or its machine goes down, <code><span class="nobr">fs-inventory</span> <span class="nobr">resume</span></code> continues from the last checkpoint. The finished scan is the same as one that was never interrupted.</p>
+<p><strong>Check the status before trusting a scan.</strong> <code><span class="nobr">manifest.json</span></code> has a <code><span class="nobr">status</span></code>: <code><span class="nobr">complete</span></code>, <code><span class="nobr">interrupted</span></code>, <code><span class="nobr">incomplete</span></code>, <code><span class="nobr">failed</span></code>, or <code><span class="nobr">running</span></code> (still in progress, or the process was killed). Treat a scan as finished only when the status is <code><span class="nobr">complete</span></code>, or when <code><span class="nobr">fs-inventory</span> <span class="nobr">verify</span></code> exits with code 0.</p>
+</section>
+<section class="doc-section" data-section="4-common-scenarios">
+<h2 id="4-common-scenarios">4. Common scenarios<a class="anchor" href="#4-common-scenarios" aria-label="Link to this section">#</a></h2>
+<h3 id="41-inventory-a-directory-tree">4.1 Inventory a directory tree<a class="anchor" href="#41-inventory-a-directory-tree" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data/projects -o /scratch/inventory/projects-2026-10-25
+fs-inventory verify /scratch/inventory/projects-2026-10-25
+fs-inventory rollup /scratch/inventory/projects-2026-10-25
+</code></pre></div>
+<ul>
+<li>
+<p><strong>Use a new output directory for each scan.</strong> <code><span class="nobr">scan</span></code> refuses to write into a directory that already contains files:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory: output directory /scratch/inventory/projects-2026-10-25 is not empty; choose a new directory for each scan
+</code></pre></div>
+</li>
+<li>
+<p><strong>Name scan directories by tree and date,</strong> such as <code><span class="nobr">projects-2026-10-25</span></code>. Scans then sort by date, and several can be queried together (<a href="#75-recipes">7.5</a>).</p>
+</li>
+<li>
+<p><strong>The output directory can sit inside the scanned tree.</strong> fs-inventory skips its own output, so it never inventories itself.</p>
+</li>
+<li>
+<p><strong><code><span class="nobr">rollup</span></code> is optional.</strong> It adds subtree totals and age histograms (<a href="#49-subtree-totals-and-file-age-heat-maps">4.9</a>). It reads the finished scan, so it can run at any time later.</p>
+</li>
+</ul>
+<h3 id="42-scan-a-large-network-file-system">4.2 Scan a large network file system<a class="anchor" href="#42-scan-a-large-network-file-system" aria-label="Link to this section">#</a></h3>
+<p>NFS and other network file systems answer each metadata request over the network, so a single thread spends most of its time waiting. More threads keep more requests in flight. Find a good thread count with <code><span class="nobr">probe</span></code> before the first big scan:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory probe /nfs/projects --threads 16,32,64,128,256 --duration 30s
+</code></pre></div>
+<p>It crawls the tree for up to 30 seconds at each thread count, writes nothing, and suggests the smallest count that reaches 90% of the best rate (<a href="#55-probe">5.5</a>). Then scan with that count, and with the options a long unattended scan needs:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /nfs/projects \
+    -o /scratch/inventory/projects-2026-10-25 \
+    --threads 128 \
+    --stall-timeout 10m \
+    --progress json --progress-interval 60s \
+    2&gt;&gt; /scratch/inventory/projects-2026-10-25.log
+</code></pre></div>
+<ul>
+<li><strong><code><span class="nobr">--threads</span> <span class="nobr">128</span></code>:</strong> network file systems usually do best between 64 and 256. The default is 32.</li>
+<li><strong><code><span class="nobr">--stall-timeout</span> <span class="nobr">10m</span></code>:</strong> if a crawl thread is stuck for 10 minutes in one call (a hung NFS server, for example), the scan gives up on that directory, finishes everything else, and ends with status <code><span class="nobr">incomplete</span></code> and exit code 3 instead of hanging forever (<a href="#412-interrupted-crashed-and-stalled-scans">4.12</a>).</li>
+<li><strong><code><span class="nobr">--progress</span> <span class="nobr">json</span></code>:</strong> writes one JSON progress line per interval to stderr, ready for log collection (<a href="#progress-output">progress output</a>).</li>
+<li><strong>Write the output to local or scratch storage,</strong> not to the file system being scanned, so writes don't compete with the crawl.</li>
+<li><strong>Checkpoints are on by default.</strong> If the scan is killed or the machine goes down, <code><span class="nobr">fs-inventory</span> <span class="nobr">resume</span> <span class="nobr">/scratch/</span><wbr><span class="nobr">inventory/</span><wbr><span class="nobr">projects-2026-10-25</span></code> continues it, losing at most the last 10 minutes of work (<a href="#412-interrupted-crashed-and-stalled-scans">4.12</a>).</li>
+</ul>
+<p>Two more options are worth knowing on network file systems:</p>
+<ul>
+<li><strong><code><span class="nobr">--statx-dont-sync</span></code></strong> (Linux) lets the client answer from its attribute cache instead of asking the server, which is faster. Sizes and times may be slightly out of date for files being written during the scan.</li>
+<li><strong><code><span class="nobr">--max-memory</span> <span class="nobr">4GiB</span></code></strong> keeps the scan within 4 GiB, which matters in a batch job with a memory limit. Directories beyond what fits wait in a temporary file next to the output, and the scan warns when it starts if its threads need more (<a href="#83-memory">8.3</a>).</li>
+</ul>
+<p>Run long scans so they survive a logout: under <code><span class="nobr">nohup</span></code>, <code><span class="nobr">tmux</span></code>, <code><span class="nobr">screen</span></code>, a systemd unit, or a batch scheduler such as Slurm.</p>
+<h3 id="43-fast-namespace-only-scans-on-lustre">4.3 Fast namespace-only scans on Lustre<a class="anchor" href="#43-fast-namespace-only-scans-on-lustre" aria-label="Link to this section">#</a></h3>
+<p>On Lustre, a file's size and allocated blocks live on the object storage servers, so reading them costs an extra round trip per file. When you only need names, owners, and times, skip them:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /lustre/projects -o /scratch/inventory/lustre-names-2026-10-25 --fields -size,-blocks
+</code></pre></div>
+<p>Skipped fields are written as null (<code><span class="nobr">size</span></code> and <code><span class="nobr">alloc_bytes</span></code> here), and on Linux they aren't requested from the kernel at all. <code><span class="nobr">--fields</span></code> accepts:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Value</th>
+<th>Reads</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>(not given)</td>
+<td>Everything: <code><span class="nobr">size,</span><wbr><span class="nobr">blocks,</span><wbr><span class="nobr">atime,</span><wbr><span class="nobr">mtime,</span><wbr><span class="nobr">ctime,</span><wbr><span class="nobr">btime</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">-size,</span><wbr><span class="nobr">-blocks</span></code></td>
+<td>Everything except size and blocks</td>
+</tr>
+<tr>
+<td><code><span class="nobr">mtime,</span><wbr><span class="nobr">ctime</span></code></td>
+<td>Only these optional fields</td>
+</tr>
+<tr>
+<td><code><span class="nobr">times</span></code></td>
+<td><code><span class="nobr">atime,</span><wbr><span class="nobr">mtime,</span><wbr><span class="nobr">ctime,</span><wbr><span class="nobr">btime</span></code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Names, types, owners, permissions, inode numbers, and link counts are always read.</p>
+<h3 id="44-several-roots-bind-mounts-and-loops">4.4 Several roots, bind mounts, and loops<a class="anchor" href="#44-several-roots-bind-mounts-and-loops" aria-label="Link to this section">#</a></h3>
+<p>Scan several trees into one inventory by listing them all:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data/projects /data/archive /home -o /scratch/inventory/all-2026-10-25
+</code></pre></div>
+<p>Each root gets <code><span class="nobr">depth</span></code> 0 and <code><span class="nobr">parent_id</span></code> 0. Without symlink following (fs-inventory never follows symlinks), a directory can be reached twice only through a bind mount, a hard-linked directory (some old file systems allow them), or roots that overlap (<code><span class="nobr">/data</span></code> and <code><span class="nobr">/data/</span><wbr><span class="nobr">projects</span></code>). If any of those are possible, add <code><span class="nobr">--detect-cycles</span></code>:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data /data/projects -o /scratch/inventory/data-2026-10-25 --detect-cycles
+</code></pre></div>
+<p>It remembers every directory entered, by device and inode, and never enters one twice. A directory reached again gets a row with <code><span class="nobr">error</span></code> set to <code><span class="nobr">revisit:</span> <span class="nobr">already</span> <span class="nobr">visited</span> <span class="nobr">through</span> <span class="nobr">another</span> <span class="nobr">path</span></code>, and the manifest counts revisits. It costs about 50 bytes of memory per directory.</p>
+<h3 id="45-excluding-paths">4.5 Excluding paths<a class="anchor" href="#45-excluding-paths" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data/projects -o /scratch/inventory/projects-2026-10-25 \
+    --exclude node_modules --exclude '*.tmp' --exclude '/data/projects/*/scratch'
+</code></pre></div>
+<ul>
+<li><strong>A glob without <code><span class="nobr">/</span></code></strong> matches a name at any depth: <code><span class="nobr">node_modules</span></code>, <code><span class="nobr">*.tmp</span></code>, <code><span class="nobr">.git</span></code>.</li>
+<li><strong>A glob with <code><span class="nobr">/</span></code></strong> matches whole paths: <code><span class="nobr">/data/</span><wbr><span class="nobr">projects/*/</span><wbr><span class="nobr">scratch</span></code>.</li>
+<li><strong><code><span class="nobr">--exclude-from</span> <span class="nobr">FILE</span></code></strong> reads globs from a file, one per line. Both options can be repeated.</li>
+<li><strong>Quote globs</strong> so the shell doesn't expand them.</li>
+</ul>
+<p>Excluded entries get no row, aren't counted in their parent directory's totals, and excluded directories aren't entered. In the demo tree, <code><span class="nobr">--exclude</span> <span class="nobr">node_modules</span></code> dropped the scan from 285 entries to 196.</p>
+<p>Two kinds of directory are skipped without any option:</p>
+<ul>
+<li><strong>Snapshot directories</strong> (<code><span class="nobr">.snapshot</span></code>, <code><span class="nobr">~snapshot</span></code>, <code><span class="nobr">.snapshots</span></code>, <code><span class="nobr">.zfs</span></code>), which would otherwise multiply the inventory by the number of snapshots. Add <code><span class="nobr">--include-snapshots</span></code> to scan them.</li>
+<li><strong>The scan's own output directory.</strong></li>
+</ul>
+<h3 id="46-depth-limits-and-mount-points">4.6 Depth limits and mount points<a class="anchor" href="#46-depth-limits-and-mount-points" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">--max-depth</span> <span class="nobr">N</span></code> lists entries down to N levels below each root. Directories at depth N get a row but aren't read, so their <code><span class="nobr">dir_*</span></code> totals are null:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data/projects -o - -f csv --columns path,kind,depth,dir_entries --max-depth 1
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">path,kind,depth,dir_entries
+/data/projects/genomics,dir,1,
+/data/projects/imaging,dir,1,
+/data/projects/webapp,dir,1,
+/data/projects/shared,dir,1,
+/data/projects/restricted,dir,1,
+/data/projects,dir,0,5
+</code></pre></div>
+<p><strong>Mount points</strong> are directories on a different file system from their parent. They're always recorded, with <code><span class="nobr">is_mount_point</span></code> true, but not entered unless you add <code><span class="nobr">--cross-mounts</span></code>. fs-inventory never triggers automounts.</p>
+<h3 id="47-scheduled-scans-for-a-database-or-web-application">4.7 Scheduled scans for a database or web application<a class="anchor" href="#47-scheduled-scans-for-a-database-or-web-application" aria-label="Link to this section">#</a></h3>
+<p>For regular scans that feed a database or an application, run scan, verify, and rollup from a script, and load only scans that verify. This one runs nightly from cron:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">#!/bin/bash
+# /usr/local/bin/inventory-projects: nightly inventory of /data/projects.
+set -u
+root=/data/projects
+dir=/scratch/inventory/projects-$(date +%F)
+
+fs-inventory scan &quot;$root&quot; -o &quot;$dir&quot; --threads 64 --stall-timeout 30m \
+    --progress json --progress-interval 5m 2&gt;&gt; &quot;$dir.log&quot;
+status=$?
+# 0: complete; 1: complete, but some entries couldn't be read (see errors/).
+if [ &quot;$status&quot; -gt 1 ]; then
+    echo &quot;scan of $root failed with exit code $status; see $dir.log&quot; &gt;&amp;2
+    exit &quot;$status&quot;
+fi
+fs-inventory verify &quot;$dir&quot; || exit 1
+fs-inventory rollup &quot;$dir&quot; || exit 1
+echo &quot;$dir is ready to load&quot;
+</code></pre></div>
+<p>If a scan is interrupted, such as by a reboot (exit code 3, or a manifest left at status <code><span class="nobr">running</span></code>), <code><span class="nobr">fs-inventory</span> <span class="nobr">resume</span> <span class="nobr">&quot;$dir&quot;</span></code> finishes it.</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext"># m h dom mon dow  command
+30 1 * * *  /usr/local/bin/inventory-projects
+</code></pre></div>
+<p>When loading scans into another system:</p>
+<ul>
+<li>
+<p><strong>Load only scans whose <code><span class="nobr">status</span></code> is <code><span class="nobr">complete</span></code>.</strong> Accept <code><span class="nobr">incomplete</span></code> too only if partial data is useful to you; the <code><span class="nobr">stalled</span></code> list in the manifest says which directories are missing.</p>
+</li>
+<li>
+<p><strong>Record the <code><span class="nobr">scan_id</span></code></strong> (a UUIDv7, unique per scan) to avoid loading a scan twice. Every Parquet part carries the same ID in its metadata, so a part can't be mixed up with another scan's.</p>
+</li>
+<li>
+<p><strong>Check <code><span class="nobr">schema_version</span></code>.</strong> It's 3 in this release, and changes when columns are added. Throughout 1.x, columns are only added, at the end of a table; none are removed or renamed. <code><span class="nobr">tool_version</span></code> records the fs-inventory version.</p>
+</li>
+<li>
+<p><strong>Load only what changed.</strong> <code><span class="nobr">fs_diff</span></code> in the DuckDB macros compares two scans of the same roots and returns one row per entry that was added, removed, or changed, with the row before and after. Instead of reloading every row each night, apply those changes: insert or replace the <code><span class="nobr">new</span></code> row of each added or changed entry, and delete each removed one, matching entries by their exact path bytes, <code><span class="nobr">coalesce(</span><wbr><span class="nobr">path_raw,</span> <span class="nobr">encode(</span><wbr><span class="nobr">path))</span></code>:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">duckdb -cmd &quot;.read sql/fs_inventory.sql&quot; -c &quot;COPY (FROM fs_diff('/scratch/inventory/projects-2026-10-25', '/scratch/inventory/projects-2026-10-26')) TO 'changes.parquet'&quot;
+</code></pre></div>
+<p>Compare scans made with the same options; a column one scan read and the other skipped (<code><span class="nobr">--fields</span></code>) shows as a change everywhere.</p>
+</li>
+<li>
+<p><strong>Keep old scans side by side</strong> to see change over time: growth, deleted files, and new files (<a href="#75-recipes">7.5</a>).</p>
+</li>
+</ul>
+<h3 id="48-streaming-to-another-program">4.8 Streaming to another program<a class="anchor" href="#48-streaming-to-another-program" aria-label="Link to this section">#</a></h3>
+<p>With <code><span class="nobr">-o</span> <span class="nobr">-</span></code>, CSV or JSON Lines rows go to stdout, and error rows go to stderr as text lines:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data/projects -o - -f jsonl | gzip &gt; projects.jsonl.gz
+</code></pre></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data/projects/shared -o - -f csv --columns path,kind,size,mtime,uid,name_flags,path_b64 | head -5
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">path,path_b64,name_flags,kind,uid,size,mtime
+/data/projects/shared/Résumé.pdf,,0,file,1004,1024,2023-06-01T12:00:00.000000Z
+/data/projects/shared/数据.csv,,0,file,1004,1024,2023-06-01T12:00:00.000000Z
+/data/projects/shared/naïve notes.txt,,0,file,1004,1024,2023-06-01T12:00:00.000000Z
+/data/projects/shared/CON,,512,file,1004,1024,2023-06-01T12:00:00.000000Z
+</code></pre></div>
+<p>Errors on stderr look like this:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory: open /data/projects/restricted: Permission denied (os error 13)
+</code></pre></div>
+<ul>
+<li><strong>Columns come out in schema order,</strong> whatever order <code><span class="nobr">--columns</span></code> lists them in.</li>
+<li><strong>Parquet can't be streamed to stdout.</strong> Use an output directory for Parquet.</li>
+<li><strong>If the reading program exits early</strong> (such as <code><span class="nobr">head</span></code>), the scan stops and exits with code 3.</li>
+</ul>
+<h3 id="49-subtree-totals-and-file-age-heat-maps">4.9 Subtree totals and file-age heat maps<a class="anchor" href="#49-subtree-totals-and-file-age-heat-maps" aria-label="Link to this section">#</a></h3>
+<p>Directory rows count only their immediate children. To answer &quot;how big is this project, including everything below it?&quot;, run <code><span class="nobr">rollup</span></code> on the finished scan:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory rollup /scratch/inventory/projects-2026-10-25
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">rollup: 36 directories, 149 age rows (depth &lt;= 4); wrote rollup/ and rollup_ages/ in /scratch/inventory/projects-2026-10-25
+note: 1 directory wasn't read completely, so some totals are lower bounds (see incomplete_dirs)
+</code></pre></div>
+<p>It writes two tables into the scan:</p>
+<ul>
+<li><strong><code><span class="nobr">rollup</span></code>:</strong> one row per directory with totals over its whole subtree: entries, files, directories, bytes, allocated bytes, the oldest and newest modification times, and <code><span class="nobr">incomplete_dirs</span></code>. That last one counts directories in the subtree that weren't fully read (unreadable, not entered, or past <code><span class="nobr">--max-depth</span></code>); when it isn't 0, the totals are lower bounds.</li>
+<li><strong><code><span class="nobr">rollup_ages</span></code>:</strong> for each directory down to <code><span class="nobr">--age-depth</span></code> levels (default 4), file counts and bytes by age bucket, measured from the scan's start time, for each of <code><span class="nobr">mtime</span></code>, <code><span class="nobr">ctime</span></code>, and <code><span class="nobr">atime</span></code>. This is the data behind a file-age heat map.</li>
+</ul>
+<p>Choose different buckets with <code><span class="nobr">--age-buckets</span></code>, which takes ascending ages:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory rollup /scratch/inventory/projects-2026-10-25 --age-buckets 7d,30d,90d,1y,3y --age-depth 2
+</code></pre></div>
+<p>Running <code><span class="nobr">rollup</span></code> again replaces both tables. It works on Parquet scans only. Queries are in <a href="#75-recipes">7.5</a>.</p>
+<h3 id="410-finding-names-that-will-break-a-migration">4.10 Finding names that will break a migration<a class="anchor" href="#410-finding-names-that-will-break-a-migration" aria-label="Link to this section">#</a></h3>
+<p>Before moving data to Windows, SMB shares, object storage, or a new file system, find names that won't survive the move:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT path, fs_name_flags(name_flags) AS problems, coalesce(path_raw, encode(path)) AS exact_bytes
+FROM fs_entries('/scratch/inventory/projects-2026-10-25') WHERE name_flags &lt;&gt; 0 ORDER BY path;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌──────────────────────────────────────────┬──────────────────────────┬──────────────────────────────────────────┐
+│                   path                   │         problems         │               exact_bytes                │
+│                 varchar                  │        varchar[]         │                   blob                   │
+├──────────────────────────────────────────┼──────────────────────────┼──────────────────────────────────────────┤
+│ /data/projects/shared/ leading space.txt │ [leading_trailing_space] │ /data/projects/shared/ leading space.txt │
+│ /data/projects/shared/-rf                │ [leading_dash]           │ /data/projects/shared/-rf                │
+│ /data/projects/shared/CON                │ [windows_reserved]       │ /data/projects/shared/CON                │
+│ /data/projects/shared/caf\xE9.txt        │ [invalid_utf8]           │ /data/projects/shared/caf\xE9.txt        │
+│ /data/projects/shared/café.txt           │ [not_nfc]                │ /data/projects/shared/cafe\xCC\x81.txt   │
+│ /data/projects/shared/line\nbreak.txt    │ [c0_control]             │ /data/projects/shared/line\x0Abreak.txt  │
+│ /data/projects/shared/notes.             │ [trailing_dot]           │ /data/projects/shared/notes.             │
+└──────────────────────────────────────────┴──────────────────────────┴──────────────────────────────────────────┘
+</code></pre></div>
+<p><code><span class="nobr">caf\xE9.txt</span></code> is a Latin-1 name from an old system; the byte <code><span class="nobr">0xE9</span></code> isn't valid UTF-8. <code><span class="nobr">café.txt</span></code> <em>looks</em> normal but is spelled with a separate combining accent, as macOS writes it, so it won't match the same name typed on Linux or Windows. Every flag is listed in <a href="schema.html#name-flags">schema.md</a>. See <a href="#72-the-macros">7.2</a> for loading <code><span class="nobr">fs_entries</span></code> and <code><span class="nobr">fs_name_flags</span></code>.</p>
+<h3 id="411-text-output-for-spreadsheets-and-other-tools">4.11 Text output for spreadsheets and other tools<a class="anchor" href="#411-text-output-for-spreadsheets-and-other-tools" aria-label="Link to this section">#</a></h3>
+<p>Parquet is the default and the best choice for DuckDB and data tools. For tools that only read text, write CSV or JSON Lines instead:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data/projects -o /scratch/inventory/projects-csv -f csv --compression zstd
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">/scratch/inventory/projects-csv/
+  manifest.json
+  entries/part-w00-000000.csv.zst
+  errors/part-w00-000000.csv.zst
+</code></pre></div>
+<ul>
+<li><strong>Text compression:</strong> CSV and JSON Lines can be compressed with <code><span class="nobr">zstd</span></code> or <code><span class="nobr">gzip</span></code>, or left uncompressed (the default).</li>
+<li><strong>Timestamps:</strong> written as ISO-8601 UTC text by default; <code><span class="nobr">--time-format</span> <span class="nobr">epoch</span></code> writes seconds since 1970 instead, for tools that want numbers. The DuckDB macros read ISO times. In JSON Lines, epoch times are JSON numbers, which most readers parse as doubles, keeping about a quarter of a microsecond: use ISO times or Parquet when nanoseconds matter.</li>
+<li><strong>Fewer columns:</strong> <code><span class="nobr">--columns</span></code> keeps only the columns you list, in any format.</li>
+<li><strong>Loading into DuckDB:</strong> the <code><span class="nobr">fs_entries_csv</span></code> and <code><span class="nobr">fs_entries_jsonl</span></code> macros read these scans, with ISO times, with the right column types (<a href="#72-the-macros">7.2</a>).</li>
+</ul>
+<p>Text output is several times larger than Parquet and slower to query. Parquet with zstd takes about 25 bytes per entry; a billion-entry scan is about 25 GB.</p>
+<p>To get text from a Parquet scan you already have, convert it instead of scanning again (<a href="#57-convert">5.7</a>):</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory convert /scratch/inventory/projects-2026-10-25 -f csv -o /scratch/inventory/projects-csv --compression zstd
+</code></pre></div>
+<h3 id="412-interrupted-crashed-and-stalled-scans">4.12 Interrupted, crashed, and stalled scans<a class="anchor" href="#412-interrupted-crashed-and-stalled-scans" aria-label="Link to this section">#</a></h3>
+<p><strong>Every scan into a directory takes checkpoints,</strong> every 10 minutes by default (<code><span class="nobr">--checkpoint-interval</span></code>). A checkpoint pauses the crawl for a moment, makes every row written so far durable, and records the directories still to read, in <code><span class="nobr">checkpoint/</span></code> inside the scan directory. That directory is removed when the scan finishes.</p>
+<p><strong>Ctrl-C (SIGINT) or SIGTERM</strong> stops a scan gracefully. The threads finish the directories they're reading, the part files are completed, a final checkpoint is written, and the manifest gets status <code><span class="nobr">interrupted</span></code>. The exit code is 3. A second signal exits at once, with code 130, leaving the manifest at status <code><span class="nobr">running</span></code> and the last periodic checkpoint in place.</p>
+<p><strong>To continue a scan</strong> that was interrupted or killed, ran out of memory, or was on a machine that went down, run <code><span class="nobr">resume</span></code> on its directory:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory resume /scratch/inventory/projects-2026-10-25
+</code></pre></div>
+<p>For the demo scan, stopped partway with SIGTERM:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory: resuming scan 01a175ef-2926-79c2-a1b3-79c9be43dd89 from its checkpoint of 2026-10-26T01:59:32.285064Z: 156 entries written, 4 directories left
+fs-inventory: complete: 285 entries in 0:00:00 (14.5k/s), 35 dirs, 44.02 GiB, 1 error, 0 vanished; output: /scratch/inventory/projects-2026-10-25
+</code></pre></div>
+<ul>
+<li><strong>After Ctrl-C,</strong> the final checkpoint is exact, so nothing is read twice.</li>
+<li><strong>After a crash or <code><span class="nobr">kill</span> <span class="nobr">-9</span></code>,</strong> the scan continues from the last checkpoint. Part files written after it are deleted and the directories they covered are read again, so at most one checkpoint interval of work is redone, and no row appears twice.</li>
+<li><strong>The finished scan is the same as an uninterrupted one:</strong> the same rows, checked the same way by <code><span class="nobr">verify</span></code>. The manifest's <code><span class="nobr">resumes</span></code> list records each resume.</li>
+<li><strong>Resume as often as needed.</strong> A resumed scan takes checkpoints too.</li>
+<li><strong>Resume uses the original settings</strong> for everything that shapes the output. It can change how the scan runs: <code><span class="nobr">--threads</span></code>, <code><span class="nobr">--writers</span></code>, <code><span class="nobr">--max-memory</span></code>, <code><span class="nobr">--stall-timeout</span></code>, <code><span class="nobr">--checkpoint-interval</span></code>, and the progress options (<a href="#56-resume">5.6</a>).</li>
+<li><strong>Resume on the same host,</strong> without remounting the scanned file systems in between. Device numbers (<code><span class="nobr">dev</span></code>) can change when a file system is remounted, which would make rows before and after the resume disagree, and <code><span class="nobr">--detect-cycles</span></code> relies on them.</li>
+</ul>
+<p>Without checkpoints (<code><span class="nobr">--checkpoint-interval</span> <span class="nobr">0</span></code>, or a scan streamed with <code><span class="nobr">-o</span> <span class="nobr">-</span></code>), an interrupted scan's part files are valid but it's missing every directory not yet read, and it can only be run again from the start.</p>
+<p><strong>A hung file system call,</strong> such as a stat on a hard-mounted NFS export whose server is down, blocks its thread indefinitely. fs-inventory watches every crawl thread:</p>
+<ul>
+<li>
+<p>After 60 seconds without progress, the progress line reports the stalled thread and its directory. An illustration:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory: 0:12:00  48.2M entries (61.3k/s)  2.10M dirs  1.20 PiB  12 errors  840 queued  1 stalled (longest 0:03:10: /nfs/projects/lab7/run42)
+</code></pre></div>
+</li>
+<li>
+<p>With <code><span class="nobr">--stall-timeout</span></code>, once a thread has made no progress for that long, the scan gives up on its directory. That directory gets a row with <code><span class="nobr">error</span></code> set to <code><span class="nobr">stall:</span> <span class="nobr">...</span></code> and an <code><span class="nobr">errors</span></code> row; the other threads finish the rest of the tree. The scan ends with status <code><span class="nobr">incomplete</span></code> and exit code 3, and the manifest's <code><span class="nobr">stalled</span></code> list names each directory given up on.</p>
+</li>
+<li>
+<p>Without <code><span class="nobr">--stall-timeout</span></code>, the scan waits for the call to return, however long that takes.</p>
+</li>
+<li>
+<p>While a thread is stalled, checkpoints can't complete: after waiting 30 seconds, the scan skips the checkpoint and says so on stderr. Once <code><span class="nobr">--stall-timeout</span></code> gives up on the stuck directory, checkpoints continue.</p>
+</li>
+<li>
+<p><code><span class="nobr">resume</span></code> doesn't retry directories given up on after <code><span class="nobr">--stall-timeout</span></code>.</p>
+</li>
+</ul>
+<p>The rows of every directory the stuck thread finished before it got stuck are still written. One limitation: if the thread was partway through a directory with tens of thousands of entries, some of that directory's rows may already have been written before it got stuck.</p>
+<h3 id="413-permissions-and-side-effects">4.13 Permissions and side effects<a class="anchor" href="#413-permissions-and-side-effects" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>Run as a user who can read the whole tree</strong> (often root) for a complete inventory. Directories the user can't read are recorded with <code><span class="nobr">error</span></code> set to <code><span class="nobr">open:</span> <span class="nobr">EACCES</span></code> and an <code><span class="nobr">errors</span></code> row, and everything else is still scanned.</li>
+<li><strong>Read-only:</strong> fs-inventory never opens files, only directories, so file access times don't change. On Linux it opens directories with <code><span class="nobr">O_NOATIME</span></code> when allowed (the owner, or root), so directory access times don't change either.</li>
+<li><strong>No symlinks are followed.</strong> A symlink gets its own row; its <code><span class="nobr">size</span></code> is the length of the target path. With <code><span class="nobr">--symlink-targets</span></code>, <code><span class="nobr">symlink_target</span></code> records where it points, at the cost of one more call per symlink.</li>
+<li><strong>No automounts are triggered,</strong> and other file systems aren't entered without <code><span class="nobr">--cross-mounts</span></code>.</li>
+</ul>
+<h3 id="414-user-and-group-names">4.14 User and group names<a class="anchor" href="#414-user-and-group-names" aria-label="Link to this section">#</a></h3>
+<p>Entries record numeric user and group IDs. To have names too, add <code><span class="nobr">--resolve-ids</span></code>:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory scan /data/projects -o /scratch/inventory/projects-2026-10-25 --resolve-ids
+</code></pre></div>
+<p>The scan directory then has two more tables, in the scan's format: <code><span class="nobr">users</span></code>, with a <code><span class="nobr">uid</span></code> and <code><span class="nobr">name</span></code> for every user ID in <code><span class="nobr">entries</span></code>, and <code><span class="nobr">groups</span></code>, with a <code><span class="nobr">gid</span></code> and <code><span class="nobr">name</span></code> for every group ID. An ID with no account on the scanning host, such as a deleted user's, gets a null name.</p>
+<ul>
+<li><strong>Looked up once per ID.</strong> Each crawl thread notes the IDs it sees, at almost no cost, and the names are looked up once the scan finishes: thousands of IDs take seconds, however many files they own. On Linux this uses <code><span class="nobr">getent</span></code>, which asks every source the host is configured for (local files, LDAP, sssd, NIS), so it works from the static binary. On macOS it uses <code><span class="nobr">dscacheutil</span></code>.</li>
+<li><strong>Names as the scanning host sees them,</strong> when the scan finishes. Run the scan on a host that has the same accounts as the file system's users.</li>
+<li><strong>Interrupted scans</strong> get their tables when they're resumed to completion; checkpoints keep the IDs seen so far. A lookup that gets no answer within a minute (a directory server that's down) is given up on, with a warning, and leaves those names null.</li>
+<li><strong>Not with <code><span class="nobr">-o</span> <span class="nobr">-</span></code>,</strong> since the tables need a directory.</li>
+</ul>
+<p><code><span class="nobr">fs_entries_named</span></code> in the DuckDB macros adds <code><span class="nobr">user_name</span></code> and <code><span class="nobr">group_name</span></code> to every entry (<a href="#75-recipes">7.5</a>), and the manifest's <code><span class="nobr">ids</span></code> section counts the IDs and those without names.</p>
+</section>
+<section class="doc-section" data-section="5-command-reference">
+<h2 id="5-command-reference">5. Command reference<a class="anchor" href="#5-command-reference" aria-label="Link to this section">#</a></h2>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory scan     ROOT... -o DIR|-   Crawl directory trees and write an inventory
+fs-inventory verify   SCAN_DIR           Check that a scan is complete and consistent
+fs-inventory rollup   SCAN_DIR           Add subtree totals and age histograms to a scan
+fs-inventory schema                      Print the inventory schema
+fs-inventory probe    PATH               Time crawls at several thread counts
+fs-inventory resume   SCAN_DIR           Continue an interrupted scan from its checkpoint
+fs-inventory convert  SCAN_DIR -f F      Re-export a Parquet scan as CSV or JSON Lines
+</code></pre></div>
+<p><code><span class="nobr">fs-inventory</span> <span class="nobr">COMMAND</span> <span class="nobr">--help</span></code> lists every option. Sizes accept <code><span class="nobr">K</span></code>, <code><span class="nobr">M</span></code>, <code><span class="nobr">G</span></code>, <code><span class="nobr">T</span></code> (or <code><span class="nobr">KiB</span></code>, <code><span class="nobr">MiB</span></code>, <code><span class="nobr">GiB</span></code>, <code><span class="nobr">TiB</span></code>) for powers of 1024 and <code><span class="nobr">KB</span></code>, <code><span class="nobr">MB</span></code>, <code><span class="nobr">GB</span></code>, <code><span class="nobr">TB</span></code> for powers of 1000, such as <code><span class="nobr">512MiB</span></code>. Durations accept forms such as <code><span class="nobr">30s</span></code>, <code><span class="nobr">10m</span></code>, <code><span class="nobr">1h</span> <span class="nobr">30m</span></code>, <code><span class="nobr">7d</span></code>, and <code><span class="nobr">1y</span></code>.</p>
+<h3 id="51-scan">5.1 scan<a class="anchor" href="#51-scan" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory scan [OPTIONS] --output &lt;DIR|-&gt; &lt;ROOT&gt;...
+</code></pre></div>
+<p>Roots are made absolute (relative paths are taken from the current directory) and otherwise kept as given. Each root that's a directory is crawled, including a root that's a symlink to a directory; a root that's a file gets one row. Below the roots, symlinks are never followed.</p>
+<p><strong>Output</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">-o,</span> <span class="nobr">--output</span> <span class="nobr">DIR|-</span></code></td>
+<td>(required)</td>
+<td>New output directory, or <code><span class="nobr">-</span></code> to stream CSV or JSON Lines to stdout</td>
+</tr>
+<tr>
+<td><code><span class="nobr">-f,</span> <span class="nobr">--format</span></code></td>
+<td><code><span class="nobr">parquet</span></code></td>
+<td><code><span class="nobr">parquet</span></code>, <code><span class="nobr">csv</span></code>, or <code><span class="nobr">jsonl</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">--compression</span> <span class="nobr">CODEC</span></code></td>
+<td><code><span class="nobr">zstd:3</span></code> for Parquet, <code><span class="nobr">none</span></code> for text</td>
+<td><code><span class="nobr">zstd</span></code>, <code><span class="nobr">zstd:LEVEL</span></code> (1–22), <code><span class="nobr">gzip</span></code>, <code><span class="nobr">gzip:LEVEL</span></code> (1–9), <code><span class="nobr">snappy</span></code>, <code><span class="nobr">lz4</span></code>, or <code><span class="nobr">none</span></code>. Text formats take only <code><span class="nobr">zstd</span></code>, <code><span class="nobr">gzip</span></code>, or <code><span class="nobr">none</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--columns</span> <span class="nobr">LIST</span></code></td>
+<td>all</td>
+<td>Write only these entry columns, such as <code><span class="nobr">path,</span><wbr><span class="nobr">size,</span><wbr><span class="nobr">mtime,</span><wbr><span class="nobr">uid</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">--part-max-bytes</span> <span class="nobr">SIZE</span></code></td>
+<td><code><span class="nobr">1GiB</span></code></td>
+<td>Start a new part file after this many bytes</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--part-max-rows</span> <span class="nobr">N</span></code></td>
+<td>none</td>
+<td>Start a new part file after this many rows</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--row-group-rows</span> <span class="nobr">N</span></code></td>
+<td><code><span class="nobr">1048576</span></code></td>
+<td>Rows per Parquet row group (at most; groups also end at 128 MiB)</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Traversal</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">-t,</span> <span class="nobr">--threads</span> <span class="nobr">N</span></code></td>
+<td><code><span class="nobr">32</span></code></td>
+<td>Crawl threads (1–1024). Network file systems often do best with 64–256.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--writers</span> <span class="nobr">N</span></code></td>
+<td>CPU cores, at most 8</td>
+<td>Most threads that encode and write output. One starts; more join only when output backs up.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--cross-mounts</span></code></td>
+<td>off</td>
+<td>Enter other mounted file systems. Mount points are always recorded.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--max-depth</span> <span class="nobr">N</span></code></td>
+<td>none</td>
+<td>List entries at most N levels below each root; directories at depth N aren't read</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--exclude</span> <span class="nobr">GLOB</span></code></td>
+<td>none</td>
+<td>Skip matching paths (repeatable); see <a href="#45-excluding-paths">4.5</a></td>
+</tr>
+<tr>
+<td><code><span class="nobr">--exclude-from</span> <span class="nobr">FILE</span></code></td>
+<td>none</td>
+<td>Read exclude globs from a file, one per line (repeatable)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--include-snapshots</span></code></td>
+<td>off</td>
+<td>Enter <code><span class="nobr">.snapshot</span></code>, <code><span class="nobr">~snapshot</span></code>, <code><span class="nobr">.snapshots</span></code>, and <code><span class="nobr">.zfs</span></code> directories</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--detect-cycles</span></code></td>
+<td>off</td>
+<td>Never enter a directory twice; see <a href="#44-several-roots-bind-mounts-and-loops">4.4</a></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Metadata</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">--fields</span> <span class="nobr">LIST</span></code></td>
+<td>all</td>
+<td>Optional metadata to read; see <a href="#43-fast-namespace-only-scans-on-lustre">4.3</a></td>
+</tr>
+<tr>
+<td><code><span class="nobr">--statx-dont-sync</span></code></td>
+<td>off</td>
+<td>Linux: accept cached attributes on network file systems (faster, possibly stale)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--symlink-targets</span></code></td>
+<td>off</td>
+<td>Record where each symlink points in <code><span class="nobr">symlink_target</span></code> (one more call per symlink)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--resolve-ids</span></code></td>
+<td>off</td>
+<td>Write <code><span class="nobr">users</span></code> and <code><span class="nobr">groups</span></code> tables of the scan's IDs and their names, looked up when the scan finishes; see <a href="#414-user-and-group-names">4.14</a></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Encoding</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">--raw-paths</span> <span class="nobr">auto|always</span></code></td>
+<td><code><span class="nobr">auto</span></code></td>
+<td>Fill <code><span class="nobr">path_raw</span></code> only when <code><span class="nobr">path</span></code> differs from the exact bytes, or for every row</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--csv-raw-controls</span></code></td>
+<td>off</td>
+<td>In CSV, write control characters in names as they are (inside quotes) instead of as <code><span class="nobr">\n</span></code>, <code><span class="nobr">\t</span></code>, <code><span class="nobr">\xNN</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">--time-unit</span> <span class="nobr">us|ns</span></code></td>
+<td><code><span class="nobr">us</span></code></td>
+<td>Timestamp precision. Microseconds cover any date; nanoseconds cover 1677–2262, and dates outside that range are clamped and flagged in <code><span class="nobr">time_flags</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--time-format</span> <span class="nobr">iso|epoch</span></code></td>
+<td><code><span class="nobr">iso</span></code></td>
+<td>CSV and JSON Lines: ISO-8601 UTC text, or seconds since 1970 with fractional seconds</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Robustness</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">--checkpoint-interval</span> <span class="nobr">DURATION</span></code></td>
+<td><code><span class="nobr">10m</span></code></td>
+<td>Take a checkpoint this often, so the scan can be resumed (<code><span class="nobr">0</span></code> disables checkpoints); see <a href="#412-interrupted-crashed-and-stalled-scans">4.12</a>. Scans streamed with <code><span class="nobr">-o</span> <span class="nobr">-</span></code> take none.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--stall-timeout</span> <span class="nobr">DURATION</span></code></td>
+<td>none</td>
+<td>Give up on directories whose thread has made no progress for this long; see <a href="#412-interrupted-crashed-and-stalled-scans">4.12</a></td>
+</tr>
+<tr>
+<td><code><span class="nobr">--max-memory</span> <span class="nobr">SIZE</span></code></td>
+<td>no limit</td>
+<td>Memory budget for the scan; see <a href="#83-memory">8.3</a></td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Progress</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">--progress</span> <span class="nobr">auto|plain|json|none</span></code></td>
+<td><code><span class="nobr">auto</span></code></td>
+<td>Progress on stderr. <code><span class="nobr">auto</span></code> is <code><span class="nobr">plain</span></code> when stderr is a terminal, and otherwise prints only the final summary. <code><span class="nobr">none</span></code> prints nothing.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--progress-interval</span> <span class="nobr">DURATION</span></code></td>
+<td><code><span class="nobr">10s</span></code></td>
+<td>Time between progress lines</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="52-verify">5.2 verify<a class="anchor" href="#52-verify" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory verify /scratch/inventory/projects-2026-10-25
+</code></pre></div>
+<p>Checks a scan before it's used or loaded anywhere:</p>
+<ul>
+<li><strong>Manifest:</strong> it can be read; its schema version is the one this fs-inventory writes; its status is <code><span class="nobr">complete</span></code>.</li>
+<li><strong>Part files:</strong> every part the manifest lists exists with the recorded size and row count, and each Parquet part carries the scan's ID.</li>
+<li><strong>Totals:</strong> row counts match the manifest's totals.</li>
+<li><strong>Stray files:</strong> none are left over, such as <code><span class="nobr">.tmp</span></code> files from a crash.</li>
+<li><strong>Rollup:</strong> its tables are checked the same way, if present.</li>
+</ul>
+<p>It prints a summary and <code><span class="nobr">ok</span></code>, and exits with code 0. Otherwise it prints each problem to stderr and exits with code 1:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory: problem: scan status is `interrupted`, not `complete`
+</code></pre></div>
+<h3 id="53-rollup">5.3 rollup<a class="anchor" href="#53-rollup" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory rollup [--age-buckets LIST] [--age-depth N] SCAN_DIR
+</code></pre></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Default</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">--age-buckets</span> <span class="nobr">LIST</span></code></td>
+<td><code><span class="nobr">30d,</span><wbr><span class="nobr">90d,</span><wbr><span class="nobr">1y,</span><wbr><span class="nobr">2y,</span><wbr><span class="nobr">3y,</span><wbr><span class="nobr">5y,</span><wbr><span class="nobr">10y</span></code></td>
+<td>Age bucket edges, ascending, measured back from the scan's start time</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--age-depth</span> <span class="nobr">N</span></code></td>
+<td><code><span class="nobr">4</span></code></td>
+<td>Compute age histograms for directories down to this depth (0 is the root). Each costs about 0.5 KB of memory.</td>
+</tr>
+</tbody>
+</table></div>
+<p>With the default buckets, the labels are <code><span class="nobr">future</span></code> (newer than the scan's start), <code><span class="nobr">&lt;30d</span></code>, <code><span class="nobr">30d-90d</span></code>, <code><span class="nobr">90d-1y</span></code>, <code><span class="nobr">1y-2y</span></code>, <code><span class="nobr">2y-3y</span></code>, <code><span class="nobr">3y-5y</span></code>, <code><span class="nobr">5y-10y</span></code>, and <code><span class="nobr">&gt;=10y</span></code>. A year is 365.25 days. The manifest gains a <code><span class="nobr">rollup</span></code> section recording the buckets, depth, and part files. See <a href="#49-subtree-totals-and-file-age-heat-maps">4.9</a>.</p>
+<h3 id="54-schema">5.4 schema<a class="anchor" href="#54-schema" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory schema                      # DuckDB CREATE TABLE statements
+fs-inventory schema --format json        # a JSON description of every column
+fs-inventory schema --format markdown    # the reference in docs/schema.md
+</code></pre></div>
+<h3 id="55-probe">5.5 probe<a class="anchor" href="#55-probe" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory probe [--threads LIST] [--duration DURATION] [--drop-caches] PATH
+</code></pre></div>
+<p>Crawls <code><span class="nobr">PATH</span></code> at each thread count for up to <code><span class="nobr">--duration</span></code> (default 30 s each), writes nothing, and suggests the smallest thread count within 90% of the best rate. More threads past that point mostly add load on the file server.</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">fs-inventory probe /data/projects --threads 1,2,4 --duration 2s
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">Probing /data/projects for up to 0:00:02 per thread count.
+Without --drop-caches (Linux, root), later runs read metadata cached by earlier ones.
+ threads        entries       time      entries/s
+       1            285    0:00:00         211.2k  (read the whole tree)
+       2            285    0:00:00         332.7k  (read the whole tree)
+       4            285    0:00:00         183.4k  (read the whole tree)
+Suggested: --threads 2
+</code></pre></div>
+<ul>
+<li><strong>Caching skews later runs.</strong> Each run after the first finds metadata the earlier runs left in the kernel's cache, so it looks faster than a real scan would be. On Linux, run as root with <code><span class="nobr">--drop-caches</span></code> to clear the caches before every run.</li>
+<li><strong>Small trees give misleading results.</strong> When a run reads the whole tree before its time is up, it says so; probe a tree large enough to keep every run busy for the full duration.</li>
+</ul>
+<h3 id="56-resume">5.6 resume<a class="anchor" href="#56-resume" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory resume [OPTIONS] SCAN_DIR
+</code></pre></div>
+<p>Continues a scan from its last checkpoint; see <a href="#412-interrupted-crashed-and-stalled-scans">4.12</a>. Everything that shapes the output comes from the original scan. These options change how it runs; each defaults to how the scan ran:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">-t,</span> <span class="nobr">--threads</span> <span class="nobr">N</span></code></td>
+<td>Crawl threads</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--writers</span> <span class="nobr">N</span></code></td>
+<td>Most encoder and writer threads</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--checkpoint-interval</span> <span class="nobr">DURATION</span></code></td>
+<td>Interval between checkpoints (<code><span class="nobr">0</span></code> disables them)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--stall-timeout</span> <span class="nobr">DURATION</span></code></td>
+<td>Give up on stalled directories after this long (<code><span class="nobr">0</span></code> waits forever)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--max-memory</span> <span class="nobr">SIZE</span></code></td>
+<td>Memory budget for the scan</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--progress</span></code>, <code><span class="nobr">--progress-interval</span></code></td>
+<td>As for <code><span class="nobr">scan</span></code> (these don't carry over)</td>
+</tr>
+</tbody>
+</table></div>
+<p><code><span class="nobr">resume</span></code> exits like <code><span class="nobr">scan</span></code> (<a href="#exit-codes">exit codes</a>). A scan that's already complete, or finished except for stalled directories, has nothing to resume: <code><span class="nobr">resume</span></code> says so and exits with code 0. It exits with code 2 if the scan has no checkpoint (it was run with <code><span class="nobr">--checkpoint-interval</span> <span class="nobr">0</span></code>), or if another fs-inventory process is still writing the scan.</p>
+<h3 id="57-convert">5.7 convert<a class="anchor" href="#57-convert" aria-label="Link to this section">#</a></h3>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory convert [OPTIONS] --format &lt;csv|jsonl&gt; --output &lt;DIR|-&gt; &lt;SCAN_DIR&gt;
+</code></pre></div>
+<p>Re-exports a Parquet scan as CSV or JSON Lines, for tools that only read text. The result is what the same scan would have written in that format: the same columns, escaping, <code><span class="nobr">path_b64</span></code> exact bytes, and time formatting, taken from the scan's own settings (<code><span class="nobr">--columns</span></code>, <code><span class="nobr">--fields</span></code>, <code><span class="nobr">--raw-paths</span></code>, <code><span class="nobr">--csv-raw-controls</span></code>, <code><span class="nobr">--time-unit</span></code>, and <code><span class="nobr">--time-format</span></code>).</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Option</th>
+<th>Effect</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">-f,</span> <span class="nobr">--format</span> <span class="nobr">csv|jsonl</span></code></td>
+<td>Output format, as for <code><span class="nobr">scan</span></code>. (<code><span class="nobr">--to</span></code>, its name in 0.6.0, still works.)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">-o,</span> <span class="nobr">--output</span> <span class="nobr">DIR|-</span></code></td>
+<td>A new or empty directory, laid out like a scan with its own manifest, or <code><span class="nobr">-</span></code> to stream entries to stdout (errors go to stderr, as for <code><span class="nobr">scan</span> <span class="nobr">-o</span> <span class="nobr">-</span></code>)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">--compression</span> <span class="nobr">CODEC</span></code></td>
+<td><code><span class="nobr">zstd</span></code>, <code><span class="nobr">zstd:LEVEL</span></code>, <code><span class="nobr">gzip</span></code>, <code><span class="nobr">gzip:LEVEL</span></code>, or <code><span class="nobr">none</span></code> (the default)</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><strong>Both tables:</strong> <code><span class="nobr">entries</span></code> and <code><span class="nobr">errors</span></code> are converted; <code><span class="nobr">rollup</span></code> tables aren't.</li>
+<li><strong>The manifest</strong> is the scan's own, with the new format, columns, and parts, and a <code><span class="nobr">converted_from</span></code> record of the source directory, its schema version, and when it was converted. <code><span class="nobr">verify</span></code> checks the result like any scan.</li>
+<li><strong>Older scans:</strong> scans written with schema version 2 (fs-inventory 0.5.0 and earlier) convert too, and get the symlink target columns, empty.</li>
+<li><strong>Unfinished scans:</strong> a scan that's still <code><span class="nobr">running</span></code> is refused; resume or finish it first. An <code><span class="nobr">interrupted</span></code> or <code><span class="nobr">incomplete</span></code> scan converts with that status.</li>
+</ul>
+<p>It exits with code 0 when done, 2 for a usage problem (not a Parquet scan, a non-empty output directory), and 4 if writing fails.</p>
+</section>
+<section class="doc-section" data-section="6-output-reference">
+<h2 id="6-output-reference">6. Output reference<a class="anchor" href="#6-output-reference" aria-label="Link to this section">#</a></h2>
+<h3 id="part-files">Part files<a class="anchor" href="#part-files" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>Naming:</strong> each table directory holds parts named <code><span class="nobr">part-wNN-NNNNNN.EXT</span></code>, where <code><span class="nobr">wNN</span></code> is the writer thread and the second number counts that writer's parts. Parts written after a resume are <code><span class="nobr">part-rN-wNN-NNNNNN.EXT</span></code>, where <code><span class="nobr">rN</span></code> counts the resumes. Rollup parts are <code><span class="nobr">part-NNNNNN.parquet</span></code>.</li>
+<li><strong>Extensions:</strong> <code><span class="nobr">.parquet</span></code>; <code><span class="nobr">.csv</span></code> or <code><span class="nobr">.jsonl</span></code>, plus <code><span class="nobr">.zst</span></code> or <code><span class="nobr">.gz</span></code> when compressed.</li>
+<li><strong>Rolling:</strong> a part is closed and a new one started at <code><span class="nobr">--part-max-bytes</span></code> (1 GiB by default) or <code><span class="nobr">--part-max-rows</span></code>.</li>
+<li><strong>Atomic commits:</strong> a part is written as <code><span class="nobr">NAME.tmp</span></code>, flushed to disk, and only then renamed. A part without <code><span class="nobr">.tmp</span></code> is always complete, and after a crash only <code><span class="nobr">.tmp</span></code> files are left to clean up.</li>
+<li><strong>One file per table for small scans:</strong> writer threads start only as output backs up. Each checkpoint also commits the open parts, so a scan running for hours has more, smaller parts.</li>
+</ul>
+<h3 id="the-checkpoint-directory">The checkpoint directory<a class="anchor" href="#the-checkpoint-directory" aria-label="Link to this section">#</a></h3>
+<p>While a scan runs, and after it's interrupted, its directory also holds <code><span class="nobr">checkpoint/</span></code>:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">state</span></code></td>
+<td>The latest checkpoint: the scan's settings, every committed part, and the directories still to read</td>
+</tr>
+<tr>
+<td><code><span class="nobr">spill</span></code></td>
+<td>Directories waiting to be read that didn't fit in memory (<a href="#83-memory">8.3</a>)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">visited</span></code></td>
+<td>With <code><span class="nobr">--detect-cycles</span></code>, the directories entered so far</td>
+</tr>
+<tr>
+<td><code><span class="nobr">lock</span></code></td>
+<td>Locked by the process writing the scan, so two can't write one scan at once</td>
+</tr>
+</tbody>
+</table></div>
+<p>It's removed when the scan finishes. A scan that still has it isn't finished; check the manifest's <code><span class="nobr">status</span></code>.</p>
+<h3 id="formats">Formats<a class="anchor" href="#formats" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th></th>
+<th>Parquet (default)</th>
+<th>CSV</th>
+<th>JSON Lines</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Best for</td>
+<td>DuckDB, Spark, pandas, and other data tools</td>
+<td>Spreadsheets and tools that read only CSV</td>
+<td>Log pipelines and document stores</td>
+</tr>
+<tr>
+<td>Size</td>
+<td>About 25 bytes per entry</td>
+<td>Several times larger</td>
+<td>Larger still</td>
+</tr>
+<tr>
+<td>Types</td>
+<td>Stored in the file</td>
+<td>Text; use the <code><span class="nobr">_csv</span></code> macros</td>
+<td>Text; use the <code><span class="nobr">_jsonl</span></code> macros</td>
+</tr>
+<tr>
+<td>Exact name bytes</td>
+<td><code><span class="nobr">path_raw</span></code> (binary)</td>
+<td><code><span class="nobr">path_b64</span></code> (base64 text)</td>
+<td><code><span class="nobr">path_b64</span></code> (base64 text)</td>
+</tr>
+<tr>
+<td>Timestamps</td>
+<td><code><span class="nobr">TIMESTAMP</span> <span class="nobr">WITH</span> <span class="nobr">TIME</span> <span class="nobr">ZONE</span></code>, UTC</td>
+<td>ISO-8601 UTC text or epoch seconds</td>
+<td>ISO-8601 UTC text or epoch seconds</td>
+</tr>
+<tr>
+<td>Compression</td>
+<td>zstd level 3; any codec</td>
+<td>none, zstd, or gzip</td>
+<td>none, zstd, or gzip</td>
+</tr>
+<tr>
+<td>Stream to stdout</td>
+<td>No</td>
+<td>Yes</td>
+<td>Yes</td>
+</tr>
+</tbody>
+</table></div>
+<p>Parquet files use zstd compression, row groups of up to 1,048,576 rows or 128 MiB, and page statistics, so DuckDB can skip row groups when filtering on <code><span class="nobr">mtime</span></code>, <code><span class="nobr">size</span></code>, or <code><span class="nobr">uid</span></code>. Each file's metadata records the scan ID, schema version, tool version, host, and roots.</p>
+<h3 id="names-and-exact-bytes">Names and exact bytes<a class="anchor" href="#names-and-exact-bytes" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">path</span></code>, <code><span class="nobr">parent_path</span></code>, and <code><span class="nobr">name</span></code> are always valid UTF-8. How a name is written depends on the format:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Name bytes</th>
+<th>Parquet</th>
+<th>JSON Lines</th>
+<th>CSV</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Valid UTF-8</td>
+<td>As is</td>
+<td>As is</td>
+<td>As is</td>
+</tr>
+<tr>
+<td>Control characters (newline, tab, ...)</td>
+<td>As is</td>
+<td>JSON escapes (<code><span class="nobr">\n</span></code>)</td>
+<td><code><span class="nobr">\n</span></code>, <code><span class="nobr">\t</span></code>, <code><span class="nobr">\r</span></code>, or <code><span class="nobr">\xNN</span></code>; as is with <code><span class="nobr">--csv-raw-controls</span></code></td>
+</tr>
+<tr>
+<td>Not valid UTF-8</td>
+<td>Each bad byte as <code><span class="nobr">\xNN</span></code></td>
+<td>Each bad byte as <code><span class="nobr">\xNN</span></code></td>
+<td>Each bad byte as <code><span class="nobr">\xNN</span></code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Whenever the text differs from the exact bytes, those bytes are also stored: in <code><span class="nobr">path_raw</span></code> in Parquet, and base64-encoded in <code><span class="nobr">path_b64</span></code> in CSV and JSON Lines. Symlink targets (<code><span class="nobr">--symlink-targets</span></code>) follow the same rules, in <code><span class="nobr">symlink_target</span></code> with <code><span class="nobr">symlink_target_raw</span></code> or <code><span class="nobr">symlink_target_b64</span></code>. In every format, <code><span class="nobr">coalesce(</span><wbr><span class="nobr">path_raw,</span> <span class="nobr">encode(</span><wbr><span class="nobr">path))</span></code> is the exact path (the text macros decode <code><span class="nobr">path_b64</span></code> into <code><span class="nobr">path_raw</span></code> for you). With <code><span class="nobr">--raw-paths</span> <span class="nobr">always</span></code>, every row gets the exact bytes. For example, a name with a newline in CSV:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">path,path_b64
+/data/projects/shared/line\nbreak.txt,L2RhdGEvcHJvamVjdHMvc2hhcmVkL2xpbmUKYnJlYWsudHh0
+</code></pre></div>
+<p>and in JSON Lines, where JSON's own escape keeps it exact:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">{&quot;path&quot;:&quot;/data/projects/shared/line\nbreak.txt&quot;,&quot;path_b64&quot;:null,&quot;name_flags&quot;:2}
+</code></pre></div>
+<p><code><span class="nobr">name_flags</span></code> is a bitmask of name problems: invalid UTF-8, control characters, names not in Unicode NFC form, leading or trailing spaces, a leading <code><span class="nobr">-</span></code>, a trailing <code><span class="nobr">.</span></code>, Windows-reserved names and characters, names over 255 bytes, and paths of 4,096 bytes or more. <a href="schema.html#name-flags">schema.md</a> lists the bits, and the <code><span class="nobr">fs_name_flags()</span></code> macro decodes them.</p>
+<h3 id="timestamps">Timestamps<a class="anchor" href="#timestamps" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>Stored in UTC,</strong> with microsecond precision by default (<code><span class="nobr">--time-unit</span> <span class="nobr">ns</span></code> for nanoseconds).</li>
+<li><strong><code><span class="nobr">ctime</span></code> is not creation time.</strong> It's the last change to the contents <em>or</em> metadata, and users can't set it, so it's the reliable signal of recent activity.</li>
+<li><strong><code><span class="nobr">mtime</span></code> can mislead.</strong> Copies, restores, <code><span class="nobr">tar</span></code>, and <code><span class="nobr">rsync</span> <span class="nobr">-t</span></code> preserve it, so restored data can look years old.</li>
+<li><strong><code><span class="nobr">btime</span></code> is creation time,</strong> when the platform and file system record it: on Linux with kernel 4.11 or later and a file system that stores it, and on macOS.</li>
+<li><strong><code><span class="nobr">time_flags</span></code></strong> marks timestamps that couldn't be represented and were clamped.</li>
+</ul>
+<h3 id="nulls">Nulls<a class="anchor" href="#nulls" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Null when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">size</span></code>, <code><span class="nobr">alloc_bytes</span></code>, <code><span class="nobr">atime</span></code>, <code><span class="nobr">mtime</span></code>, <code><span class="nobr">ctime</span></code>, <code><span class="nobr">btime</span></code></td>
+<td>Skipped with <code><span class="nobr">--fields</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">btime</span></code></td>
+<td>Not available (see above)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_id</span></code></td>
+<td>The entry isn't a directory</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_entries</span></code> and the other <code><span class="nobr">dir_*</span></code> totals</td>
+<td>The entry isn't a directory, or the directory wasn't read (unreadable, past <code><span class="nobr">--max-depth</span></code>, an unentered mount point)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">extension</span></code></td>
+<td>No extension, or a directory</td>
+</tr>
+<tr>
+<td><code><span class="nobr">path_raw</span></code> / <code><span class="nobr">path_b64</span></code></td>
+<td><code><span class="nobr">path</span></code> is already exact</td>
+</tr>
+<tr>
+<td><code><span class="nobr">rdev</span></code></td>
+<td>Not a device</td>
+</tr>
+<tr>
+<td><code><span class="nobr">error</span></code></td>
+<td>Nothing went wrong</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="errors-and-vanished-entries">Errors and vanished entries<a class="anchor" href="#errors-and-vanished-entries" aria-label="Link to this section">#</a></h3>
+<p>The <code><span class="nobr">errors</span></code> table has one row per failed operation: <code><span class="nobr">open</span></code>, <code><span class="nobr">readdir</span></code>, <code><span class="nobr">stat</span></code>, <code><span class="nobr">verify</span></code> (the directory was replaced during the scan), <code><span class="nobr">stall</span></code> (given up on after <code><span class="nobr">--stall-timeout</span></code>), or <code><span class="nobr">internal</span></code> (a bug in fs-inventory, contained to one entry). Each row has the path, the OS error number and name (such as <code><span class="nobr">EACCES</span></code>), a message, and the time. The table exists only if there were errors.</p>
+<p>Entries deleted between being listed and being read, including directories deleted while they're being read, are counted as <em>vanished</em> in the manifest and the progress output. They aren't errors: live file systems change during a scan.</p>
+<h3 id="the-manifest">The manifest<a class="anchor" href="#the-manifest" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">manifest.json</span></code> describes the scan. From the demo scan, with lists shortened:</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{
+  &quot;columns&quot;: [&quot;path&quot;, &quot;parent_path&quot;, &quot;name&quot;, &quot;...&quot;, &quot;error&quot;],
+  &quot;compression&quot;: &quot;zstd:3&quot;,
+  &quot;duration_seconds&quot;: 0.008556169,
+  &quot;error_columns&quot;: [&quot;path&quot;, &quot;path_raw&quot;, &quot;op&quot;, &quot;errno&quot;, &quot;errno_name&quot;, &quot;message&quot;, &quot;time&quot;],
+  &quot;errors_by_kind&quot;: [
+    { &quot;count&quot;: 1, &quot;errno&quot;: 13, &quot;errno_name&quot;: &quot;EACCES&quot;, &quot;op&quot;: &quot;open&quot; }
+  ],
+  &quot;finished_at&quot;: &quot;2026-10-26T00:11:32.707136Z&quot;,
+  &quot;format&quot;: &quot;parquet&quot;,
+  &quot;host&quot;: &quot;bd65838ce5c7&quot;,
+  &quot;options&quot;: { &quot;threads&quot;: 32, &quot;writers&quot;: 5, &quot;exclude&quot;: [], &quot;max_depth&quot;: null, &quot;...&quot;: &quot;...&quot; },
+  &quot;parts&quot;: {
+    &quot;entries&quot;: [ { &quot;bytes&quot;: 16233, &quot;file&quot;: &quot;entries/part-w00-000000.parquet&quot;, &quot;rows&quot;: 285 } ],
+    &quot;errors&quot;: [ { &quot;bytes&quot;: 2553, &quot;file&quot;: &quot;errors/part-w00-000000.parquet&quot;, &quot;rows&quot;: 1 } ]
+  },
+  &quot;rollup&quot;: { &quot;age_buckets&quot;: [&quot;future&quot;, &quot;&lt;30d&quot;, &quot;...&quot;, &quot;&gt;=10y&quot;], &quot;age_depth&quot;: 4, &quot;...&quot;: &quot;...&quot; },
+  &quot;roots&quot;: [ { &quot;path&quot;: &quot;/data/projects&quot;, &quot;path_b64&quot;: null } ],
+  &quot;scan_id&quot;: &quot;01a1758c-51da-709d-bafb-c8feaa458bf3&quot;,
+  &quot;schema_version&quot;: 3,
+  &quot;stalled&quot;: [],
+  &quot;started_at&quot;: &quot;2026-10-26T00:11:32.698582Z&quot;,
+  &quot;status&quot;: &quot;complete&quot;,
+  &quot;tool&quot;: &quot;fs-inventory&quot;,
+  &quot;tool_version&quot;: &quot;1.0.0&quot;,
+  &quot;totals&quot;: {
+    &quot;by_kind&quot;: { &quot;dir&quot;: 36, &quot;file&quot;: 248, &quot;symlink&quot;: 1 },
+    &quot;bytes&quot;: 47262948364,
+    &quot;dirs_read&quot;: 35,
+    &quot;entries&quot;: 285,
+    &quot;errors&quot;: 1,
+    &quot;revisits&quot;: 0,
+    &quot;spilled&quot;: 0,
+    &quot;vanished&quot;: 0
+  }
+}
+</code></pre></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">scan_id</span></code></td>
+<td>UUIDv7, unique per scan; also in every Parquet part's metadata</td>
+</tr>
+<tr>
+<td><code><span class="nobr">status</span></code></td>
+<td>See below</td>
+</tr>
+<tr>
+<td><code><span class="nobr">schema_version</span></code>, <code><span class="nobr">tool_version</span></code></td>
+<td>Output format version, and the fs-inventory version that wrote it</td>
+</tr>
+<tr>
+<td><code><span class="nobr">roots</span></code></td>
+<td>The scanned roots (<code><span class="nobr">path_b64</span></code> holds exact bytes when needed)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">started_at</span></code>, <code><span class="nobr">finished_at</span></code>, <code><span class="nobr">duration_seconds</span></code></td>
+<td>When the scan ran, in UTC</td>
+</tr>
+<tr>
+<td><code><span class="nobr">options</span></code></td>
+<td>The options the scan ran with</td>
+</tr>
+<tr>
+<td><code><span class="nobr">columns</span></code>, <code><span class="nobr">error_columns</span></code></td>
+<td>The columns written</td>
+</tr>
+<tr>
+<td><code><span class="nobr">parts</span></code></td>
+<td>Every committed part file, with its size and row count</td>
+</tr>
+<tr>
+<td><code><span class="nobr">totals</span></code></td>
+<td>Entries by kind; bytes (the sum of <code><span class="nobr">size</span></code> over everything but directories); directories read; errors; vanished entries; revisits (<code><span class="nobr">--detect-cycles</span></code>); directories that waited in the spill file</td>
+</tr>
+<tr>
+<td><code><span class="nobr">errors_by_kind</span></code></td>
+<td>Error counts by operation and error number</td>
+</tr>
+<tr>
+<td><code><span class="nobr">stalled</span></code></td>
+<td>Directories given up on with <code><span class="nobr">--stall-timeout</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">rollup</span></code></td>
+<td>Added by <code><span class="nobr">rollup</span></code>: buckets, depth, reference time, and its part files</td>
+</tr>
+<tr>
+<td><code><span class="nobr">ids</span></code></td>
+<td>With <code><span class="nobr">--resolve-ids</span></code>: how many user and group IDs the scan saw, how many had no name, and the command that looked them up (<code><span class="nobr">getent</span></code> or <code><span class="nobr">dscacheutil</span></code>)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">converted_from</span></code></td>
+<td>Added by <code><span class="nobr">convert</span></code>: the source scan directory, its format and schema version, when it was converted, and the fs-inventory version that converted it</td>
+</tr>
+<tr>
+<td><code><span class="nobr">resumes</span></code></td>
+<td>Each resume: when it started, when the checkpoint it continued from was taken, and the fs-inventory version. Absent if the scan was never resumed.</td>
+</tr>
+</tbody>
+</table></div>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+<th>Exit code</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">running</span></code></td>
+<td>The scan is in progress, or the process was killed before it could finish; <code><span class="nobr">resume</span></code> continues it from the last checkpoint</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code><span class="nobr">complete</span></code></td>
+<td>Every directory was read (some may have failed; see <code><span class="nobr">errors</span></code>)</td>
+<td>0 or 1</td>
+</tr>
+<tr>
+<td><code><span class="nobr">interrupted</span></code></td>
+<td>Stopped by a signal or a closed stdout; directories not yet read are missing, and <code><span class="nobr">resume</span></code> continues it</td>
+<td>3</td>
+</tr>
+<tr>
+<td><code><span class="nobr">incomplete</span></code></td>
+<td>Finished, but gave up on stalled directories (<code><span class="nobr">--stall-timeout</span></code>); <code><span class="nobr">resume</span></code> doesn't retry them</td>
+<td>3</td>
+</tr>
+<tr>
+<td><code><span class="nobr">failed</span></code></td>
+<td>Output couldn't be written, such as a full disk</td>
+<td>4</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="progress-output">Progress output<a class="anchor" href="#progress-output" aria-label="Link to this section">#</a></h3>
+<p>With <code><span class="nobr">--progress</span> <span class="nobr">plain</span></code>, a line every <code><span class="nobr">--progress-interval</span></code>:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory: 0:00:02  284.2k entries (140.0k/s)  151 dirs  0 B  0 errors  40 queued
+</code></pre></div>
+<p>That is: elapsed time, entries so far (and the rate since the last line), directories read, bytes seen (the sum of <code><span class="nobr">size</span></code> over everything but directories), errors, and directories waiting to be read. When threads are stalled, the line ends with how many and the longest-stalled directory.</p>
+<p>With <code><span class="nobr">--progress</span> <span class="nobr">json</span></code>, one object per line, with the same values:</p>
+<div class="code" data-lang="json"><div class="code-bar"><span class="code-lang">json</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-json">{&quot;bytes&quot;:0,&quot;dirs&quot;:202,&quot;elapsed_seconds&quot;:2.001,&quot;entries&quot;:382202,&quot;entries_per_second&quot;:188013.0,&quot;errors&quot;:0,&quot;event&quot;:&quot;progress&quot;,&quot;queued&quot;:29,&quot;stalled&quot;:[],&quot;vanished&quot;:0}
+</code></pre></div>
+<p>Every scan ends with a summary, unless <code><span class="nobr">--progress</span> <span class="nobr">none</span></code>:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">fs-inventory: complete: 285 entries in 0:00:00 (33.3k/s), 35 dirs, 44.02 GiB, 1 error, 0 vanished; output: /scratch/inventory/projects-2026-10-25
+</code></pre></div>
+<p>With <code><span class="nobr">--progress</span> <span class="nobr">json</span></code>, the summary is an object with <code><span class="nobr">&quot;event&quot;:</span> <span class="nobr">&quot;done&quot;</span></code>, the status, the totals, and the output location.</p>
+<h3 id="exit-codes">Exit codes<a class="anchor" href="#exit-codes" aria-label="Link to this section">#</a></h3>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Code</th>
+<th><code><span class="nobr">scan</span></code> and <code><span class="nobr">resume</span></code></th>
+<th><code><span class="nobr">verify</span></code></th>
+<th>Other commands</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>Complete with no errors (or, for <code><span class="nobr">resume</span></code>, nothing to resume)</td>
+<td>The scan is good</td>
+<td>Success</td>
+</tr>
+<tr>
+<td>1</td>
+<td>Complete, but some entries couldn't be read (see <code><span class="nobr">errors</span></code>)</td>
+<td>Problems found</td>
+<td>—</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Invalid arguments or configuration</td>
+<td>Invalid arguments</td>
+<td>Invalid arguments</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Interrupted, or gave up on stalled directories</td>
+<td>—</td>
+<td>—</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Fatal: output couldn't be written</td>
+<td>—</td>
+<td>Failed (such as <code><span class="nobr">rollup</span></code> on an unreadable scan)</td>
+</tr>
+<tr>
+<td>130</td>
+<td>A second Ctrl-C or SIGTERM</td>
+<td>—</td>
+<td>—</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+<section class="doc-section" data-section="7-querying-scans-with-duckdb">
+<h2 id="7-querying-scans-with-duckdb">7. Querying scans with DuckDB<a class="anchor" href="#7-querying-scans-with-duckdb" aria-label="Link to this section">#</a></h2>
+<p><a href="https://duckdb.org" target="_blank" rel="noopener">DuckDB</a> is an analytical database that runs as a single program and queries Parquet, CSV, and JSON files in place. It's the quickest way to answer questions about a scan, and it handles billions of rows on a laptop. The examples use DuckDB 2.0.</p>
+<h3 id="71-reading-a-scan-directly">7.1 Reading a scan directly<a class="anchor" href="#71-reading-a-scan-directly" aria-label="Link to this section">#</a></h3>
+<p>No setup is needed for Parquet scans:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT count(*) FROM read_parquet('/scratch/inventory/projects-2026-10-25/entries/*.parquet');
+</code></pre></div>
+<h3 id="72-the-macros">7.2 The macros<a class="anchor" href="#72-the-macros" aria-label="Link to this section">#</a></h3>
+<p><a href="https://github.com/robert-mcdermott/fs-inventory/blob/v1.0.0/sql/fs_inventory.sql" target="_blank" rel="noopener"><code><span class="nobr">sql/</span><wbr><span class="nobr">fs_inventory.sql</span></code></a> defines table macros, which are named queries that take the scan directory as an argument. They save typing the glob, and for text scans they apply the right column types.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Macro</th>
+<th>Reads</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">fs_entries(</span><wbr><span class="nobr">scan_dir)</span></code></td>
+<td>The <code><span class="nobr">entries</span></code> table of a Parquet scan</td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_errors(</span><wbr><span class="nobr">scan_dir)</span></code></td>
+<td>The <code><span class="nobr">errors</span></code> table of a Parquet scan. It fails with &quot;No files found&quot; if the scan had no errors.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_users(</span><wbr><span class="nobr">scan_dir)</span></code>, <code><span class="nobr">fs_groups(</span><wbr><span class="nobr">scan_dir)</span></code></td>
+<td>The <code><span class="nobr">users</span></code> and <code><span class="nobr">groups</span></code> tables of a Parquet scan made with <code><span class="nobr">--resolve-ids</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_entries_named(</span><wbr><span class="nobr">scan_dir)</span></code></td>
+<td><code><span class="nobr">fs_entries</span></code> plus <code><span class="nobr">user_name</span></code> and <code><span class="nobr">group_name</span></code>, for a Parquet scan made with <code><span class="nobr">--resolve-ids</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_diff(</span><wbr><span class="nobr">old_dir,</span> <span class="nobr">new_dir)</span></code></td>
+<td>What changed between two Parquet scans: one row per added, removed, or changed entry, with <code><span class="nobr">changes</span></code> listing the columns that differ and the rows before and after as <code><span class="nobr">old</span></code> and <code><span class="nobr">new</span></code> structs (<a href="#75-recipes">7.5</a>)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_diff_summary(</span><wbr><span class="nobr">old_dir,</span> <span class="nobr">new_dir)</span></code></td>
+<td><code><span class="nobr">fs_diff</span></code> counted by change and kind, with the net change in size</td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_rollup(</span><wbr><span class="nobr">scan_dir)</span></code></td>
+<td>Subtree totals, after <code><span class="nobr">fs-inventory</span> <span class="nobr">rollup</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_rollup_ages(</span><wbr><span class="nobr">scan_dir)</span></code></td>
+<td>Age histograms, after <code><span class="nobr">fs-inventory</span> <span class="nobr">rollup</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_entries_csv(</span><wbr><span class="nobr">scan_dir)</span></code>, <code><span class="nobr">fs_errors_csv(</span><wbr><span class="nobr">scan_dir)</span></code>, <code><span class="nobr">fs_users_csv(</span><wbr><span class="nobr">scan_dir)</span></code>, <code><span class="nobr">fs_groups_csv(</span><wbr><span class="nobr">scan_dir)</span></code></td>
+<td>CSV scans, compressed or not</td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_entries_jsonl(</span><wbr><span class="nobr">scan_dir)</span></code>, <code><span class="nobr">fs_errors_jsonl(</span><wbr><span class="nobr">scan_dir)</span></code>, <code><span class="nobr">fs_users_jsonl(</span><wbr><span class="nobr">scan_dir)</span></code>, <code><span class="nobr">fs_groups_jsonl(</span><wbr><span class="nobr">scan_dir)</span></code></td>
+<td>JSON Lines scans, compressed or not</td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs_name_flags(</span><wbr><span class="nobr">flags)</span></code></td>
+<td>Not a table: turns a <code><span class="nobr">name_flags</span></code> value into a list of flag names</td>
+</tr>
+</tbody>
+</table></div>
+<p>The CSV and JSON Lines macros give every column's type explicitly, instead of letting DuckDB guess from a sample of rows. A guess can go wrong; a column of numeric-looking file names would be read as numbers, for example. They also add <code><span class="nobr">path_raw</span></code>, decoded from <code><span class="nobr">path_b64</span></code>, so queries work the same in every format. They need every column, so for text scans written with <code><span class="nobr">--columns</span></code>, use <code><span class="nobr">read_csv</span></code> or <code><span class="nobr">read_json</span></code> with your own column list.</p>
+<p>Load the macros in any of three ways:</p>
+<p><strong>In the DuckDB shell</strong>, for interactive work:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">$ duckdb
+D .read sql/fs_inventory.sql
+D SELECT count(*) FROM fs_entries('/scratch/inventory/projects-2026-10-25');
+</code></pre></div>
+<p><strong>For one command</strong>, with <code><span class="nobr">-cmd</span></code>:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">duckdb -cmd &quot;.read sql/fs_inventory.sql&quot; -c &quot;SELECT count(*) FROM fs_entries('/scratch/inventory/projects-2026-10-25')&quot;
+</code></pre></div>
+<p><strong>Once, into a database file.</strong> Macros are stored in the database, so every later session has them:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">duckdb inventory.duckdb &lt; sql/fs_inventory.sql
+</code></pre></div>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">duckdb inventory.duckdb -c &quot;SELECT count(*) FROM fs_entries('/scratch/inventory/projects-2026-10-25')&quot;
+</code></pre></div>
+<h3 id="73-settings-and-pitfalls">7.3 Settings and pitfalls<a class="anchor" href="#73-settings-and-pitfalls" aria-label="Link to this section">#</a></h3>
+<p><strong>Use UTC.</strong> Timestamps are stored in UTC, but DuckDB shows them, and groups them with <code><span class="nobr">year()</span></code> or <code><span class="nobr">date_trunc()</span></code>, in the session's time zone. A file modified at 2009-02-01 12:00 UTC shows as 04:00 in Los Angeles. Near midnight on New Year's Day, that can move a file into a different year. Set UTC at the start of a session:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SET TimeZone = 'UTC';
+</code></pre></div>
+<p><strong>Cast sums before <code><span class="nobr">format_bytes</span></code>.</strong> <code><span class="nobr">sum()</span></code> of a <code><span class="nobr">BIGINT</span></code> column returns a 128-bit <code><span class="nobr">HUGEINT</span></code> in DuckDB, which <code><span class="nobr">format_bytes()</span></code> doesn't accept:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">Binder Error: No function matches the given name and argument types 'format_bytes(HUGEINT)'
+</code></pre></div>
+<p>Cast the sum: <code><span class="nobr">format_bytes(</span><wbr><span class="nobr">sum(</span><wbr><span class="nobr">size)::BIGINT)</span></code>. A single column such as <code><span class="nobr">size</span></code> works without a cast.</p>
+<p><strong>Sort on numbers, not formatted text.</strong> In <code><span class="nobr">SELECT</span> <span class="nobr">format_bytes(</span><wbr><span class="nobr">size)</span> <span class="nobr">AS</span> <span class="nobr">size</span> <span class="nobr">...</span> <span class="nobr">ORDER</span> <span class="nobr">BY</span> <span class="nobr">size</span></code>, the <code><span class="nobr">ORDER</span> <span class="nobr">BY</span></code> uses the formatted text, so <code><span class="nobr">8.0</span> <span class="nobr">KiB</span></code> sorts above <code><span class="nobr">8.0</span> <span class="nobr">GiB</span></code>. Give the table an alias and sort on its column, as the recipes below do: <code><span class="nobr">FROM</span> <span class="nobr">fs_entries(</span><wbr><span class="nobr">...)</span> <span class="nobr">e</span> <span class="nobr">...</span> <span class="nobr">ORDER</span> <span class="nobr">BY</span> <span class="nobr">e.size</span> <span class="nobr">DESC</span></code>.</p>
+<p><strong>Name the scan once.</strong> The recipes keep the scan directory in a variable:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">.read sql/fs_inventory.sql
+SET TimeZone = 'UTC';
+SET VARIABLE scan = '/scratch/inventory/projects-2026-10-25';
+</code></pre></div>
+<h3 id="74-whats-in-a-row">7.4 What's in a row<a class="anchor" href="#74-whats-in-a-row" aria-label="Link to this section">#</a></h3>
+<p>Every column is described in the <a href="schema.html">schema reference</a>. The ones most queries use:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">path</span></code>, <code><span class="nobr">parent_path</span></code>, <code><span class="nobr">name</span></code>, <code><span class="nobr">extension</span></code></td>
+<td>Finding things by location or name</td>
+</tr>
+<tr>
+<td><code><span class="nobr">kind</span></code></td>
+<td><code><span class="nobr">file</span></code>, <code><span class="nobr">dir</span></code>, <code><span class="nobr">symlink</span></code>, <code><span class="nobr">fifo</span></code>, <code><span class="nobr">socket</span></code>, <code><span class="nobr">char</span></code>, <code><span class="nobr">block</span></code>, or <code><span class="nobr">unknown</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">size</span></code>, <code><span class="nobr">alloc_bytes</span></code></td>
+<td>Logical size, and space actually allocated on disk</td>
+</tr>
+<tr>
+<td><code><span class="nobr">uid</span></code>, <code><span class="nobr">gid</span></code>, <code><span class="nobr">mode</span></code></td>
+<td>Owner, group, and permissions (<code><span class="nobr">mode</span> <span class="nobr">&amp;</span> <span class="nobr">4095</span></code> is the permission bits)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">mtime</span></code>, <code><span class="nobr">ctime</span></code>, <code><span class="nobr">atime</span></code>, <code><span class="nobr">btime</span></code></td>
+<td>Timestamps (see <a href="#timestamps">Timestamps</a>)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">depth</span></code>, <code><span class="nobr">dir_id</span></code>, <code><span class="nobr">parent_id</span></code></td>
+<td>Tree structure</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dev</span></code>, <code><span class="nobr">ino</span></code>, <code><span class="nobr">nlink</span></code></td>
+<td>Identity; equal <code><span class="nobr">(dev,</span> <span class="nobr">ino)</span></code> means hard links to one file</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_entries</span></code>, <code><span class="nobr">dir_files</span></code>, <code><span class="nobr">dir_bytes</span></code>, ...</td>
+<td>A directory's immediate contents</td>
+</tr>
+<tr>
+<td><code><span class="nobr">error</span></code></td>
+<td>Why a directory wasn't fully read</td>
+</tr>
+</tbody>
+</table></div>
+<h3 id="75-recipes">7.5 Recipes<a class="anchor" href="#75-recipes" aria-label="Link to this section">#</a></h3>
+<p>Every recipe assumes the setup from <a href="#73-settings-and-pitfalls">7.3</a>. The outputs are from the demo tree used throughout this guide.</p>
+<p><strong>Totals by kind</strong></p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT kind, count(*) AS entries,
+       format_bytes(sum(size)::BIGINT) AS size, format_bytes(sum(alloc_bytes)::BIGINT) AS on_disk
+FROM fs_entries(getvariable('scan')) GROUP BY kind ORDER BY entries DESC;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌─────────┬─────────┬──────────┬──────────┐
+│  kind   │ entries │   size   │ on_disk  │
+│ varchar │  int64  │ varchar  │ varchar  │
+├─────────┼─────────┼──────────┼──────────┤
+│ file    │     248 │ 44.0 GiB │ 17.7 MiB │
+│ dir     │      36 │ 33.9 KiB │ 32.0 KiB │
+│ symlink │       1 │ 12 bytes │ 0 bytes  │
+└─────────┴─────────┴──────────┴──────────┘
+</code></pre></div>
+<p><code><span class="nobr">size</span></code> is what programs see, and <code><span class="nobr">on_disk</span></code> is the space allocated. Here they differ hugely because the demo tree's large files are sparse. On real data, compression, deduplication, and tiering to tape or object storage also make <code><span class="nobr">on_disk</span></code> smaller than <code><span class="nobr">size</span></code>.</p>
+<p><strong>Largest files</strong></p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT path, format_bytes(size) AS size, mtime
+FROM fs_entries(getvariable('scan')) e WHERE kind = 'file' ORDER BY e.size DESC LIMIT 5;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌────────────────────────────────────────────────┬─────────┬──────────────────────────┐
+│                      path                      │  size   │          mtime           │
+│                    varchar                     │ varchar │ timestamp with time zone │
+├────────────────────────────────────────────────┼─────────┼──────────────────────────┤
+│ /data/projects/imaging/processed/archive.tar   │ 8.0 GiB │ 2021-11-02 08:00:00+00   │
+│ /data/projects/genomics/runs/2017/run2/big.bam │ 3.0 GiB │ 2017-02-20 10:00:00+00   │
+│ /data/projects/genomics/runs/2017/run1/big.bam │ 3.0 GiB │ 2017-01-20 10:00:00+00   │
+│ /data/projects/genomics/runs/2019/run3/big.bam │ 3.0 GiB │ 2019-03-20 10:00:00+00   │
+│ /data/projects/genomics/runs/2019/run2/big.bam │ 3.0 GiB │ 2019-02-20 10:00:00+00   │
+└────────────────────────────────────────────────┴─────────┴──────────────────────────┘
+</code></pre></div>
+<p><strong>Finding files</strong> by extension, name pattern, and age:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT path, format_bytes(size) AS size, mtime FROM fs_entries(getvariable('scan'))
+WHERE kind = 'file' AND extension = 'bam' AND mtime &lt; TIMESTAMPTZ '2020-01-01' ORDER BY path;
+
+SELECT path FROM fs_entries(getvariable('scan'))
+WHERE regexp_matches(name, '^scan[0-9]+\.tif$') AND mtime &lt; now() - INTERVAL 9 YEAR ORDER BY path;
+</code></pre></div>
+<p><code><span class="nobr">extension</span></code> is lowercase, without the dot, so <code><span class="nobr">extension</span> <span class="nobr">=</span> <span class="nobr">&#x27;bam&#x27;</span></code> also finds <code><span class="nobr">.BAM</span></code> files.</p>
+<p><strong>Age profile:</strong> files and bytes by year of last modification.</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT year(mtime) AS year, count(*) AS files, format_bytes(sum(size)::BIGINT) AS size
+FROM fs_entries(getvariable('scan')) WHERE kind = 'file' GROUP BY year ORDER BY year;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌───────┬───────┬───────────┐
+│ year  │ files │   size    │
+│ int64 │ int64 │  varchar  │
+├───────┼───────┼───────────┤
+│  2009 │     1 │ 1.0 KiB   │
+│  2015 │     1 │ 1.0 KiB   │
+│  2016 │    13 │ 1.9 MiB   │
+│  2017 │    29 │ 9.0 GiB   │
+│  2018 │    13 │ 1.9 MiB   │
+│  2019 │    15 │ 9.0 GiB   │
+│  2021 │     1 │ 8.0 GiB   │
+│  2022 │    15 │ 9.0 GiB   │
+│  2023 │     9 │ 9.0 KiB   │
+│  2024 │    80 │ 160.0 KiB │
+│  2025 │    15 │ 9.0 GiB   │
+│  2026 │    56 │ 2.0 MiB   │
+└───────┴───────┴───────────┘
+</code></pre></div>
+<p><strong>Usage by owner, with user names.</strong> For a scan made with <code><span class="nobr">--resolve-ids</span></code> (<a href="#414-user-and-group-names">4.14</a>), <code><span class="nobr">fs_entries_named</span></code> has the names:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT coalesce(user_name, uid::VARCHAR) AS owner, count(*) AS files,
+       format_bytes(sum(size)::BIGINT) AS size, format_bytes(sum(alloc_bytes)::BIGINT) AS on_disk
+FROM fs_entries_named(getvariable('scan'))
+WHERE kind = 'file' GROUP BY ALL ORDER BY sum(size) DESC;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌─────────┬───────┬───────────┬───────────┐
+│  owner  │ files │   size    │  on_disk  │
+│ varchar │ int64 │  varchar  │  varchar  │
+├─────────┼───────┼───────────┼───────────┤
+│ asmith  │    90 │ 36.0 GiB  │ 9.9 MiB   │
+│ bjones  │    66 │ 8.0 GiB   │ 7.4 MiB   │
+│ cwu     │    81 │ 168.0 KiB │ 328.0 KiB │
+│ dlee    │    11 │ 11.0 KiB  │ 44.0 KiB  │
+└─────────┴───────┴───────────┴───────────┘
+</code></pre></div>
+<p>Users whose IDs have no account (deleted accounts, for example) show as their number. For a scan made without <code><span class="nobr">--resolve-ids</span></code>, save the user list on a host that sees the same accounts, and join it instead:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">getent passwd &gt; /scratch/inventory/passwd.txt
+</code></pre></div>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT coalesce(u.user, e.uid::VARCHAR) AS owner, count(*) AS files,
+       format_bytes(sum(e.size)::BIGINT) AS size
+FROM fs_entries(getvariable('scan')) e
+LEFT JOIN read_csv('/scratch/inventory/passwd.txt', delim = ':', header = false, quote = '',
+    columns = {'user': 'VARCHAR', 'password': 'VARCHAR', 'uid': 'BIGINT', 'gid': 'BIGINT',
+               'gecos': 'VARCHAR', 'home': 'VARCHAR', 'shell': 'VARCHAR'}) u USING (uid)
+WHERE e.kind = 'file' GROUP BY ALL ORDER BY sum(e.size) DESC;
+</code></pre></div>
+<p>Groups work the same way, with <code><span class="nobr">getent</span> <span class="nobr">group</span></code>.</p>
+<p><strong>Files of deleted accounts.</strong> With <code><span class="nobr">--resolve-ids</span></code>, an owner with no name has no account on the scanning host:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT e.uid, count(*) AS files, format_bytes(sum(e.size)::BIGINT) AS size
+FROM fs_entries(getvariable('scan')) e JOIN fs_users(getvariable('scan')) u USING (uid)
+WHERE u.name IS NULL AND e.kind = 'file'
+GROUP BY ALL ORDER BY sum(e.size) DESC;
+</code></pre></div>
+<p><strong>Who changed the most data recently.</strong> Use <code><span class="nobr">ctime</span></code>, because copies and restores preserve <code><span class="nobr">mtime</span></code> but can't set <code><span class="nobr">ctime</span></code>:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT uid, count(*) AS files, format_bytes(sum(alloc_bytes)::BIGINT) AS on_disk
+FROM fs_entries(getvariable('scan'))
+WHERE kind = 'file' AND ctime &gt; now() - INTERVAL 7 DAY
+GROUP BY uid ORDER BY sum(alloc_bytes) DESC LIMIT 20;
+</code></pre></div>
+<p><strong>Top extensions by size</strong></p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT extension, count(*) AS files, format_bytes(sum(size)::BIGINT) AS size
+FROM fs_entries(getvariable('scan')) WHERE kind = 'file'
+GROUP BY extension ORDER BY sum(size) DESC LIMIT 5;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌───────────┬───────┬──────────┐
+│ extension │ files │   size   │
+│  varchar  │ int64 │ varchar  │
+├───────────┼───────┼──────────┤
+│ bam       │    12 │ 36.0 GiB │
+│ tar       │     1 │ 8.0 GiB  │
+│ gz        │    48 │ 9.3 MiB  │
+│ tif       │    40 │ 5.8 MiB  │
+│ png       │    25 │ 1.4 MiB  │
+└───────────┴───────┴──────────┘
+</code></pre></div>
+<p><strong>Counting hard-linked files once.</strong> A file with several hard links has a row for each link, all with the same <code><span class="nobr">(dev,</span> <span class="nobr">ino)</span></code>:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT count(*) AS files, format_bytes(sum(alloc_bytes)::BIGINT) AS on_disk
+FROM (SELECT DISTINCT ON (dev, ino) alloc_bytes FROM fs_entries(getvariable('scan')) WHERE kind = 'file');
+</code></pre></div>
+<p><strong>Sparse, compressed, or tiered files:</strong> much less allocated than their size.</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT path, format_bytes(size) AS size, format_bytes(alloc_bytes) AS on_disk
+FROM fs_entries(getvariable('scan')) e
+WHERE kind = 'file' AND alloc_bytes &lt; size / 10 ORDER BY e.size DESC LIMIT 5;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌────────────────────────────────────────────────┬─────────┬─────────┐
+│                      path                      │  size   │ on_disk │
+│                    varchar                     │ varchar │ varchar │
+├────────────────────────────────────────────────┼─────────┼─────────┤
+│ /data/projects/imaging/processed/archive.tar   │ 8.0 GiB │ 0 bytes │
+│ /data/projects/genomics/runs/2017/run2/big.bam │ 3.0 GiB │ 0 bytes │
+│ /data/projects/genomics/runs/2017/run1/big.bam │ 3.0 GiB │ 0 bytes │
+│ /data/projects/genomics/runs/2019/run3/big.bam │ 3.0 GiB │ 0 bytes │
+│ /data/projects/genomics/runs/2019/run2/big.bam │ 3.0 GiB │ 0 bytes │
+└────────────────────────────────────────────────┴─────────┴─────────┘
+</code></pre></div>
+<p><strong>Directories with the most files directly inside.</strong> Very large directories slow down every tool that lists them:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT path, dir_files, format_bytes(dir_bytes) AS size
+FROM fs_entries(getvariable('scan')) WHERE kind = 'dir' ORDER BY dir_files DESC LIMIT 5;
+</code></pre></div>
+<p><strong>Directories that couldn't be read, and why</strong></p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT path, error FROM fs_entries(getvariable('scan')) WHERE error IS NOT NULL;
+SELECT path, op, errno_name, message FROM fs_errors(getvariable('scan'));
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌───────────────────────────┬──────────────┐
+│           path            │    error     │
+│          varchar          │   varchar    │
+├───────────────────────────┼──────────────┤
+│ /data/projects/restricted │ open: EACCES │
+└───────────────────────────┴──────────────┘
+┌───────────────────────────┬─────────┬────────────┬─────────────────────────────────┐
+│           path            │   op    │ errno_name │             message             │
+│          varchar          │ varchar │  varchar   │             varchar             │
+├───────────────────────────┼─────────┼────────────┼─────────────────────────────────┤
+│ /data/projects/restricted │ open    │ EACCES     │ Permission denied (os error 13) │
+└───────────────────────────┴─────────┴────────────┴─────────────────────────────────┘
+</code></pre></div>
+<p><strong>Walking the tree.</strong> Join a row's <code><span class="nobr">parent_id</span></code> to its parent's <code><span class="nobr">dir_id</span></code>:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT c.path, p.path AS parent
+FROM fs_entries(getvariable('scan')) c
+JOIN fs_entries(getvariable('scan')) p ON c.parent_id = p.dir_id
+WHERE c.name = 'app.js';
+</code></pre></div>
+<p><strong>Largest projects, counting everything below them</strong> (after <code><span class="nobr">rollup</span></code>):</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT path, files, format_bytes(bytes) AS size, newest_mtime, incomplete_dirs
+FROM fs_rollup(getvariable('scan')) WHERE depth = 1 ORDER BY bytes DESC;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌───────────────────────────┬───────┬───────────┬───────────────────────────────┬─────────────────┐
+│           path            │ files │   size    │         newest_mtime          │ incomplete_dirs │
+│          varchar          │ int64 │  varchar  │   timestamp with time zone    │      int64      │
+├───────────────────────────┼───────┼───────────┼───────────────────────────────┼─────────────────┤
+│ /data/projects/genomics   │    90 │ 36.0 GiB  │ 2026-10-09 12:00:00+00        │               0 │
+│ /data/projects/imaging    │    66 │ 8.0 GiB   │ 2026-09-15 15:00:00+00        │               0 │
+│ /data/projects/webapp     │    81 │ 168.0 KiB │ 2026-10-20 16:00:00+00        │               0 │
+│ /data/projects/shared     │    12 │ 11.0 KiB  │ 2026-10-26 00:11:32.679417+00 │               0 │
+│ /data/projects/restricted │     0 │ 0 bytes   │ NULL                          │               1 │
+└───────────────────────────┴───────┴───────────┴───────────────────────────────┴─────────────────┘
+</code></pre></div>
+<p><code><span class="nobr">restricted</span></code> couldn't be read, so its <code><span class="nobr">incomplete_dirs</span></code> is 1 and its totals (0 files) are lower bounds.</p>
+<p><strong>Archive candidates:</strong> large directories where nothing has been modified for three years.</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT path, files, format_bytes(bytes) AS size, newest_mtime, newest_ctime
+FROM fs_rollup(getvariable('scan'))
+WHERE newest_mtime &lt; now() - INTERVAL 3 YEAR ORDER BY bytes DESC LIMIT 5;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌────────────────────────────────────────┬───────┬─────────┬──────────────────────────┬───────────────────────────────┐
+│                  path                  │ files │  size   │       newest_mtime       │         newest_ctime          │
+│                varchar                 │ int64 │ varchar │ timestamp with time zone │   timestamp with time zone    │
+├────────────────────────────────────────┼───────┼─────────┼──────────────────────────┼───────────────────────────────┤
+│ /data/projects/genomics/runs/2017      │    15 │ 9.0 GiB │ 2017-03-20 10:00:00+00   │ 2026-10-26 00:11:32.046414+00 │
+│ /data/projects/genomics/runs/2019      │    15 │ 9.0 GiB │ 2019-03-20 10:00:00+00   │ 2026-10-26 00:11:32.046414+00 │
+│ /data/projects/genomics/runs/2022      │    15 │ 9.0 GiB │ 2022-03-20 10:00:00+00   │ 2026-10-26 00:11:32.046414+00 │
+│ /data/projects/genomics/runs/2017/run2 │     5 │ 3.0 GiB │ 2017-02-20 10:00:00+00   │ 2026-10-26 00:11:32.046414+00 │
+│ /data/projects/genomics/runs/2017/run1 │     5 │ 3.0 GiB │ 2017-01-20 10:00:00+00   │ 2026-10-26 00:11:32.046414+00 │
+└────────────────────────────────────────┴───────┴─────────┴──────────────────────────┴───────────────────────────────┘
+</code></pre></div>
+<p>These runs were copied into place recently with their original modification times, so <code><span class="nobr">newest_ctime</span></code> is recent while <code><span class="nobr">newest_mtime</span></code> is years old. Filter on <code><span class="nobr">newest_ctime</span></code> instead to find data that hasn't been touched in any way, including being copied or having its permissions changed.</p>
+<p><strong>File-age heat map</strong> (after <code><span class="nobr">rollup</span></code>): bytes by age of last modification for each project. In long form, one row per project and age bucket, ready for a charting tool:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT r.path, a.label, a.bucket, a.files, a.bytes
+FROM fs_rollup_ages(getvariable('scan')) a
+JOIN fs_rollup(getvariable('scan')) r USING (dir_id)
+WHERE r.depth = 1 AND a.time = 'mtime'
+ORDER BY r.path, a.bucket;
+</code></pre></div>
+<p>As a grid, with <code><span class="nobr">PIVOT</span></code>. This one counts files; use <code><span class="nobr">sum(</span><wbr><span class="nobr">bytes)</span></code> for bytes:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">PIVOT (
+    SELECT r.path, a.label, a.files
+    FROM fs_rollup_ages(getvariable('scan')) a
+    JOIN fs_rollup(getvariable('scan')) r USING (dir_id)
+    WHERE r.depth = 1 AND a.time = 'mtime'
+) ON label IN ('&lt;30d', '30d-90d', '90d-1y', '1y-2y', '2y-3y', '3y-5y', '5y-10y', '&gt;=10y')
+USING sum(files) ORDER BY path;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌─────────────────────────┬────────┬─────────┬────────┬────────┬────────┬────────┬────────┬────────┐
+│          path           │  &lt;30d  │ 30d-90d │ 90d-1y │ 1y-2y  │ 2y-3y  │ 3y-5y  │ 5y-10y │ &gt;=10y  │
+│         varchar         │ int128 │ int128  │ int128 │ int128 │ int128 │ int128 │ int128 │ int128 │
+├─────────────────────────┼────────┼─────────┼────────┼────────┼────────┼────────┼────────┼────────┤
+│ /data/projects/genomics │     30 │    NULL │   NULL │     15 │   NULL │     15 │     30 │   NULL │
+│ /data/projects/imaging  │   NULL │       5 │     20 │   NULL │   NULL │      1 │     27 │     13 │
+│ /data/projects/shared   │      1 │    NULL │   NULL │   NULL │   NULL │      9 │   NULL │      2 │
+│ /data/projects/webapp   │      1 │    NULL │   NULL │   NULL │     80 │   NULL │   NULL │   NULL │
+└─────────────────────────┴────────┴─────────┴────────┴────────┴────────┴────────┴────────┴────────┘
+</code></pre></div>
+<p>Listing the labels in <code><span class="nobr">IN</span> <span class="nobr">(...)</span></code> keeps the columns in age order. Only buckets with files have rows, so empty cells are <code><span class="nobr">NULL</span></code>. <code><span class="nobr">a.time</span></code> can also be <code><span class="nobr">ctime</span></code> or <code><span class="nobr">atime</span></code>.</p>
+<p><strong>Comparing two scans.</strong> <code><span class="nobr">fs_diff</span></code> matches the entries of two scans of the same roots by their exact path bytes:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SET VARIABLE old = '/scratch/inventory/projects-2026-10-25';
+SET VARIABLE new = '/scratch/inventory/projects-2026-11-01';
+
+SELECT * FROM fs_diff_summary(getvariable('old'), getvariable('new'));
+</code></pre></div>
+<p>An illustration:</p>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌─────────┬─────────┬─────────┬──────────────┐
+│ change  │  kind   │ entries │ size_change  │
+│ varchar │ varchar │  int64  │    int64     │
+├─────────┼─────────┼─────────┼──────────────┤
+│ added   │ file    │       2 │   5368709120 │
+│ changed │ dir     │       3 │         NULL │
+│ changed │ file    │       1 │        30720 │
+│ removed │ file    │      15 │  -9663676416 │
+└─────────┴─────────┴─────────┴──────────────┘
+</code></pre></div>
+<p>To list the entries themselves, with what changed:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT change, changes, path, old.size AS old_size, new.size AS new_size, new.mtime
+FROM fs_diff(getvariable('old'), getvariable('new'))
+ORDER BY path;
+</code></pre></div>
+<ul>
+<li><strong>What counts as a change:</strong> any difference in the columns describing an entry: kind, size, allocation, permissions, owner, link count, inode, times, directory totals, mount point, symlink target, or error. <code><span class="nobr">changes</span></code> lists them, such as <code><span class="nobr">[size,</span> <span class="nobr">mtime,</span> <span class="nobr">ctime]</span></code>. A new <code><span class="nobr">ino</span></code> means the file was replaced, as editors that save by renaming do.</li>
+<li><strong>Left out by default:</strong> <code><span class="nobr">atime</span></code>, which reading a file updates, and <code><span class="nobr">dev</span></code>, which can change when a file system is remounted. <code><span class="nobr">fs_diff(</span><wbr><span class="nobr">old,</span> <span class="nobr">new,</span> <span class="nobr">ignore</span> <span class="nobr">:=</span> <span class="nobr">[])</span></code> counts every difference, and <code><span class="nobr">ignore</span> <span class="nobr">:=</span> <span class="nobr">[&#x27;atime&#x27;,</span> <span class="nobr">&#x27;dev&#x27;,</span> <span class="nobr">&#x27;ctime&#x27;]</span></code> leaves out more.</li>
+<li><strong>Renames</strong> show as one removal and one addition, since entries are matched by path.</li>
+<li><strong>Large scans:</strong> DuckDB joins the two scans in parallel and spills to disk when memory runs out; two 10-million-entry scans take seconds on a laptop. For billion-entry scans, point <code><span class="nobr">SET</span> <span class="nobr">temp_directory</span></code> at a disk with room.</li>
+</ul>
+<p><strong>Several scans as one table.</strong> A glob can cover many scans; <code><span class="nobr">filename</span> <span class="nobr">=</span> <span class="nobr">true</span></code> adds each row's file name, which identifies its scan:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT parse_path(filename)[-3] AS scan, count(*) AS entries, format_bytes(sum(size)::BIGINT) AS size
+FROM read_parquet('/scratch/inventory/projects-2026-*/entries/*.parquet', filename = true)
+GROUP BY scan ORDER BY scan;
+</code></pre></div>
+<div class="code" data-lang="text"><div class="code-bar"><span class="code-lang">text</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-plaintext">┌─────────────────────┬─────────┬──────────┐
+│        scan         │ entries │   size   │
+│       varchar       │  int64  │ varchar  │
+├─────────────────────┼─────────┼──────────┤
+│ projects-2026-10-25 │     285 │ 44.0 GiB │
+│ projects-2026-11-01 │     270 │ 40.0 GiB │
+└─────────────────────┴─────────┴──────────┘
+</code></pre></div>
+<p>If scan directories are named <code><span class="nobr">scan_date=2026-10-25</span></code> and so on, <code><span class="nobr">read_parquet(</span><wbr><span class="nobr">...,</span> <span class="nobr">hive_partitioning</span> <span class="nobr">=</span> <span class="nobr">true)</span></code> adds a <code><span class="nobr">scan_date</span></code> column instead.</p>
+<p><strong>Text-format scans</strong> work the same way through their macros:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">SELECT count(*) AS entries, count(path_raw) AS with_raw_bytes FROM fs_entries_csv('/scratch/inventory/projects-csv');
+SELECT path, op, errno_name FROM fs_errors_csv('/scratch/inventory/projects-csv');
+</code></pre></div>
+<p><strong>Exporting results</strong> for a spreadsheet or another tool:</p>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">COPY (SELECT path, size, mtime FROM fs_entries(getvariable('scan')) WHERE kind = 'file' AND size &gt; 1e9)
+TO 'big-files.csv' (HEADER);
+</code></pre></div>
+<p><strong>Saving a scan into a database.</strong> Queries on Parquet files are fast, but for repeated work on one scan, copying it into a DuckDB database file is faster still:</p>
+<div class="code" data-lang="bash"><div class="code-bar"><span class="code-lang">shell</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-bash">duckdb inventory.duckdb
+</code></pre></div>
+<div class="code" data-lang="sql"><div class="code-bar"><span class="code-lang">sql</span><button class="copy" type="button" aria-label="Copy code">Copy</button></div><pre><code class="language-sql">.read sql/fs_inventory.sql
+CREATE TABLE projects_2026_10_25 AS SELECT * FROM fs_entries('/scratch/inventory/projects-2026-10-25');
+</code></pre></div>
+<p>More queries are in <a href="https://github.com/robert-mcdermott/fs-inventory/blob/v1.0.0/sql/examples.sql" target="_blank" rel="noopener"><code><span class="nobr">sql/</span><wbr><span class="nobr">examples.sql</span></code></a>.</p>
+</section>
+<section class="doc-section" data-section="8-performance-tuning">
+<h2 id="8-performance-tuning">8. Performance tuning<a class="anchor" href="#8-performance-tuning" aria-label="Link to this section">#</a></h2>
+<h3 id="81-threads">8.1 Threads<a class="anchor" href="#81-threads" aria-label="Link to this section">#</a></h3>
+<p>The crawl is limited by how fast the file system answers metadata requests, not by CPU. On a local disk with metadata cached, a few threads are enough. On network file systems each request waits on the network, so throughput grows with the number of requests in flight. With 0.5 ms per request, 64 threads can sustain about 128,000 entries per second until the server is the bottleneck. Use <code><span class="nobr">probe</span></code> (<a href="#55-probe">5.5</a>) to measure, and keep in mind that the file server is shared: past the suggested count, more threads add load for little gain.</p>
+<p>A single huge directory doesn't hold the crawl back. After the first 10,000 entries, the thread reading it hands batches of names to idle threads, which read their metadata in parallel.</p>
+<h3 id="82-fields-and-caching">8.2 Fields and caching<a class="anchor" href="#82-fields-and-caching" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong><code><span class="nobr">--fields</span></code></strong> reads less metadata per file. On Lustre, <code><span class="nobr">--fields</span> <span class="nobr">-size,</span><wbr><span class="nobr">-blocks</span></code> avoids a round trip per file to the storage servers.</li>
+<li><strong><code><span class="nobr">--statx-dont-sync</span></code></strong> lets a network file system client answer from cached attributes. It's faster, but may be slightly stale.</li>
+</ul>
+<h3 id="83-memory">8.3 Memory<a class="anchor" href="#83-memory" aria-label="Link to this section">#</a></h3>
+<p>Memory is bounded by default:</p>
+<ul>
+<li><strong>Directories waiting to be read:</strong> up to 1 GiB in memory. Beyond that, they wait in a spill file on disk, read back once memory drains. With checkpoints (the default), it's <code><span class="nobr">checkpoint/</span><wbr><span class="nobr">spill</span></code> in the scan directory, removed when the scan finishes; otherwise it's created next to the output and deleted from the directory at once, so it never lingers. Either way, it uses disk space while the scan runs. The manifest's <code><span class="nobr">totals.spilled</span></code> counts directories that waited there.</li>
+<li><strong>Output buffers:</strong> 64 MiB shared by all crawl threads, plus up to 128 MiB per Parquet row group being built.</li>
+</ul>
+<p>Memory doesn't grow with the size of the tree: in scans of generated trees of up to a billion entries, it leveled off early and stayed flat to the end. It grows with threads, more slowly than they do. Without a budget, measured on Linux with two Parquet writers, a scan's peak was about 750 MB with 16 crawl threads, 1.7 GB with 64, and 2.3 to 3.2 GB with 256. Each extra Parquet writer adds about 100 MB. That's fine on most servers, and it's the fastest way to run.</p>
+<p>Where memory is limited, as in a batch job, set <code><span class="nobr">--max-memory</span> <span class="nobr">SIZE</span></code>. The scan then budgets all of its memory:</p>
+<ul>
+<li><strong>Threads and writers first.</strong> It sets aside what the crawl threads and Parquet writers need, and without <code><span class="nobr">--writers</span></code>, it uses only as many writers as fit in a quarter of the budget. Writers matter only when the CPU is the limit.</li>
+<li><strong>Then the buffers.</strong> Half of what's left holds waiting directories, a quarter the crawl threads' row buffers, which get smaller as threads are added, and a quarter Parquet row groups.</li>
+<li><strong>Memory goes back to the system at once,</strong> which takes 5 to 8% more CPU time on scans the CPU limits. Scans of network file systems mostly wait on the server instead.</li>
+<li><strong>A budget too small for the threads</strong> gets a warning when the scan starts, with the budget they need. Use fewer <code><span class="nobr">--threads</span></code>, or a larger budget.</li>
+</ul>
+<p>Measured on Linux, scans with budgets of 512 MiB to 2 GiB and 16 to 256 crawl threads stayed under the budget or warned. With <code><span class="nobr">--max-memory</span> <span class="nobr">1G</span></code>, peaks were about 650 MB with 16 threads, 800 MB with 64, and 1 GB with 256, which warned that it needed about 1.08 GiB. Very tight budgets with many threads make the row buffers small enough to cost up to 40% more CPU time. <code><span class="nobr">--detect-cycles</span></code> adds about 50 bytes per directory, and <code><span class="nobr">rollup</span> <span class="nobr">--age-depth</span></code> about 0.5 KB per directory within that depth; the budget doesn't count those.</p>
+<h3 id="84-checkpoints">8.4 Checkpoints<a class="anchor" href="#84-checkpoints" aria-label="Link to this section">#</a></h3>
+<p>Each checkpoint pauses the crawl while every thread finishes the directory it's reading (helping with very large directories meanwhile), and every open part file is committed and synced to disk. That's typically under a second, and longer while a very large directory is finished. At the default interval of 10 minutes, the cost is well under 1%; much shorter intervals slow a scan noticeably. Each checkpoint writes the directories waiting in memory to <code><span class="nobr">checkpoint/</span><wbr><span class="nobr">state</span></code>, compressed: a few megabytes on most trees, more on very broad ones.</p>
+<h3 id="85-output">8.5 Output<a class="anchor" href="#85-output" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><strong>Parquet with zstd level 3</strong> is the best balance of size and speed. Raise the level (<code><span class="nobr">--compression</span> <span class="nobr">zstd:9</span></code>) for smaller files at the cost of more CPU.</li>
+<li><strong>Writers</strong> are added automatically, up to <code><span class="nobr">--writers</span></code>, only when output backs up.</li>
+<li><strong>Write output to a different file system</strong> from the one being scanned.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="9-troubleshooting">
+<h2 id="9-troubleshooting">9. Troubleshooting<a class="anchor" href="#9-troubleshooting" aria-label="Link to this section">#</a></h2>
+<p><strong><code><span class="nobr">output</span> <span class="nobr">directory</span> <span class="nobr">...</span> <span class="nobr">is</span> <span class="nobr">not</span> <span class="nobr">empty</span></code></strong>: each scan needs a new directory. Include the date in the name.</p>
+<p><strong><code><span class="nobr">No</span> <span class="nobr">files</span> <span class="nobr">found</span> <span class="nobr">that</span> <span class="nobr">match</span> <span class="nobr">the</span> <span class="nobr">pattern</span> <span class="nobr">&quot;.../</span><wbr><span class="nobr">errors/</span><wbr><span class="nobr">*.parquet&quot;</span></code></strong> from <code><span class="nobr">fs_errors</span></code>: the scan had no errors, so there is no <code><span class="nobr">errors</span></code> table. Check <code><span class="nobr">totals.errors</span></code> in the manifest first.</p>
+<p><strong><code><span class="nobr">format_bytes(</span><wbr><span class="nobr">HUGEINT)</span></code></strong>: cast the sum: <code><span class="nobr">format_bytes(</span><wbr><span class="nobr">sum(</span><wbr><span class="nobr">size)::BIGINT)</span></code> (<a href="#73-settings-and-pitfalls">7.3</a>).</p>
+<p><strong>Dates are off by some hours, or files land in the wrong year</strong>: set <code><span class="nobr">SET</span> <span class="nobr">TimeZone</span> <span class="nobr">=</span> <span class="nobr">&#x27;UTC&#x27;;</span></code> in DuckDB.</p>
+<p><strong><code><span class="nobr">size</span></code> is null</strong>: the scan was run with <code><span class="nobr">--fields</span></code> leaving size out. The manifest's <code><span class="nobr">options.fields</span></code> lists what was read.</p>
+<p><strong><code><span class="nobr">verify</span></code> says <code><span class="nobr">schema</span> <span class="nobr">version</span> <span class="nobr">is</span> <span class="nobr">1</span></code></strong>: the scan was written by a build before schema version 2 (which made integer columns signed). Scan again with this release. Schema version 2 scans (fs-inventory 0.5.0 and earlier) still work with <code><span class="nobr">verify</span></code>, <code><span class="nobr">rollup</span></code>, and <code><span class="nobr">convert</span></code>; they lack only the symlink target columns.</p>
+<p><strong><code><span class="nobr">scan</span> <span class="nobr">status</span> <span class="nobr">is</span> <span class="nobr">running</span></code></strong>: the scan is still going, or the process was killed (<code><span class="nobr">kill</span> <span class="nobr">-9</span></code>, out of memory, power loss). In the second case, run <code><span class="nobr">fs-inventory</span> <span class="nobr">resume</span></code> on it (<a href="#412-interrupted-crashed-and-stalled-scans">4.12</a>).</p>
+<p><strong><code><span class="nobr">...</span> <span class="nobr">is</span> <span class="nobr">still</span> <span class="nobr">being</span> <span class="nobr">written</span> <span class="nobr">by</span> <span class="nobr">another</span> <span class="nobr">fs-inventory</span> <span class="nobr">process</span></code></strong> from <code><span class="nobr">resume</span></code> or <code><span class="nobr">scan</span></code>: a scan or resume is still running on that directory. Let it finish, or stop it first.</p>
+<p><strong><code><span class="nobr">...</span> <span class="nobr">has</span> <span class="nobr">no</span> <span class="nobr">checkpoint</span> <span class="nobr">to</span> <span class="nobr">resume</span> <span class="nobr">from</span></code></strong>: the scan was run with <code><span class="nobr">--checkpoint-interval</span> <span class="nobr">0</span></code>. Scan again into a new directory.</p>
+<p><strong><code><span class="nobr">skipped</span> <span class="nobr">a</span> <span class="nobr">checkpoint:</span> <span class="nobr">a</span> <span class="nobr">crawl</span> <span class="nobr">thread</span> <span class="nobr">has</span> <span class="nobr">made</span> <span class="nobr">no</span> <span class="nobr">progress</span></code></strong>: a thread is stuck, typically on a hung NFS server. See <a href="#412-interrupted-crashed-and-stalled-scans">4.12</a>.</p>
+<p><strong>The scan stops making progress</strong>: look for <code><span class="nobr">stalled</span></code> in the progress output. A hung NFS server blocks its thread until the server returns. Use <code><span class="nobr">--stall-timeout</span></code> so the scan gives up on that directory and finishes (<a href="#412-interrupted-crashed-and-stalled-scans">4.12</a>).</p>
+<p><strong><code><span class="nobr">cannot</span> <span class="nobr">look</span> <span class="nobr">up</span> <span class="nobr">passwd</span> <span class="nobr">names</span></code></strong> (or <code><span class="nobr">group</span></code>): with <code><span class="nobr">--resolve-ids</span></code>, neither <code><span class="nobr">getent</span></code> nor <code><span class="nobr">dscacheutil</span></code> could be run, or a directory server didn't answer within a minute. The <code><span class="nobr">users</span></code> and <code><span class="nobr">groups</span></code> tables still list every ID, with null names.</p>
+</section>
+    </article>
+
+    <footer class="footer">
+      <p>fs-inventory 1.0.0 · Apache License 2.0 · Copyright 2026 Robert McDermott</p>
+      <p><a href="https://github.com/robert-mcdermott/fs-inventory/blob/v1.0.0/docs/user-guide.md" target="_blank" rel="noopener">View this page's source</a> · <a href="https://github.com/robert-mcdermott/fs-inventory/blob/main/docs/user-guide.md" target="_blank" rel="noopener">Edit on GitHub</a> · <a href="#top">Back to top ↑</a></p>
+    </footer>
+  </main>
+
+  <aside class="onpage" aria-label="In this section">
+    <div class="onpage-inner">
+      <p class="nav-label">In this section</p>
+      <ul id="onpageList"></ul>
+    </div>
+  </aside>
+</div>
+
+<div class="search-overlay" id="searchOverlay" hidden>
+  <div class="search-dialog" role="dialog" aria-modal="true" aria-labelledby="searchLabel">
+    <label class="search-field" for="searchInput">
+      <span class="sr-only" id="searchLabel">Search the documentation</span>
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Try “resume”, “--stall-timeout”, “heat map”, “fs_entries”…">
+      <button class="kbd kbd-btn" id="searchClose" type="button">Esc</button>
+    </label>
+    <ul class="search-results" id="searchResults" role="listbox" aria-label="Search results"></ul>
+    <p class="search-hint">↑ ↓ to move · Enter to open · Esc to close</p>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="assets/js/search-index.js"></script>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

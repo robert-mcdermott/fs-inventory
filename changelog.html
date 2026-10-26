@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Changelog · fs-inventory</title>
+<meta name="description" content="What each fs-inventory release contains.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&family=Schibsted+Grotesk:wght@600;700;800&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.12.0/highlight.min.js"></script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="icon-btn nav-toggle" id="navToggle" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+    </button>
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true">fs</span>
+      <span class="brand-text">fs-inventory</span>
+    </a>
+    <nav class="tabs" aria-label="Pages"><a href="index.html">Overview</a><a href="guide.html">User guide</a><a href="schema.html">Schema</a><a href="architecture.html">Architecture</a><a href="changelog.html" aria-current="page">Changelog</a></nav>
+    <button class="search-trigger" id="searchOpen" type="button" aria-haspopup="dialog">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span class="search-trigger-text">Search the docs</span>
+      <kbd class="kbd" id="searchKbd">/</kbd>
+    </button>
+    <div class="topbar-right">
+      <a class="chip chip-version" href="changelog.html" title="Release these docs describe">v1.0.0</a>
+      <a class="icon-btn" href="https://github.com/robert-mcdermott/fs-inventory" target="_blank" rel="noopener" aria-label="Source on GitHub">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.86v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>
+      </a>
+      <button class="icon-btn" id="themeToggle" type="button" aria-label="Toggle dark mode">
+        <svg class="i-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <svg class="i-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+</header>
+
+<div class="layout" id="top">
+  <nav class="sidebar" id="sidebar" aria-label="Sections">
+    <div class="sidebar-inner">
+      <nav class="side-tabs" aria-label="Pages"><a href="index.html">Overview</a><a href="guide.html">User guide</a><a href="schema.html">Schema</a><a href="architecture.html">Architecture</a><a href="changelog.html" aria-current="page">Changelog</a></nav>
+      <div class="nav-group"><p class="nav-label">On this page</p><ul><li class="nav-sec nav-sec-plain"><a href="#100---2026-10-26" data-target="100---2026-10-26"><span>1.0.0 - 2026-10-26</span></a><ul class="nav-sub"><li><a href="#added" data-target="added">Added</a></li><li><a href="#changed" data-target="changed">Changed</a></li><li><a href="#fixed" data-target="fixed">Fixed</a></li></ul></li><li class="nav-sec nav-sec-plain"><a href="#060---2026-10-26" data-target="060---2026-10-26"><span>0.6.0 - 2026-10-26</span></a><ul class="nav-sub"><li><a href="#added-1" data-target="added-1">Added</a></li><li><a href="#changed-1" data-target="changed-1">Changed</a></li></ul></li><li class="nav-sec nav-sec-plain"><a href="#050---2026-10-26" data-target="050---2026-10-26"><span>0.5.0 - 2026-10-26</span></a><ul class="nav-sub"><li><a href="#added-2" data-target="added-2">Added</a></li><li><a href="#changed-2" data-target="changed-2">Changed</a></li><li><a href="#removed" data-target="removed">Removed</a></li><li><a href="#fixed-1" data-target="fixed-1">Fixed</a></li></ul></li><li class="nav-sec nav-sec-plain"><a href="#040---2026-10-25" data-target="040---2026-10-25"><span>0.4.0 - 2026-10-25</span></a><ul class="nav-sub"><li><a href="#added-3" data-target="added-3">Added</a></li><li><a href="#changed-3" data-target="changed-3">Changed</a></li></ul></li><li class="nav-sec nav-sec-plain"><a href="#030---2026-10-25" data-target="030---2026-10-25"><span>0.3.0 - 2026-10-25</span></a><ul class="nav-sub"><li><a href="#added-4" data-target="added-4">Added</a></li><li><a href="#changed-4" data-target="changed-4">Changed</a></li></ul></li></ul></div>
+      <div class="nav-group nav-extra">
+        <p class="nav-label">More</p>
+        <ul>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory/releases/latest" target="_blank" rel="noopener">Latest release</a></li>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory" target="_blank" rel="noopener">Source on GitHub</a></li>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory/issues" target="_blank" rel="noopener">Report an issue</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <main class="main" id="main">
+    <header class="page-header"><p class="eyebrow">fs-inventory 1.0.0</p><h1>Changelog</h1><p class="lede">What each fs-inventory release contains.</p></header>
+    <article class="doc" id="doc">
+      <section class="doc-section" data-section="intro">
+<p>All notable changes to this project are documented in this file. The format follows <a href="https://keepachangelog.com/en/1.1.0/" target="_blank" rel="noopener">Keep a Changelog</a>, and the project uses <a href="https://semver.org/spec/v2.0.0.html" target="_blank" rel="noopener">Semantic Versioning</a>.</p>
+</section>
+<section class="doc-section" data-section="100---2026-10-26">
+<h2 id="100---2026-10-26"><a href="https://github.com/robert-mcdermott/fs-inventory/compare/v0.6.0...v1.0.0" target="_blank" rel="noopener">1.0.0</a> - 2026-10-26<a class="anchor" href="#100---2026-10-26" aria-label="Link to this section">#</a></h2>
+<p>Compare two scans with the <code><span class="nobr">fs_diff</span></code> DuckDB macros, much faster scans of very deep trees, and directories deleted while they're read counted as vanished instead of as errors. New tests check the output against GNU <code><span class="nobr">find</span></code>, scans of a tree that changes throughout, random names through every text encoder, and trees 2,000 levels deep or with a million entries in one directory.</p>
+<p>From 1.0 on, the command line, the output tables and their columns, the manifest, and the DuckDB macros follow semantic versioning: 1.x releases can add options, columns (at the end of a table, with a new <code><span class="nobr">schema_version</span></code>), and macros, but won't remove or rename them.</p>
+<h3 id="added">Added<a class="anchor" href="#added" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code><span class="nobr">fs_diff</span></code> and <code><span class="nobr">fs_diff_summary</span></code> DuckDB macros compare two Parquet scans of the same roots: one row per added, removed, or changed entry, with the columns that changed and the rows before and after, or the counts and net size change by kind. Entries are matched by their exact path bytes; <code><span class="nobr">atime</span></code> and <code><span class="nobr">dev</span></code> are ignored unless <code><span class="nobr">ignore</span> <span class="nobr">:=</span> <span class="nobr">[]</span></code> is given. They work on version 2 scans too.</li>
+</ul>
+<h3 id="changed">Changed<a class="anchor" href="#changed" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code><span class="nobr">convert</span></code> takes its output format with <code><span class="nobr">-f</span></code>/<code><span class="nobr">--format</span></code>, like <code><span class="nobr">scan</span></code>. <code><span class="nobr">--to</span></code>, its name in 0.6.0, still works.</li>
+</ul>
+<h3 id="fixed">Fixed<a class="anchor" href="#fixed" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Directories whose paths are longer than <code><span class="nobr">PATH_MAX</span></code> (4,096 bytes on Linux, 1,024 on macOS) are opened in a few calls instead of one call per path component. Opening every directory of a 2,000-level tree took millions of calls: scanning one on macOS went from 7.5 minutes to 6 seconds.</li>
+<li>A directory deleted while it was being read counts as vanished, like other deletions during a scan, instead of as a <code><span class="nobr">readdir</span></code> error (Linux reports it as <code><span class="nobr">ENOENT</span></code>). Busy file systems no longer end a scan with exit code 1 for routine churn.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="060---2026-10-26">
+<h2 id="060---2026-10-26"><a href="https://github.com/robert-mcdermott/fs-inventory/compare/v0.5.0...v0.6.0" target="_blank" rel="noopener">0.6.0</a> - 2026-10-26<a class="anchor" href="#060---2026-10-26" aria-label="Link to this section">#</a></h2>
+<p>Re-export Parquet scans as CSV or JSON Lines with <code><span class="nobr">convert</span></code>, record symlink targets, and look up user and group names.</p>
+<h3 id="added-1">Added<a class="anchor" href="#added-1" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code><span class="nobr">fs-inventory</span> <span class="nobr">convert</span></code> re-exports a Parquet scan as CSV or JSON Lines, into a new scan directory or to stdout, with optional zstd or gzip compression. The output equals what the scan would have written in that format, using the scan's own column, encoding, and time settings. Older (schema version 2) scans convert too.</li>
+<li><code><span class="nobr">--resolve-ids</span></code> writes <code><span class="nobr">users</span></code> and <code><span class="nobr">groups</span></code> tables with the name of every user and group ID in a scan (null for IDs with no account, such as deleted users). Crawl threads collect the IDs as they go, and each is looked up once when the scan finishes: with <code><span class="nobr">getent</span></code> on Linux, which reaches LDAP, sssd, and NIS even from the static binary, and <code><span class="nobr">dscacheutil</span></code> on macOS. Checkpoints keep the IDs, so resumed scans get complete tables. New DuckDB macros: <code><span class="nobr">fs_users</span></code>, <code><span class="nobr">fs_groups</span></code>, and <code><span class="nobr">fs_entries_named</span></code>, which adds <code><span class="nobr">user_name</span></code> and <code><span class="nobr">group_name</span></code> to every entry.</li>
+<li><code><span class="nobr">--symlink-targets</span></code> records where each symlink points, in a new <code><span class="nobr">symlink_target</span></code> column, with the exact bytes in <code><span class="nobr">symlink_target_raw</span></code> (<code><span class="nobr">symlink_target_b64</span></code> in text) when the target isn't plain UTF-8. It costs one more call per symlink, and a failed read is recorded in the errors table as <code><span class="nobr">readlink</span></code>.</li>
+</ul>
+<h3 id="changed-1">Changed<a class="anchor" href="#changed-1" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Schema version 3: the entries table gains <code><span class="nobr">symlink_target</span></code> and <code><span class="nobr">symlink_target_raw</span></code>, at the end, so the CSV and JSON Lines macros read version 2 scans too. <code><span class="nobr">verify</span></code>, <code><span class="nobr">rollup</span></code>, and <code><span class="nobr">convert</span></code> accept version 2 scans; <code><span class="nobr">resume</span></code> continues only scans of the current version.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="050---2026-10-26">
+<h2 id="050---2026-10-26"><a href="https://github.com/robert-mcdermott/fs-inventory/compare/v0.4.0...v0.5.0" target="_blank" rel="noopener">0.5.0</a> - 2026-10-26<a class="anchor" href="#050---2026-10-26" aria-label="Link to this section">#</a></h2>
+<p>Release binaries and an installer, a documentation website, scale tests up to a billion entries, and a <code><span class="nobr">--max-memory</span></code> that budgets the whole scan.</p>
+<h3 id="added-2">Added<a class="anchor" href="#added-2" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Release binaries: each release has static Linux binaries (x86_64 and ARM) and macOS binaries (Apple silicon and Intel), with a <code><span class="nobr">SHA256SUMS</span></code> file. Pushing a version tag builds them and drafts the release.</li>
+<li>A documentation website, <a href="https://robert-mcdermott.github.io/fs-inventory/" target="_blank" rel="noopener">https://robert-mcdermott.github.io/fs-inventory/</a>, generated from the repository's Markdown: the user guide, schema, architecture, and changelog, with navigation, search across every page, copy buttons, and dark mode. Publishing a release rebuilds it from that release's docs, and CI fails a pull request that breaks a link between pages or sections.</li>
+<li><code><span class="nobr">install.sh</span></code> installs a release with <code><span class="nobr">curl</span> <span class="nobr">...</span> <span class="nobr">|</span> <span class="nobr">sh</span></code>: it verifies the SHA-256 checksum and the binary's version before installing to <code><span class="nobr">~/.local/</span><wbr><span class="nobr">bin</span></code> (or <code><span class="nobr">--install-dir</span></code>), and never uses <code><span class="nobr">sudo</span></code> or changes <code><span class="nobr">PATH</span></code>.</li>
+<li>Generated trees for scale tests: the hidden option <code><span class="nobr">scan</span> <span class="nobr">--synthetic</span> <span class="nobr">100M</span></code> scans a deterministic tree computed in memory instead of the file system, with exactly the requested number of entries and the variety of a real tree, including names that aren't valid UTF-8. A billion-entry tree costs no disk space, and <code><span class="nobr">resume</span></code> continues it. The manifest's <code><span class="nobr">options.synthetic</span></code> marks such scans.</li>
+<li><code><span class="nobr">bench/</span><wbr><span class="nobr">scale.py</span></code> scans a generated tree of any size, records memory and throughput every second, can kill and resume the scan, and checks that every entry was written exactly once.</li>
+<li><code><span class="nobr">bench/</span><wbr><span class="nobr">server.py</span></code> benchmarks a server's storage in one run of about 15 minutes, and writes a report to send back. It covers the CPU ceiling, <code><span class="nobr">find</span></code>, <code><span class="nobr">probe</span></code>, and time-boxed scans at several thread counts. On NFS, it also records RPCs per entry. An optional kill-and-resume test runs on a smaller tree.</li>
+</ul>
+<h3 id="changed-2">Changed<a class="anchor" href="#changed-2" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code><span class="nobr">--max-memory</span></code> budgets the whole scan. It first sets aside what the crawl threads and Parquet writers need (memory grows with threads, measured at about 1.7 GB with 64 threads and 3 GB with 256 without a budget), uses only as many writers as fit unless <code><span class="nobr">--writers</span></code> is given, and shrinks row buffers as threads are added. It also has the allocator return freed memory at once, which cut peak memory by 40 to 50% on Linux for 5 to 8% more CPU time. A budget too small for the threads gets a warning with the budget they need. Scans without <code><span class="nobr">--max-memory</span></code> run exactly as before.</li>
+</ul>
+<h3 id="removed">Removed<a class="anchor" href="#removed" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code><span class="nobr">--guess-encoding</span></code>, which was never implemented. Guesses of a name's legacy character set are unreliable on short names, and the exact bytes of every name are kept, so they can be decoded later with the right character set.</li>
+</ul>
+<h3 id="fixed-1">Fixed<a class="anchor" href="#fixed-1" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>The benchmark scripts run on Python 3.6 and later, as RHEL 8's system Python is; <code><span class="nobr">run.py</span></code> needed 3.9.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="040---2026-10-25">
+<h2 id="040---2026-10-25"><a href="https://github.com/robert-mcdermott/fs-inventory/compare/v0.3.0...v0.4.0" target="_blank" rel="noopener">0.4.0</a> - 2026-10-25<a class="anchor" href="#040---2026-10-25" aria-label="Link to this section">#</a></h2>
+<p>Milestone M4: resumable scans.</p>
+<h3 id="added-3">Added<a class="anchor" href="#added-3" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Checkpoints and <code><span class="nobr">fs-inventory</span> <span class="nobr">resume</span></code>. Every <code><span class="nobr">--checkpoint-interval</span></code> (10 minutes by default; <code><span class="nobr">0</span></code> disables them), a scan pauses as each crawl thread finishes its current directory, commits every open part file, and records the directories still to read in <code><span class="nobr">checkpoint/</span></code> inside the scan directory. <code><span class="nobr">fs-inventory</span> <span class="nobr">resume</span> <span class="nobr">SCAN_DIR</span></code> continues a scan that was interrupted, killed, or on a machine that went down. It deletes the parts written after the last checkpoint and reads their directories again, so the finished scan matches an uninterrupted one, with every row once. After Ctrl-C, a final checkpoint makes resuming exact. Resume can change threads, writers, memory, the stall timeout, the checkpoint interval, and progress; the manifest records each resume under <code><span class="nobr">resumes</span></code>. A lock keeps two processes from writing one scan.</li>
+</ul>
+<h3 id="changed-3">Changed<a class="anchor" href="#changed-3" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>With checkpoints, the spill file and the <code><span class="nobr">--detect-cycles</span></code> record of visited directories live in <code><span class="nobr">checkpoint/</span></code> until the scan finishes, instead of being unlinked at once.</li>
+<li>Each checkpoint commits the open part files, so long scans have more, smaller parts. Parts written after a resume are named <code><span class="nobr">part-rN-wNN-NNNNNN</span></code>.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="030---2026-10-25">
+<h2 id="030---2026-10-25"><a href="https://github.com/robert-mcdermott/fs-inventory/releases/tag/v0.3.0" target="_blank" rel="noopener">0.3.0</a> - 2026-10-25<a class="anchor" href="#030---2026-10-25" aria-label="Link to this section">#</a></h2>
+<p>The first tagged release. Version numbers follow the milestones, so 0.3.0 completes milestone M3 and there is no 0.1.0 or 0.2.0 release.</p>
+<h3 id="added-4">Added<a class="anchor" href="#added-4" aria-label="Link to this section">#</a></h3>
+<ul>
+<li><code><span class="nobr">fs-inventory</span> <span class="nobr">rollup</span> <span class="nobr">SCAN_DIR</span></code> writes two Parquet tables into the scan: <code><span class="nobr">rollup</span></code>, with totals over every directory's whole subtree (entries, files, directories, bytes, allocated bytes, oldest and newest times, and how many directories weren't fully read), and <code><span class="nobr">rollup_ages</span></code>, with file counts and bytes by age for directories down to <code><span class="nobr">--age-depth</span></code> (default 4), in buckets set by <code><span class="nobr">--age-buckets</span></code> (default <code><span class="nobr">30d,</span><wbr><span class="nobr">90d,</span><wbr><span class="nobr">1y,</span><wbr><span class="nobr">2y,</span><wbr><span class="nobr">3y,</span><wbr><span class="nobr">5y,</span><wbr><span class="nobr">10y</span></code>) and measured from the scan's start time. The manifest lists both, <code><span class="nobr">verify</span></code> checks them, and running it again replaces them. DuckDB macros <code><span class="nobr">fs_rollup</span></code> and <code><span class="nobr">fs_rollup_ages</span></code>, and heat-map examples in <code><span class="nobr">sql/</span><wbr><span class="nobr">examples.sql</span></code>.</li>
+<li><code><span class="nobr">--fields</span></code> chooses which optional metadata to read (size, blocks, atime, mtime, ctime, btime). Skipped fields are written as null, and on Linux they aren't requested from the kernel, so <code><span class="nobr">--fields</span> <span class="nobr">-size,</span><wbr><span class="nobr">-blocks</span></code> avoids a round trip per file to Lustre's storage servers. <code><span class="nobr">size</span></code>, <code><span class="nobr">alloc_bytes</span></code>, <code><span class="nobr">atime</span></code>, <code><span class="nobr">mtime</span></code>, and <code><span class="nobr">ctime</span></code> are now nullable.</li>
+<li><code><span class="nobr">--detect-cycles</span></code> remembers every directory entered (by device and inode) and never enters one twice, guarding against bind-mount loops, hard-linked directories, and overlapping roots. A directory reached again gets a row with the error <code><span class="nobr">revisit</span></code>, and the manifest counts them.</li>
+<li>Huge directories are read by several workers. After 10,000 entries, the worker reading a directory publishes each further batch of names, and idle workers stat them in parallel while it keeps reading; it helps with the batches until all are done. On file systems where every stat is a network round trip, one directory of millions of files no longer runs at one thread's speed.</li>
+<li>A watchdog reports crawl threads that stop making progress, such as one stuck in a call to a hung NFS server, in the progress output. With <code><span class="nobr">--stall-timeout</span></code>, the scan gives up on such a thread's directory: it gets a <code><span class="nobr">stall</span></code> row and error and is listed under <code><span class="nobr">stalled</span></code> in the manifest, the other threads finish the rest, the rows of every directory the stuck thread had finished are still written, and the scan ends with status <code><span class="nobr">incomplete</span></code> and exit code 3 instead of hanging.</li>
+<li>Memory for directories waiting to be read is bounded (1 GiB by default). Beyond it, they wait in a spill file next to the output, read back once memory drains; the file is unlinked as soon as it's created, so it never lingers. <code><span class="nobr">--max-memory</span></code> sets an overall soft budget: half for that queue, an eighth for output buffers, and a quarter for Parquet row groups. The manifest counts spilled directories.</li>
+<li>Documentation: a <a href="guide.html">user guide</a> covering common scenarios, every command and option, the output formats, and querying scans with DuckDB, and an <a href="architecture.html">architecture</a> overview of how fs-inventory works.</li>
+<li><code><span class="nobr">fs-inventory</span> <span class="nobr">probe</span> <span class="nobr">PATH</span></code> times crawls of a real tree at several thread counts (<code><span class="nobr">--threads</span></code>, default <code><span class="nobr">8,16,</span><wbr><span class="nobr">32,</span><wbr><span class="nobr">64,</span><wbr><span class="nobr">128,</span><wbr><span class="nobr">256</span></code>; <code><span class="nobr">--duration</span></code>, default 30 s each), writes nothing, and suggests the smallest count that reaches 90% of the best rate. On Linux, <code><span class="nobr">--drop-caches</span></code> (root) drops the kernel's caches before each run so every run reads from the storage, not from memory.</li>
+<li>Parquet output, now the default format: zstd level 3, row groups of up to 1,048,576 rows, page statistics, column encodings chosen by measurement (about 25 bytes per entry on real data), and scan ID, schema version, host, and roots in every file's footer.</li>
+<li><code><span class="nobr">--columns</span></code> writes a subset of entry columns in any format.</li>
+<li><code><span class="nobr">fs-inventory</span> <span class="nobr">schema</span></code> describes the schema as DuckDB SQL, JSON, or Markdown. <code><span class="nobr">docs/</span><wbr><span class="nobr">schema.md</span></code> is generated from it.</li>
+<li><code><span class="nobr">fs-inventory</span> <span class="nobr">verify</span></code> checks a scan before ingestion: status, schema version, every part's size and row count, each Parquet part's scan ID, totals, and stray or leftover files.</li>
+<li>DuckDB macros <code><span class="nobr">fs_entries</span></code> and <code><span class="nobr">fs_errors</span></code> for Parquet scans, and example queries in <code><span class="nobr">sql/</span><wbr><span class="nobr">examples.sql</span></code>.</li>
+<li>mimalloc as the memory allocator. The static musl build no longer slows down as crawl threads are added.</li>
+<li>Static musl builds run on any Linux distribution with kernel 3.2 or later, such as RHEL 7, and crawl as fast as glibc builds. (Crawl threads never read the system clock, which costs a system call per read with musl.)</li>
+<li><code><span class="nobr">scan</span></code> writes CSV or JSON Lines (Parquet arrives in M2), as rolling part files that are committed atomically, or as one stream to stdout. Optional zstd or gzip compression.</li>
+<li>Parallel work-stealing walker with a configurable thread count. On Linux it uses <code><span class="nobr">getdents64</span></code> and <code><span class="nobr">statx</span></code> relative to the open directory, falls back to <code><span class="nobr">fstatat</span></code> on kernels without <code><span class="nobr">statx</span></code> (before 4.11, such as RHEL 7; detected once per scan, and <code><span class="nobr">btime</span></code> is then null), avoids directory atime updates, and never triggers automounts.</li>
+<li>Lossless file names: text columns are always valid UTF-8, exact bytes go in <code><span class="nobr">path_b64</span></code> when they differ, and <code><span class="nobr">name_flags</span></code> marks invalid UTF-8, control characters, non-NFC names, Windows-reserved names, and long names or paths.</li>
+<li>Paths longer than <code><span class="nobr">PATH_MAX</span></code> are opened one component at a time.</li>
+<li>Per-directory totals over immediate children, crawl-assigned directory IDs linking every row to its parent, and mount point detection.</li>
+<li>Errors table and per-errno summary. Per-entry failures, vanished entries, and internal errors never stop a scan.</li>
+<li><code><span class="nobr">manifest.json</span></code> with a scan ID (UUIDv7), status, roots, options, totals, and committed part files.</li>
+<li>Excludes (globs), <code><span class="nobr">--max-depth</span></code>, <code><span class="nobr">--cross-mounts</span></code>, snapshot-directory skipping, and automatic skipping of the scan's own output directory.</li>
+<li>Progress reports (plain or JSON), and graceful handling of SIGINT and SIGTERM (a second signal exits immediately).</li>
+<li>DuckDB macros in <code><span class="nobr">sql/</span><wbr><span class="nobr">fs_inventory.sql</span></code>.</li>
+<li>Benchmark kit in <code><span class="nobr">bench/</span></code>.</li>
+<li>Cargo workspace with the <code><span class="nobr">fs-inventory-core</span></code> library and <code><span class="nobr">fs-inventory</span></code> command-line crates.</li>
+<li>Command-line interface for <code><span class="nobr">scan</span></code>, <code><span class="nobr">resume</span></code>, <code><span class="nobr">rollup</span></code>, <code><span class="nobr">convert</span></code>, <code><span class="nobr">verify</span></code>, <code><span class="nobr">schema</span></code>, and <code><span class="nobr">probe</span></code>, with argument validation and documented exit codes. <code><span class="nobr">resume</span></code> and <code><span class="nobr">convert</span></code> are not implemented yet.</li>
+<li>Apache-2.0 license and NOTICE.</li>
+<li>CI on Linux (x86_64 and aarch64) and macOS: formatting, Clippy, tests, the minimum supported Rust version, static musl builds, and cargo-deny license and advisory checks.</li>
+</ul>
+<h3 id="changed-4">Changed<a class="anchor" href="#changed-4" aria-label="Link to this section">#</a></h3>
+<ul>
+<li>Writer threads start one at a time and are added, up to <code><span class="nobr">--writers</span></code>, only when output backs up. Small scans now write one part file per table instead of one per CPU core.</li>
+<li>Schema version 2: integer columns are now signed (<code><span class="nobr">INTEGER</span></code> or <code><span class="nobr">BIGINT</span></code>), so scans load into databases without unsigned types and DuckDB functions such as <code><span class="nobr">format_bytes()</span></code> work without casts. Only <code><span class="nobr">dev</span></code>, <code><span class="nobr">ino</span></code>, and <code><span class="nobr">rdev</span></code> stay unsigned (<code><span class="nobr">UBIGINT</span></code>). Values above the signed maximum are capped, not wrapped. <code><span class="nobr">verify</span></code> reports scans written with schema version 1.</li>
+</ul>
+</section>
+    </article>
+
+    <footer class="footer">
+      <p>fs-inventory 1.0.0 · Apache License 2.0 · Copyright 2026 Robert McDermott</p>
+      <p><a href="https://github.com/robert-mcdermott/fs-inventory/blob/v1.0.0/CHANGELOG.md" target="_blank" rel="noopener">View this page's source</a> · <a href="https://github.com/robert-mcdermott/fs-inventory/blob/main/CHANGELOG.md" target="_blank" rel="noopener">Edit on GitHub</a> · <a href="#top">Back to top ↑</a></p>
+    </footer>
+  </main>
+
+  <aside class="onpage" aria-label="In this section">
+    <div class="onpage-inner">
+      <p class="nav-label">In this section</p>
+      <ul id="onpageList"></ul>
+    </div>
+  </aside>
+</div>
+
+<div class="search-overlay" id="searchOverlay" hidden>
+  <div class="search-dialog" role="dialog" aria-modal="true" aria-labelledby="searchLabel">
+    <label class="search-field" for="searchInput">
+      <span class="sr-only" id="searchLabel">Search the documentation</span>
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Try “resume”, “--stall-timeout”, “heat map”, “fs_entries”…">
+      <button class="kbd kbd-btn" id="searchClose" type="button">Esc</button>
+    </label>
+    <ul class="search-results" id="searchResults" role="listbox" aria-label="Search results"></ul>
+    <p class="search-hint">↑ ↓ to move · Enter to open · Esc to close</p>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="assets/js/search-index.js"></script>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

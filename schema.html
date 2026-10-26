@@ -1,0 +1,713 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Schema · fs-inventory</title>
+<meta name="description" content="Every column of every table fs-inventory writes.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&family=Schibsted+Grotesk:wght@600;700;800&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.12.0/highlight.min.js"></script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="icon-btn nav-toggle" id="navToggle" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+    </button>
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true">fs</span>
+      <span class="brand-text">fs-inventory</span>
+    </a>
+    <nav class="tabs" aria-label="Pages"><a href="index.html">Overview</a><a href="guide.html">User guide</a><a href="schema.html" aria-current="page">Schema</a><a href="architecture.html">Architecture</a><a href="changelog.html">Changelog</a></nav>
+    <button class="search-trigger" id="searchOpen" type="button" aria-haspopup="dialog">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span class="search-trigger-text">Search the docs</span>
+      <kbd class="kbd" id="searchKbd">/</kbd>
+    </button>
+    <div class="topbar-right">
+      <a class="chip chip-version" href="changelog.html" title="Release these docs describe">v1.0.0</a>
+      <a class="icon-btn" href="https://github.com/robert-mcdermott/fs-inventory" target="_blank" rel="noopener" aria-label="Source on GitHub">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.86v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>
+      </a>
+      <button class="icon-btn" id="themeToggle" type="button" aria-label="Toggle dark mode">
+        <svg class="i-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <svg class="i-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+</header>
+
+<div class="layout" id="top">
+  <nav class="sidebar" id="sidebar" aria-label="Sections">
+    <div class="sidebar-inner">
+      <nav class="side-tabs" aria-label="Pages"><a href="index.html">Overview</a><a href="guide.html">User guide</a><a href="schema.html" aria-current="page">Schema</a><a href="architecture.html">Architecture</a><a href="changelog.html">Changelog</a></nav>
+      <div class="nav-group"><p class="nav-label">On this page</p><ul><li class="nav-sec nav-sec-plain"><a href="#entries" data-target="entries"><span><code><span class="nobr">entries</span></code></span></a></li><li class="nav-sec nav-sec-plain"><a href="#errors" data-target="errors"><span><code><span class="nobr">errors</span></code></span></a></li><li class="nav-sec nav-sec-plain"><a href="#users" data-target="users"><span><code><span class="nobr">users</span></code></span></a></li><li class="nav-sec nav-sec-plain"><a href="#groups" data-target="groups"><span><code><span class="nobr">groups</span></code></span></a></li><li class="nav-sec nav-sec-plain"><a href="#rollup" data-target="rollup"><span><code><span class="nobr">rollup</span></code></span></a></li><li class="nav-sec nav-sec-plain"><a href="#rollup_ages" data-target="rollup_ages"><span><code><span class="nobr">rollup_ages</span></code></span></a></li><li class="nav-sec nav-sec-plain"><a href="#name-flags" data-target="name-flags"><span>Name flags</span></a></li><li class="nav-sec nav-sec-plain"><a href="#kinds" data-target="kinds"><span>Kinds</span></a></li></ul></div>
+      <div class="nav-group nav-extra">
+        <p class="nav-label">More</p>
+        <ul>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory/releases/latest" target="_blank" rel="noopener">Latest release</a></li>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory" target="_blank" rel="noopener">Source on GitHub</a></li>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory/issues" target="_blank" rel="noopener">Report an issue</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <main class="main" id="main">
+    <header class="page-header"><p class="eyebrow">fs-inventory 1.0.0</p><h1>Schema</h1><p class="lede">Every column of every table fs-inventory writes.</p></header>
+    <article class="doc doc-wide" id="doc">
+      <section class="doc-section" data-section="intro">
+<!-- Generated by `fs-inventory schema --format markdown`; do not edit by hand. -->
+<p>Schema version 3. A scan directory holds <code><span class="nobr">manifest.json</span></code> and a directory of part files per table; DuckDB reads each table's parts with a glob such as <code><span class="nobr">entries/</span><wbr><span class="nobr">*.parquet</span></code>.</p>
+<p>Types are as DuckDB reads them from Parquet. In CSV and JSON Lines, byte columns are base64 text under their text name, and timestamps are ISO-8601 UTC text (or epoch seconds with <code><span class="nobr">--time-format</span> <span class="nobr">epoch</span></code>).</p>
+<p>Integer columns are signed and wide enough for every value, so they work in tools and databases without unsigned types (PostgreSQL, Spark). The exceptions are <code><span class="nobr">dev</span></code>, <code><span class="nobr">ino</span></code>, and <code><span class="nobr">rdev</span></code>: opaque 64-bit identifiers whose top bit can be set, so they're unsigned (<code><span class="nobr">UBIGINT</span></code>). Byte totals and counts above the signed 64-bit maximum (8 EiB) would be capped, not wrapped.</p>
+</section>
+<section class="doc-section" data-section="entries">
+<h2 id="entries"><code><span class="nobr">entries</span></code><a class="anchor" href="#entries" aria-label="Link to this section">#</a></h2>
+<p>One row per file, directory, or other entry.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Null</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">path</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>Full path. Always valid UTF-8: bytes that aren't valid UTF-8 appear as <code><span class="nobr">\xNN</span></code>, and in CSV, control characters are escaped (<code><span class="nobr">\n</span></code>, <code><span class="nobr">\t</span></code>, <code><span class="nobr">\xNN</span></code>).</td>
+</tr>
+<tr>
+<td><code><span class="nobr">parent_path</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>Path of the containing directory; empty for <code><span class="nobr">/</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">name</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>Final path component. For a scan root, the root's own name.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">extension</span></code></td>
+<td>VARCHAR</td>
+<td>yes</td>
+<td>Lowercased text after the last <code><span class="nobr">.</span></code> of a name that isn't a directory. None for names starting or ending with <code><span class="nobr">.</span></code> or extensions longer than 32 bytes.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">path_raw</span></code> (text: <code><span class="nobr">path_b64</span></code>)</td>
+<td>BLOB</td>
+<td>yes</td>
+<td>Exact path bytes, when <code><span class="nobr">path</span></code> differs from them (every row with <code><span class="nobr">--raw-paths</span> <span class="nobr">always</span></code>). Base64 in CSV and JSON Lines, as <code><span class="nobr">path_b64</span></code>. Exact bytes for any row: <code><span class="nobr">coalesce(</span><wbr><span class="nobr">path_raw,</span> <span class="nobr">encode(</span><wbr><span class="nobr">path))</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">name_flags</span></code></td>
+<td>INTEGER</td>
+<td></td>
+<td>Bitmask of name properties that cause trouble; see <a href="#name-flags">Name flags</a>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">kind</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>Entry type; see <a href="#kinds">Kinds</a>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">depth</span></code></td>
+<td>INTEGER</td>
+<td></td>
+<td>Levels below the scan root; 0 for the root.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_id</span></code></td>
+<td>BIGINT</td>
+<td>yes</td>
+<td>For directories, an ID assigned by the scan, unique within it.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">parent_id</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td><code><span class="nobr">dir_id</span></code> of the containing directory; 0 for a root.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dev</span></code></td>
+<td>UBIGINT</td>
+<td></td>
+<td>Device of the file system holding the entry (<code><span class="nobr">st_dev</span></code>). Not stable across hosts or remounts.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">ino</span></code></td>
+<td>UBIGINT</td>
+<td></td>
+<td>Inode number. Entries with the same <code><span class="nobr">(dev,</span> <span class="nobr">ino)</span></code> are hard links to one file.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">nlink</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Number of hard links.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">uid</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Owner user ID.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">gid</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Owner group ID.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">mode</span></code></td>
+<td>INTEGER</td>
+<td></td>
+<td>Full <code><span class="nobr">st_mode</span></code>: file type and permission bits.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">size</span></code></td>
+<td>BIGINT</td>
+<td>yes</td>
+<td>Logical size in bytes. Null when skipped with <code><span class="nobr">--fields</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">alloc_bytes</span></code></td>
+<td>BIGINT</td>
+<td>yes</td>
+<td>Space allocated on disk (<code><span class="nobr">st_blocks</span></code> × 512). Smaller than <code><span class="nobr">size</span></code> for sparse, compressed, or tiered files. Null when skipped with <code><span class="nobr">--fields</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">atime</span></code></td>
+<td>TIMESTAMPTZ</td>
+<td>yes</td>
+<td>Last access. Null when skipped with <code><span class="nobr">--fields</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">mtime</span></code></td>
+<td>TIMESTAMPTZ</td>
+<td>yes</td>
+<td>Last change to the contents. Copies and restores often preserve it. Null when skipped with <code><span class="nobr">--fields</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">ctime</span></code></td>
+<td>TIMESTAMPTZ</td>
+<td>yes</td>
+<td>Last change to the contents or metadata. Not creation time. Users can't set it, so it's the reliable signal of recent change. Null when skipped with <code><span class="nobr">--fields</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">btime</span></code></td>
+<td>TIMESTAMPTZ</td>
+<td>yes</td>
+<td>Creation (birth) time, when the platform and file system provide it and it isn't skipped with <code><span class="nobr">--fields</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">rdev</span></code></td>
+<td>UBIGINT</td>
+<td>yes</td>
+<td>Device number, for character and block devices.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_entries</span></code></td>
+<td>BIGINT</td>
+<td>yes</td>
+<td>For directories that were read: number of immediate children. A subdirectory deleted after it was listed but before it was read is counted, though it has no row.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_files</span></code></td>
+<td>BIGINT</td>
+<td>yes</td>
+<td>For directories that were read: immediate children that aren't directories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_subdirs</span></code></td>
+<td>BIGINT</td>
+<td>yes</td>
+<td>For directories that were read: immediate subdirectories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_bytes</span></code></td>
+<td>BIGINT</td>
+<td>yes</td>
+<td>For directories that were read: sum of <code><span class="nobr">size</span></code> over immediate children that aren't directories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_alloc_bytes</span></code></td>
+<td>BIGINT</td>
+<td>yes</td>
+<td>For directories that were read: sum of <code><span class="nobr">alloc_bytes</span></code> over immediate children that aren't directories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">is_mount_point</span></code></td>
+<td>BOOLEAN</td>
+<td></td>
+<td>True when this directory is on a different device from its parent.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">time_flags</span></code></td>
+<td>INTEGER</td>
+<td></td>
+<td>Bitmask of timestamps that couldn't be represented and were clamped: 1 <code><span class="nobr">atime</span></code>, 2 <code><span class="nobr">mtime</span></code>, 4 <code><span class="nobr">ctime</span></code>, 8 <code><span class="nobr">btime</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">error</span></code></td>
+<td>VARCHAR</td>
+<td>yes</td>
+<td>For directories that couldn't be fully read: the failed operation and error, such as <code><span class="nobr">open:</span> <span class="nobr">EACCES</span></code>. With <code><span class="nobr">--detect-cycles</span></code>, <code><span class="nobr">revisit:</span> <span class="nobr">already</span> <span class="nobr">visited</span> <span class="nobr">through</span> <span class="nobr">another</span> <span class="nobr">path</span></code> marks a directory that was reached again and not re-read. With <code><span class="nobr">--stall-timeout</span></code>, <code><span class="nobr">stall:</span> <span class="nobr">...</span></code> marks a directory the scan gave up on.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">symlink_target</span></code></td>
+<td>VARCHAR</td>
+<td>yes</td>
+<td>Where a symlink points, with <code><span class="nobr">--symlink-targets</span></code>, rendered like <code><span class="nobr">path</span></code>; null otherwise. Added in schema version 3, and last so that older CSV readers can ignore it.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">symlink_target_raw</span></code> (text: <code><span class="nobr">symlink_target_b64</span></code>)</td>
+<td>BLOB</td>
+<td>yes</td>
+<td>Exact target bytes, when <code><span class="nobr">symlink_target</span></code> differs from them (every symlink with <code><span class="nobr">--raw-paths</span> <span class="nobr">always</span></code>). Base64 in CSV and JSON Lines, as <code><span class="nobr">symlink_target_b64</span></code>.</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+<section class="doc-section" data-section="errors">
+<h2 id="errors"><code><span class="nobr">errors</span></code><a class="anchor" href="#errors" aria-label="Link to this section">#</a></h2>
+<p>One row per failed operation. Present only if there were any.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Null</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">path</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>Path of the entry the operation was on, rendered like <code><span class="nobr">entries.path</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">path_raw</span></code> (text: <code><span class="nobr">path_b64</span></code>)</td>
+<td>BLOB</td>
+<td>yes</td>
+<td>Exact path bytes, when <code><span class="nobr">path</span></code> differs from them. Base64 in CSV and JSON Lines, as <code><span class="nobr">path_b64</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">op</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>The failed operation: <code><span class="nobr">open</span></code>, <code><span class="nobr">readdir</span></code>, <code><span class="nobr">stat</span></code>, <code><span class="nobr">verify</span></code> (the directory was replaced during the scan), <code><span class="nobr">stall</span></code> (no progress for <code><span class="nobr">--stall-timeout</span></code>, so the scan gave up on the directory), <code><span class="nobr">readlink</span></code> (reading a symlink's target, with <code><span class="nobr">--symlink-targets</span></code>), or <code><span class="nobr">internal</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">errno</span></code></td>
+<td>INTEGER</td>
+<td>yes</td>
+<td>The OS error number, when there is one.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">errno_name</span></code></td>
+<td>VARCHAR</td>
+<td>yes</td>
+<td>Symbolic name of <code><span class="nobr">errno</span></code>, such as <code><span class="nobr">EACCES</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">message</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>Human-readable description.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">time</span></code></td>
+<td>TIMESTAMPTZ</td>
+<td></td>
+<td>When the error happened.</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+<section class="doc-section" data-section="users">
+<h2 id="users"><code><span class="nobr">users</span></code><a class="anchor" href="#users" aria-label="Link to this section">#</a></h2>
+<p>With <code><span class="nobr">--resolve-ids</span></code>: one row per user ID in <code><span class="nobr">entries.uid</span></code>, with its name. Written when the scan finishes.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Null</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">uid</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>A user ID that owns at least one entry.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">name</span></code></td>
+<td>VARCHAR</td>
+<td>yes</td>
+<td>The user's name, as the scanning host looked it up when the scan finished; null when no account has that ID (such as a deleted user).</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+<section class="doc-section" data-section="groups">
+<h2 id="groups"><code><span class="nobr">groups</span></code><a class="anchor" href="#groups" aria-label="Link to this section">#</a></h2>
+<p>With <code><span class="nobr">--resolve-ids</span></code>: one row per group ID in <code><span class="nobr">entries.gid</span></code>, with its name. Written when the scan finishes.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Null</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">gid</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>A group ID that owns at least one entry.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">name</span></code></td>
+<td>VARCHAR</td>
+<td>yes</td>
+<td>The group's name, as the scanning host looked it up when the scan finished; null when no group has that ID.</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+<section class="doc-section" data-section="rollup">
+<h2 id="rollup"><code><span class="nobr">rollup</span></code><a class="anchor" href="#rollup" aria-label="Link to this section">#</a></h2>
+<p>Written by <code><span class="nobr">fs-inventory</span> <span class="nobr">rollup</span></code>: one row per directory with totals over its whole subtree. Parquet only.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Null</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">dir_id</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>The directory's <code><span class="nobr">dir_id</span></code> in <code><span class="nobr">entries</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">parent_id</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td><code><span class="nobr">dir_id</span></code> of the containing directory; 0 for a root.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">depth</span></code></td>
+<td>INTEGER</td>
+<td></td>
+<td>Levels below the scan root; 0 for the root.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">path</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>Full path, rendered like <code><span class="nobr">entries.path</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">path_raw</span></code> (text: <code><span class="nobr">path_b64</span></code>)</td>
+<td>BLOB</td>
+<td>yes</td>
+<td>Exact path bytes, when <code><span class="nobr">path</span></code> differs from them.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">entries</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Entries anywhere below this directory, not counting the directory itself.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">files</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Entries below this directory that aren't directories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dirs</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Directories below this directory.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">bytes</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Sum of <code><span class="nobr">size</span></code> over entries below this directory that aren't directories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">alloc_bytes</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Sum of <code><span class="nobr">alloc_bytes</span></code> over entries below this directory that aren't directories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">oldest_mtime</span></code></td>
+<td>TIMESTAMPTZ</td>
+<td>yes</td>
+<td>Oldest <code><span class="nobr">mtime</span></code> below this directory, over entries that aren't directories. Null when there are none.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">newest_mtime</span></code></td>
+<td>TIMESTAMPTZ</td>
+<td>yes</td>
+<td>Newest <code><span class="nobr">mtime</span></code> below this directory, over entries that aren't directories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">newest_ctime</span></code></td>
+<td>TIMESTAMPTZ</td>
+<td>yes</td>
+<td>Newest <code><span class="nobr">ctime</span></code> below this directory, over entries that aren't directories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">newest_atime</span></code></td>
+<td>TIMESTAMPTZ</td>
+<td>yes</td>
+<td>Newest <code><span class="nobr">atime</span></code> below this directory, over entries that aren't directories.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">incomplete_dirs</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Directories in this subtree, including this one, that weren't read completely: errors, mount points not entered, or <code><span class="nobr">--max-depth</span></code>. When it isn't 0, the totals are lower bounds.</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+<section class="doc-section" data-section="rollup_ages">
+<h2 id="rollup_ages"><code><span class="nobr">rollup_ages</span></code><a class="anchor" href="#rollup_ages" aria-label="Link to this section">#</a></h2>
+<p>Written by <code><span class="nobr">fs-inventory</span> <span class="nobr">rollup</span></code>: file counts and bytes by age for each directory down to <code><span class="nobr">--age-depth</span></code>, measured from the scan's start time. Parquet only.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Null</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">dir_id</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>The directory's <code><span class="nobr">dir_id</span></code>; join with <code><span class="nobr">rollup</span></code> or <code><span class="nobr">entries</span></code> for its path.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">time</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>Which timestamp the age is measured from: <code><span class="nobr">mtime</span></code>, <code><span class="nobr">ctime</span></code>, or <code><span class="nobr">atime</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">bucket</span></code></td>
+<td>INTEGER</td>
+<td></td>
+<td>Age bucket, in order: 0 is <code><span class="nobr">future</span></code> (newer than the scan), then increasing age.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">label</span></code></td>
+<td>VARCHAR</td>
+<td></td>
+<td>The bucket's label, such as <code><span class="nobr">&lt;30d</span></code>, <code><span class="nobr">1y-2y</span></code>, or <code><span class="nobr">&gt;=10y</span></code>, from <code><span class="nobr">--age-buckets</span></code>.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">files</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Entries below the directory in this bucket that aren't directories. Only buckets with files have rows.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">bytes</span></code></td>
+<td>BIGINT</td>
+<td></td>
+<td>Sum of <code><span class="nobr">size</span></code> over those entries.</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+<section class="doc-section" data-section="name-flags">
+<h2 id="name-flags">Name flags<a class="anchor" href="#name-flags" aria-label="Link to this section">#</a></h2>
+<p>Bits of <code><span class="nobr">name_flags</span></code>. Decode them in DuckDB with <code><span class="nobr">fs_name_flags(</span><wbr><span class="nobr">name_flags)</span></code> from <code><span class="nobr">sql/</span><wbr><span class="nobr">fs_inventory.sql</span></code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Bit</th>
+<th>Name</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code><span class="nobr">invalid_utf8</span></code></td>
+<td>Not valid UTF-8: a legacy encoding (Latin-1, Shift-JIS, ...) or corruption</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code><span class="nobr">c0_control</span></code></td>
+<td>Contains an ASCII control character, such as a newline or tab</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code><span class="nobr">c1_control</span></code></td>
+<td>Contains a C1 control character (U+0080 to U+009F)</td>
+</tr>
+<tr>
+<td>8</td>
+<td><code><span class="nobr">del</span></code></td>
+<td>Contains DEL (U+007F)</td>
+</tr>
+<tr>
+<td>16</td>
+<td><code><span class="nobr">bidi_control</span></code></td>
+<td>Contains a bidirectional formatting character that can disguise how a name displays</td>
+</tr>
+<tr>
+<td>32</td>
+<td><code><span class="nobr">not_nfc</span></code></td>
+<td>Valid UTF-8 but not in Unicode Normalization Form C (common from macOS)</td>
+</tr>
+<tr>
+<td>64</td>
+<td><code><span class="nobr">leading_trailing_space</span></code></td>
+<td>Starts or ends with a space</td>
+</tr>
+<tr>
+<td>128</td>
+<td><code><span class="nobr">leading_dash</span></code></td>
+<td>Starts with <code><span class="nobr">-</span></code>, which tools can mistake for an option</td>
+</tr>
+<tr>
+<td>256</td>
+<td><code><span class="nobr">trailing_dot</span></code></td>
+<td>Ends with <code><span class="nobr">.</span></code>, which Windows strips</td>
+</tr>
+<tr>
+<td>512</td>
+<td><code><span class="nobr">windows_reserved</span></code></td>
+<td>Contains a character Windows forbids (<code><span class="nobr">&lt;&gt;:&quot;|?*\</span></code>) or is a device name such as <code><span class="nobr">CON</span></code></td>
+</tr>
+<tr>
+<td>1024</td>
+<td><code><span class="nobr">long_name</span></code></td>
+<td>Longer than 255 bytes</td>
+</tr>
+<tr>
+<td>2048</td>
+<td><code><span class="nobr">long_path</span></code></td>
+<td>The full path is at least 4,096 bytes</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+<section class="doc-section" data-section="kinds">
+<h2 id="kinds">Kinds<a class="anchor" href="#kinds" aria-label="Link to this section">#</a></h2>
+<p>Values of <code><span class="nobr">kind</span></code>.</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">file</span></code></td>
+<td>Regular file</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir</span></code></td>
+<td>Directory</td>
+</tr>
+<tr>
+<td><code><span class="nobr">symlink</span></code></td>
+<td>Symbolic link (never followed)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">fifo</span></code></td>
+<td>Named pipe</td>
+</tr>
+<tr>
+<td><code><span class="nobr">socket</span></code></td>
+<td>Unix domain socket</td>
+</tr>
+<tr>
+<td><code><span class="nobr">char</span></code></td>
+<td>Character device</td>
+</tr>
+<tr>
+<td><code><span class="nobr">block</span></code></td>
+<td>Block device</td>
+</tr>
+<tr>
+<td><code><span class="nobr">unknown</span></code></td>
+<td>Any other type</td>
+</tr>
+</tbody>
+</table></div>
+</section>
+    </article>
+
+    <footer class="footer">
+      <p>fs-inventory 1.0.0 · Apache License 2.0 · Copyright 2026 Robert McDermott</p>
+      <p><a href="https://github.com/robert-mcdermott/fs-inventory/blob/v1.0.0/docs/schema.md" target="_blank" rel="noopener">View this page's source</a> · <a href="https://github.com/robert-mcdermott/fs-inventory/blob/main/docs/schema.md" target="_blank" rel="noopener">Edit on GitHub</a> · <a href="#top">Back to top ↑</a></p>
+    </footer>
+  </main>
+
+  <aside class="onpage" aria-label="In this section">
+    <div class="onpage-inner">
+      <p class="nav-label">In this section</p>
+      <ul id="onpageList"></ul>
+    </div>
+  </aside>
+</div>
+
+<div class="search-overlay" id="searchOverlay" hidden>
+  <div class="search-dialog" role="dialog" aria-modal="true" aria-labelledby="searchLabel">
+    <label class="search-field" for="searchInput">
+      <span class="sr-only" id="searchLabel">Search the documentation</span>
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Try “resume”, “--stall-timeout”, “heat map”, “fs_entries”…">
+      <button class="kbd kbd-btn" id="searchClose" type="button">Esc</button>
+    </label>
+    <ul class="search-results" id="searchResults" role="listbox" aria-label="Search results"></ul>
+    <p class="search-hint">↑ ↓ to move · Enter to open · Esc to close</p>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="assets/js/search-index.js"></script>
+<script src="assets/js/site.js"></script>
+</body>
+</html>

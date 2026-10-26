@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Architecture · fs-inventory</title>
+<meta name="description" content="How fs-inventory works: the crawler, platform backends, output pipeline, robustness, and checkpoints.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;600&family=Schibsted+Grotesk:wght@600;700;800&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.12.0/highlight.min.js"></script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="assets/css/site.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <button class="icon-btn nav-toggle" id="navToggle" type="button" aria-label="Open navigation" aria-controls="sidebar" aria-expanded="false">
+      <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+    </button>
+    <a class="brand" href="index.html">
+      <span class="brand-mark" aria-hidden="true">fs</span>
+      <span class="brand-text">fs-inventory</span>
+    </a>
+    <nav class="tabs" aria-label="Pages"><a href="index.html">Overview</a><a href="guide.html">User guide</a><a href="schema.html">Schema</a><a href="architecture.html" aria-current="page">Architecture</a><a href="changelog.html">Changelog</a></nav>
+    <button class="search-trigger" id="searchOpen" type="button" aria-haspopup="dialog">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span class="search-trigger-text">Search the docs</span>
+      <kbd class="kbd" id="searchKbd">/</kbd>
+    </button>
+    <div class="topbar-right">
+      <a class="chip chip-version" href="changelog.html" title="Release these docs describe">v1.0.0</a>
+      <a class="icon-btn" href="https://github.com/robert-mcdermott/fs-inventory" target="_blank" rel="noopener" aria-label="Source on GitHub">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.53 2.34 1.09 2.91.83.09-.65.35-1.09.63-1.34-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.86v2.75c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>
+      </a>
+      <button class="icon-btn" id="themeToggle" type="button" aria-label="Toggle dark mode">
+        <svg class="i-sun" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="12" cy="12" r="4.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <svg class="i-moon" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="progress" aria-hidden="true"><span id="progressBar"></span></div>
+</header>
+
+<div class="layout" id="top">
+  <nav class="sidebar" id="sidebar" aria-label="Sections">
+    <div class="sidebar-inner">
+      <nav class="side-tabs" aria-label="Pages"><a href="index.html">Overview</a><a href="guide.html">User guide</a><a href="schema.html">Schema</a><a href="architecture.html" aria-current="page">Architecture</a><a href="changelog.html">Changelog</a></nav>
+      <div class="nav-group"><p class="nav-label">On this page</p><ul><li class="nav-sec"><a href="#1-overview" data-target="1-overview"><span class="nav-num">01</span><span>Overview</span></a></li><li class="nav-sec"><a href="#2-the-crawl" data-target="2-the-crawl"><span class="nav-num">02</span><span>The crawl</span></a><ul class="nav-sub"><li><a href="#21-directory-tasks-and-ids" data-target="21-directory-tasks-and-ids">2.1 Directory tasks and IDs</a></li><li><a href="#22-work-stealing" data-target="22-work-stealing">2.2 Work stealing</a></li><li><a href="#23-reading-one-directory" data-target="23-reading-one-directory">2.3 Reading one directory</a></li><li><a href="#24-huge-directories" data-target="24-huge-directories">2.4 Huge directories</a></li><li><a href="#25-containing-failures" data-target="25-containing-failures">2.5 Containing failures</a></li><li><a href="#26-stopping" data-target="26-stopping">2.6 Stopping</a></li></ul></li><li class="nav-sec"><a href="#3-platform-backends" data-target="3-platform-backends"><span class="nav-num">03</span><span>Platform backends</span></a><ul class="nav-sub"><li><a href="#31-linux" data-target="31-linux">3.1 Linux</a></li><li><a href="#32-macos-and-other-posix-systems" data-target="32-macos-and-other-posix-systems">3.2 macOS and other POSIX systems</a></li><li><a href="#33-long-paths" data-target="33-long-paths">3.3 Long paths</a></li><li><a href="#34-generated-trees" data-target="34-generated-trees">3.4 Generated trees</a></li></ul></li><li class="nav-sec"><a href="#4-file-names" data-target="4-file-names"><span class="nav-num">04</span><span>File names</span></a></li><li class="nav-sec"><a href="#5-output-pipeline" data-target="5-output-pipeline"><span class="nav-num">05</span><span>Output pipeline</span></a><ul class="nav-sub"><li><a href="#51-sinks" data-target="51-sinks">5.1 Sinks</a></li><li><a href="#52-writers" data-target="52-writers">5.2 Writers</a></li><li><a href="#53-part-files-and-the-commit-protocol" data-target="53-part-files-and-the-commit-protocol">5.3 Part files and the commit protocol</a></li><li><a href="#54-parquet-settings" data-target="54-parquet-settings">5.4 Parquet settings</a></li><li><a href="#55-text-formats-and-stdout" data-target="55-text-formats-and-stdout">5.5 Text formats and stdout</a></li><li><a href="#56-failures-and-the-manifest" data-target="56-failures-and-the-manifest">5.6 Failures and the manifest</a></li><li><a href="#57-user-and-group-names" data-target="57-user-and-group-names">5.7 User and group names</a></li></ul></li><li class="nav-sec"><a href="#6-robustness" data-target="6-robustness"><span class="nav-num">06</span><span>Robustness</span></a><ul class="nav-sub"><li><a href="#61-errors-and-vanished-entries" data-target="61-errors-and-vanished-entries">6.1 Errors and vanished entries</a></li><li><a href="#62-the-stall-watchdog" data-target="62-the-stall-watchdog">6.2 The stall watchdog</a></li><li><a href="#63-bounded-memory" data-target="63-bounded-memory">6.3 Bounded memory</a></li><li><a href="#64-signals-and-file-descriptors" data-target="64-signals-and-file-descriptors">6.4 Signals and file descriptors</a></li><li><a href="#65-checkpoints-and-resume" data-target="65-checkpoints-and-resume">6.5 Checkpoints and resume</a></li></ul></li><li class="nav-sec"><a href="#7-post-processing-commands" data-target="7-post-processing-commands"><span class="nav-num">07</span><span>Post-processing commands</span></a><ul class="nav-sub"><li><a href="#71-rollup" data-target="71-rollup">7.1 <code><span class="nobr">rollup</span></code></a></li><li><a href="#72-verify" data-target="72-verify">7.2 <code><span class="nobr">verify</span></code></a></li><li><a href="#73-schema-and-the-duckdb-macros" data-target="73-schema-and-the-duckdb-macros">7.3 <code><span class="nobr">schema</span></code> and the DuckDB macros</a></li><li><a href="#74-probe" data-target="74-probe">7.4 <code><span class="nobr">probe</span></code></a></li><li><a href="#75-convert" data-target="75-convert">7.5 <code><span class="nobr">convert</span></code></a></li></ul></li><li class="nav-sec"><a href="#8-performance-notes" data-target="8-performance-notes"><span class="nav-num">08</span><span>Performance notes</span></a></li><li class="nav-sec"><a href="#9-testing" data-target="9-testing"><span class="nav-num">09</span><span>Testing</span></a></li></ul></div>
+      <div class="nav-group nav-extra">
+        <p class="nav-label">More</p>
+        <ul>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory/releases/latest" target="_blank" rel="noopener">Latest release</a></li>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory" target="_blank" rel="noopener">Source on GitHub</a></li>
+          <li><a href="https://github.com/robert-mcdermott/fs-inventory/issues" target="_blank" rel="noopener">Report an issue</a></li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+  <div class="scrim" id="scrim" hidden></div>
+
+  <main class="main" id="main">
+    <header class="page-header"><p class="eyebrow">fs-inventory 1.0.0</p><h1>Architecture</h1><p class="lede">How fs-inventory works: the crawler, platform backends, output pipeline, robustness, and checkpoints.</p></header>
+    <article class="doc" id="doc">
+      <section class="doc-section" data-section="intro">
+<p>This document explains how fs-inventory 1.0.0 is built and why. It is for engineers who maintain or extend the code, and for administrators who want to know what the tool does to their file systems before they run it. For how to use it, see the <a href="guide.html">user guide</a>. For every column, see the <a href="schema.html">schema reference</a>. <a href="https://github.com/robert-mcdermott/fs-inventory/blob/v1.0.0/PLAN.md" target="_blank" rel="noopener">PLAN.md</a> holds the original design and the roadmap; this document describes the code as it is.</p>
+</section>
+<section class="doc-section" data-section="1-overview">
+<h2 id="1-overview">1. Overview<a class="anchor" href="#1-overview" aria-label="Link to this section">#</a></h2>
+<p>fs-inventory is a Cargo workspace with two crates:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Crate</th>
+<th>Contents</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">fs-inventory-core</span></code> (library)</td>
+<td>The parallel walker, the platform backends, file-name analysis, and the record model. It knows nothing about output formats.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">fs-inventory</span></code> (binary)</td>
+<td>The command-line interface, the output pipeline (CSV, JSON Lines, Parquet), the manifest, and the <code><span class="nobr">rollup</span></code>, <code><span class="nobr">verify</span></code>, <code><span class="nobr">schema</span></code>, and <code><span class="nobr">probe</span></code> commands.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The boundary between them is the <code><span class="nobr">Sink</span></code> trait in <code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory-core/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">walker.rs</span></code>. The walker calls <code><span class="nobr">entry</span></code>, <code><span class="nobr">error</span></code>, <code><span class="nobr">end_dir</span></code>, and <code><span class="nobr">finish</span></code> on one sink per crawl thread. Everything after that, including buffering, encoding, compression, and files, belongs to the binary.</p>
+<p>A scan flows like this:</p>
+<figure class="diagram"><pre class="mermaid">flowchart TB
+    R[Roots] --&gt; I[(Injector)]
+    subgraph Crawl[&quot;Crawl threads (--threads)&quot;]
+        W1[&quot;Worker 1: LIFO deque&quot;]
+        W2[&quot;Worker 2: LIFO deque&quot;]
+    end
+    I --&gt; W1
+    I --&gt; W2
+    W2 -. steal .-&gt; W1
+    W1 -- &quot;names past SHARE_AFTER&quot; --&gt; C[(Stat chunks)]
+    C --&gt; W2
+    W1 -- &quot;queue over budget&quot; --&gt; S[(Spill file)]
+    S --&gt; W2
+    W1 --&gt; K1[Sink 1]
+    W2 --&gt; K2[Sink 2]
+    K1 -- &quot;directory-aligned chunks&quot; --&gt; Q[[Bounded channel]]
+    K2 --&gt; Q
+    Q --&gt; WR[&quot;Writers, started on demand up to --writers&quot;]
+    WR --&gt; P[&quot;Part files: .tmp, fsync, rename&quot;]
+    P --&gt; M[manifest.json]
+    WD[&quot;Watchdog (calling thread)&quot;] -. checks .-&gt; Crawl
+</pre></figure>
+<ol>
+<li><code><span class="nobr">scan</span></code> (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">scan.rs</span></code>) validates options, creates an empty output directory, writes a manifest with status <code><span class="nobr">running</span></code>, starts the output pipeline, and calls <code><span class="nobr">walker::walk</span></code>.</li>
+<li>Crawl threads read directories and hand rows to their sinks.</li>
+<li>Sinks buffer rows and send them, a directory at a time, through a bounded channel to writer threads.</li>
+<li>Writers encode and compress rows into part files and commit each one atomically.</li>
+<li>When the walk returns, <code><span class="nobr">scan</span></code> waits for the writers, writes the final manifest with the status, totals, and list of parts, and syncs the directory.</li>
+</ol>
+<p>Nothing in the crawl modifies the file system being scanned. The only files written are in the output directory.</p>
+</section>
+<section class="doc-section" data-section="2-the-crawl">
+<h2 id="2-the-crawl">2. The crawl<a class="anchor" href="#2-the-crawl" aria-label="Link to this section">#</a></h2>
+<p>The walker is in <code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory-core/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">walker.rs</span></code>.</p>
+<h3 id="21-directory-tasks-and-ids">2.1 Directory tasks and IDs<a class="anchor" href="#21-directory-tasks-and-ids" aria-label="Link to this section">#</a></h3>
+<p>A directory waiting to be read is a <code><span class="nobr">DirTask</span></code>: its full path as bytes, <code><span class="nobr">dir_id</span></code>, <code><span class="nobr">parent_id</span></code>, depth, the stat its parent already took, and whether it is a mount point. The calling thread stats each root and pushes root directories onto a global <code><span class="nobr">Injector</span></code>. A root that is a file gets a row immediately. A root that can't be stat'ed, such as a missing one, gets a row in the errors table.</p>
+<p><code><span class="nobr">dir_id</span></code> comes from one shared atomic counter, starting at 1. A directory gets its ID when its parent lists it, before it is queued. Every directory has an ID, including ones the crawl doesn't enter (mount points, directories at <code><span class="nobr">--max-depth</span></code>, revisits). Roots have <code><span class="nobr">parent_id</span></code> 0. IDs are dense, which <code><span class="nobr">rollup</span></code> relies on to index directories in a flat array.</p>
+<h3 id="22-work-stealing">2.2 Work stealing<a class="anchor" href="#22-work-stealing" aria-label="Link to this section">#</a></h3>
+<p>Each crawl thread owns a LIFO deque from <code><span class="nobr">crossbeam-deque</span></code>. It pushes the subdirectories it finds onto its own deque and pops the newest first, so each thread walks depth-first and its queue stays small. Each worker's loop, in order:</p>
+<ol>
+<li>Pop from its own deque.</li>
+<li>Help stat a batch from a huge directory (section 2.4).</li>
+<li>Steal: first a batch from the global injector, then from peers one at a time, starting with the next worker so stealing spreads evenly. Thieves take from the old end of a peer's deque, where the directories nearest the root are: the biggest remaining pieces of work. The loop stops at the first successful steal, so a stolen task is never dropped.</li>
+<li>Read back a directory from the spill file (section 6.3).</li>
+<li>If every directory is done, exit. Otherwise back off: spin, yield, then sleep 200 µs.</li>
+</ol>
+<p><code><span class="nobr">Counters::pending</span></code> counts directories queued or being read. The walk is finished when <code><span class="nobr">pending</span></code> drops to the number of directories abandoned by the watchdog (usually zero).</p>
+<h3 id="23-reading-one-directory">2.3 Reading one directory<a class="anchor" href="#23-reading-one-directory" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">WorkerState::process</span></code> opens the directory and checks that the open directory's device and inode match the stat taken when it was listed. If they don't, the directory was replaced during the scan, and it is recorded as a <code><span class="nobr">verify</span></code> error instead of being read. A directory that vanished between listing and opening counts as vanished, not as an error.</p>
+<p><code><span class="nobr">read_entries</span></code> reads names in batches from the backend. For each name, <code><span class="nobr">stat_names</span></code> takes a stat relative to the open directory, and <code><span class="nobr">child</span></code> decides what to do:</p>
+<ul>
+<li><strong>Snapshot directories</strong> (<code><span class="nobr">.snapshot</span></code>, <code><span class="nobr">~snapshot</span></code>, <code><span class="nobr">.snapshots</span></code>, <code><span class="nobr">.zfs</span></code>; <code><span class="nobr">SNAPSHOT_DIRS</span></code>) and the scan's own output directory (matched by device and inode) are skipped entirely, with no row, unless <code><span class="nobr">--include-snapshots</span></code> is set.</li>
+<li><strong>Excluded paths</strong> (<code><span class="nobr">--exclude</span></code>, <code><span class="nobr">--exclude-from</span></code>) are skipped entirely, with no row, and excluded directories are not entered. A glob without <code><span class="nobr">/</span></code> matches a name at any depth; it is compiled as <code><span class="nobr">**/</span><wbr><span class="nobr">GLOB</span></code>.</li>
+<li><strong>Other entries</strong> are added to the directory's totals.
+<ul>
+<li>Files, symlinks, and other non-directories get a row at once.</li>
+<li>Subdirectories are queued if they are within <code><span class="nobr">--max-depth</span></code> and on the same device, or <code><span class="nobr">--cross-mounts</span></code> is set. Otherwise they get a row now, with no totals.</li>
+<li>With <code><span class="nobr">--detect-cycles</span></code>, a subdirectory whose <code><span class="nobr">(dev,</span> <span class="nobr">ino)</span></code> was already entered gets a row with the error <code><span class="nobr">revisit</span></code> and is not queued. The visited set is split into 64 locked shards to keep contention low.</li>
+</ul>
+</li>
+</ul>
+<p>Symlinks are never followed. The only exception is a scan root: a symlink given as a root is followed, because the user named it.</p>
+<p>After the last name, the directory's own row is written. Its row comes after the rows of its children, so it can carry the totals of its immediate children: entry count, files, subdirectories, bytes, and allocated bytes. A directory that couldn't be opened or verified gets a row with <code><span class="nobr">error</span></code> set and no totals. A directory where reading failed partway gets an error and totals for what was read.</p>
+<h3 id="24-huge-directories">2.4 Huge directories<a class="anchor" href="#24-huge-directories" aria-label="Link to this section">#</a></h3>
+<p>A single directory can hold millions of entries. Reading names (<code><span class="nobr">getdents64</span></code>) is one sequential stream, but the stat calls don't have to be.</p>
+<p>After a worker has read <code><span class="nobr">SHARE_AFTER</span></code> (10,000) names from one directory, it stops statting the rest itself. Each further batch of names goes into a global <code><span class="nobr">StatChunk</span></code> injector, together with an <code><span class="nobr">Arc&lt;SharedDir&gt;</span></code>. The <code><span class="nobr">SharedDir</span></code> holds the open directory, a mutex for totals, and a count of outstanding batches. Idle workers check this injector before they try to steal directories (step 2 above). They stat a batch relative to the shared open directory, emit its rows into their own sinks, and merge their totals.</p>
+<p>The reading worker keeps reading names. When it reaches the end, it helps with outstanding batches, its own or any other directory's, until all of its directory's batches are done. Then it merges the shared totals and writes the directory row. A drop guard (<code><span class="nobr">Finished</span></code>) decrements the outstanding count even if a batch panics, so the reading worker never waits forever.</p>
+<h3 id="25-containing-failures">2.5 Containing failures<a class="anchor" href="#25-containing-failures" aria-label="Link to this section">#</a></h3>
+<p>Every entry is processed inside <code><span class="nobr">catch_unwind</span></code>. A bug triggered by one strange entry costs that entry: it is recorded as an <code><span class="nobr">internal</span></code> error, and the rest of the directory is still read. The same applies to each directory as a whole. Stat failures are recorded in the errors table, and the crawl continues. Entries that disappear between being listed and being stat'ed are counted as vanished, not as errors, because live file systems churn.</p>
+<h3 id="26-stopping">2.6 Stopping<a class="anchor" href="#26-stopping" aria-label="Link to this section">#</a></h3>
+<p>The walk stops early when its <code><span class="nobr">stop</span></code> flag is set. That happens on the first SIGINT or SIGTERM, or when output fails (section 5.6). Workers check the flag between directories, so each finishes the directory it is reading. The directories still queued are left unread, and the walk reports itself incomplete. As they exit, workers move their queued directories to the global injector, so the walk can return them as the state a resume continues from (section 6.5).</p>
+</section>
+<section class="doc-section" data-section="3-platform-backends">
+<h2 id="3-platform-backends">3. Platform backends<a class="anchor" href="#3-platform-backends" aria-label="Link to this section">#</a></h2>
+<p>The walker only uses the <code><span class="nobr">Backend</span></code> trait (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory-core/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">backend/</span><wbr><span class="nobr">mod.rs</span></code>):</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">stat_root</span></code></td>
+<td>Stat a root, following a symlink at the root itself</td>
+</tr>
+<tr>
+<td><code><span class="nobr">open_dir</span></code></td>
+<td>Open a directory by full path, following a final symlink only for roots</td>
+</tr>
+<tr>
+<td><code><span class="nobr">dir_stat</span></code></td>
+<td>Stat an open directory (for the replaced-directory check)</td>
+</tr>
+<tr>
+<td><code><span class="nobr">read_names</span></code></td>
+<td>Append the next batch of names, never <code><span class="nobr">.</span></code> or <code><span class="nobr">..</span></code></td>
+</tr>
+<tr>
+<td><code><span class="nobr">stat_at</span></code></td>
+<td>Stat a name relative to an open directory, without following symlinks or triggering automounts</td>
+</tr>
+<tr>
+<td><code><span class="nobr">read_link_at</span></code></td>
+<td>Read a symlink's target relative to an open directory (<code><span class="nobr">readlinkat</span></code>), for <code><span class="nobr">--symlink-targets</span></code></td>
+</tr>
+</tbody>
+</table></div>
+<p>An open directory (<code><span class="nobr">Backend::Dir</span></code>) must be shareable across threads, because huge directories are stat'ed by several workers at once. Tests wrap the native backend to inject failures, trace calls, or hang (section 9), and scale tests replace it with a generated tree (section 3.4).</p>
+<h3 id="31-linux">3.1 Linux<a class="anchor" href="#31-linux" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory-core/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">backend/</span><wbr><span class="nobr">linux.rs</span></code>:</p>
+<ul>
+<li><strong>Listing:</strong> <code><span class="nobr">getdents64</span></code> through rustix's <code><span class="nobr">RawDir</span></code>, into a 256 KiB buffer per worker. Each <code><span class="nobr">read_names</span></code> call issues exactly one <code><span class="nobr">getdents64</span></code>.</li>
+<li><strong>Metadata:</strong> <code><span class="nobr">statx</span></code> relative to the open directory, with <code><span class="nobr">AT_SYMLINK_NOFOLLOW</span></code> and <code><span class="nobr">AT_NO_AUTOMOUNT</span></code>. The field mask comes from <code><span class="nobr">--fields</span></code>. Fields left out aren't requested at all, which on Lustre avoids a round trip to the storage servers for sizes. <code><span class="nobr">--statx-dont-sync</span></code> adds <code><span class="nobr">AT_STATX_DONT_SYNC</span></code>, which accepts cached attributes on network file systems.</li>
+<li><strong>Kernels before 4.11</strong> have no <code><span class="nobr">statx</span></code>. The first <code><span class="nobr">ENOSYS</span></code> is remembered in an atomic flag, and every later stat calls <code><span class="nobr">fstatat</span></code> directly, with the same flags except <code><span class="nobr">AT_STATX_DONT_SYNC</span></code>. <code><span class="nobr">btime</span></code> is then null.</li>
+<li><strong>Access times:</strong> directories are opened with <code><span class="nobr">O_NOATIME</span></code> where permitted, so reading them doesn't update their access times. <code><span class="nobr">O_NOATIME</span></code> needs ownership or <code><span class="nobr">CAP_FOWNER</span></code>; after the first <code><span class="nobr">EPERM</span></code> the flag is dropped for the rest of the scan.</li>
+<li><strong>System calls:</strong> rustix makes Linux system calls directly, not through the C library. The static musl build and a glibc build therefore make the same calls.</li>
+</ul>
+<h3 id="32-macos-and-other-posix-systems">3.2 macOS and other POSIX systems<a class="anchor" href="#32-macos-and-other-posix-systems" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory-core/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">backend/</span><wbr><span class="nobr">posix.rs</span></code> uses <code><span class="nobr">readdir</span></code> (rustix <code><span class="nobr">Dir</span></code>), 4,096 names per call, and <code><span class="nobr">fstatat</span></code> relative to the open directory. Birth time comes from <code><span class="nobr">st_birthtime</span></code> on Apple platforms and the BSDs. Every metadata field is read regardless of <code><span class="nobr">--fields</span></code>; the output still writes skipped fields as null.</p>
+<h3 id="33-long-paths">3.3 Long paths<a class="anchor" href="#33-long-paths" aria-label="Link to this section">#</a></h3>
+<p>Paths can exceed <code><span class="nobr">PATH_MAX</span></code> (4,096 bytes on Linux, 1,024 on macOS), and <code><span class="nobr">open</span></code> then fails with <code><span class="nobr">ENAMETOOLONG</span></code>. <code><span class="nobr">DirOpener</span></code> retries by splitting the path at <code><span class="nobr">/</span></code> into pieces shorter than <code><span class="nobr">PATH_MAX</span></code> and opening each with <code><span class="nobr">openat</span></code> relative to the one before, applying the caller's flags only to the final piece. An 8,000-byte path takes two or three calls on Linux, rather than one per component, which made opening every directory of a 2,000-level tree cost millions of calls. Paths are stored in full regardless of length, and <code><span class="nobr">name_flags</span></code> marks them with <code><span class="nobr">long_path</span></code>.</p>
+<h3 id="34-generated-trees">3.4 Generated trees<a class="anchor" href="#34-generated-trees" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory-core/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">backend/</span><wbr><span class="nobr">synthetic.rs</span></code> serves a tree that exists only as arithmetic, for scale tests and benchmarks. The hidden option <code><span class="nobr">scan</span> <span class="nobr">--synthetic</span> <span class="nobr">SPEC</span></code> uses it in place of the native backend at each root, and the roots needn't exist. The spec is <code><span class="nobr">100M</span></code>, or <code><span class="nobr">entries=100M,</span><wbr><span class="nobr">files=32,</span><wbr><span class="nobr">fanout=8,</span><wbr><span class="nobr">huge=1M,</span><wbr><span class="nobr">seed=0</span></code>. The checkpoint stores it, so <code><span class="nobr">resume</span></code> continues the same tree, and the manifest's <code><span class="nobr">options.synthetic</span></code> marks the scan as generated.</p>
+<ul>
+<li><strong>Exact size:</strong> each directory has a budget, the number of entries below it. A hash of the directory decides how many of them are its own files and how many subdirectories share the rest, unevenly. Files are about <code><span class="nobr">files</span></code> per directory, now and then up to 32 times that, and <code><span class="nobr">huge</span></code> one time in four when at least twice <code><span class="nobr">huge</span></code> entries are below. Subdirectories are about <code><span class="nobr">fanout</span></code>. The budgets add up, so each root's tree has exactly <code><span class="nobr">entries</span></code> entries, the root included.</li>
+<li><strong>Nothing stored:</strong> opening a directory follows its path down from the root, recomputing each level's split, so a billion-entry tree costs no memory. Names begin with the entry's index among its siblings (<code><span class="nobr">17_results_v2.csv</span></code>), so <code><span class="nobr">open_dir</span></code> and <code><span class="nobr">stat_at</span></code> find an entry from its name and reject names the tree doesn't have.</li>
+<li><strong>Like a real tree:</strong> with the defaults, directories average about 30 entries. A billion-entry tree is about 12 levels deep on average and 30 at most, and has about 80 directories of a million files. File sizes are log-uniform from a byte to 2 GiB. Each directory in the top two levels has its own owner, which its subtree inherits. Times cluster within 60 days of a time per directory, between 2015 and 2025. There are symlinks, FIFOs, sockets, hard links, and sparse files. About one name in a thousand has invalid UTF-8, a comma, quote, tab, newline, or DEL, or Unicode in both normalization forms.</li>
+<li><strong>Inode numbers</strong> are entries' positions in a depth-first numbering of the tree, from 2. They are unique and, as on most file systems, close together within a directory. They also make an exact test: a scan wrote every entry exactly once if and only if its inode numbers are exactly 2 to <code><span class="nobr">entries</span></code> + 1.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="4-file-names">
+<h2 id="4-file-names">4. File names<a class="anchor" href="#4-file-names" aria-label="Link to this section">#</a></h2>
+<p>On Unix, a file name is any sequence of bytes except <code><span class="nobr">/</span></code> and NUL. Names from legacy systems are often Latin-1 or Shift-JIS rather than UTF-8, and some contain newlines or other control characters. fs-inventory keeps names as bytes from <code><span class="nobr">getdents64</span></code> to the output boundary, and converts them to text only when writing a row (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory-core/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">names.rs</span></code>).</p>
+<ul>
+<li><strong><code><span class="nobr">to_text</span></code></strong> returns valid UTF-8 unchanged. Bytes that aren't valid UTF-8 become <code><span class="nobr">\xNN</span></code> escapes. For CSV, control characters are also escaped (<code><span class="nobr">\t</span></code>, <code><span class="nobr">\n</span></code>, <code><span class="nobr">\r</span></code>, <code><span class="nobr">\xNN</span></code>), so every record stays on one line; <code><span class="nobr">--csv-raw-controls</span></code> turns that off. JSON Lines and Parquet keep control characters, because those formats escape or store them safely.</li>
+<li><strong>Exact bytes:</strong> <code><span class="nobr">to_text</span></code> returns a borrowed string exactly when the text equals the original bytes. When it doesn't, the writer also stores the exact bytes: <code><span class="nobr">path_raw</span></code> (binary) in Parquet, <code><span class="nobr">path_b64</span></code> (base64) in CSV and JSON Lines. <code><span class="nobr">--raw-paths</span> <span class="nobr">always</span></code> stores them for every row. Roots and stalled paths in the manifest use the same <code><span class="nobr">path</span></code>/<code><span class="nobr">path_b64</span></code> pair.</li>
+<li><strong><code><span class="nobr">name_flags</span></code></strong> is a bitmask of properties that cause trouble in analytics or migrations: invalid UTF-8, C0 and C1 control characters, DEL, bidirectional controls, names not in Unicode NFC, leading or trailing spaces, a leading dash, a trailing dot, characters or device names Windows reserves, names over 255 bytes, and paths of 4,096 bytes or more. The bit values are listed in the <a href="schema.html#name-flags">schema reference</a>.</li>
+<li><strong>Extensions</strong> are the bytes after the last dot, with ASCII letters lowercased. Dotfiles, names ending in a dot, and extensions over 32 bytes have none.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="5-output-pipeline">
+<h2 id="5-output-pipeline">5. Output pipeline<a class="anchor" href="#5-output-pipeline" aria-label="Link to this section">#</a></h2>
+<p>The pipeline is in <code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">output/</span></code>.</p>
+<h3 id="51-sinks">5.1 Sinks<a class="anchor" href="#51-sinks" aria-label="Link to this section">#</a></h3>
+<p>Each crawl thread gets a <code><span class="nobr">RowSink</span></code>. A sink buffers rows as text (CSV or JSON Lines) or in Arrow column builders (Parquet). The expensive Parquet encoding and compression happen later, in the writers. The buffer lives in a <code><span class="nobr">SinkState</span></code> behind an <code><span class="nobr">Arc&lt;Mutex&lt;_&gt;&gt;</span></code>, which the output also keeps so it can salvage a stuck worker's rows (section 6.2). Each sink lock is uncontended in normal operation.</p>
+<p>Sinks send rows at directory boundaries. At each <code><span class="nobr">end_dir</span></code>, the sink records a mark: the rows up to here belong to finished directories. It sends its buffer once the buffer passes its share of the sink budget:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Setting</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sink budget for all threads together</td>
+<td><code><span class="nobr">SINK_BUDGET_BYTES</span></code>, 64 MiB (usually less with <code><span class="nobr">--max-memory</span></code>)</td>
+</tr>
+<tr>
+<td>One thread's share</td>
+<td>budget ÷ crawl threads, clamped to 64 KiB through 1 MiB</td>
+</tr>
+<tr>
+<td>Mid-directory send</td>
+<td>when one directory's rows reach 4 × the share (<code><span class="nobr">MAX_BUFFER_FACTOR</span></code>)</td>
+</tr>
+<tr>
+<td>Error rows</td>
+<td>sent at a directory boundary once 256 are buffered</td>
+</tr>
+</tbody>
+</table></div>
+<p>So memory for buffered rows doesn't grow with the thread count, and a directory of millions of entries can't hold unbounded memory.</p>
+<h3 id="52-writers">5.2 Writers<a class="anchor" href="#52-writers" aria-label="Link to this section">#</a></h3>
+<p>Sinks send chunks through a bounded crossbeam channel that holds <code><span class="nobr">BACKLOG_PER_WRITER</span></code> (4) chunks per allowed writer. When the channel is full, sinks block, and the crawl slows to the speed of the disk instead of growing memory.</p>
+<p>Writers start on demand. The output starts with one writer. When a sink sends a chunk and finds at least 4 chunks queued per running writer, it starts another, up to <code><span class="nobr">--writers</span></code> (default: the CPU count, at most 8). The last rows each sink sends when it finishes don't start writers: all the sinks finish at about the same moment, so their final chunks arrive together even when the writers are keeping up. A small scan therefore writes one part file per table, and a large one uses as many writers as compression needs.</p>
+<p>Each writer has its own part files for each table, named <code><span class="nobr">part-wNN-SSSSSS</span></code> (writer, then sequence). Output files therefore scale with <code><span class="nobr">--writers</span></code>, not <code><span class="nobr">--threads</span></code>.</p>
+<h3 id="53-part-files-and-the-commit-protocol">5.3 Part files and the commit protocol<a class="anchor" href="#53-part-files-and-the-commit-protocol" aria-label="Link to this section">#</a></h3>
+<p>A writer rolls to a new part at <code><span class="nobr">--part-max-bytes</span></code> (default 1 GiB, measured after compression) or <code><span class="nobr">--part-max-rows</span></code>. A chunk is never split, so its rows always land in one part. Each part is committed in three steps (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">output/</span><wbr><span class="nobr">parts.rs</span></code> and <code><span class="nobr">parquet.rs</span></code>):</p>
+<ol>
+<li>Write <code><span class="nobr">NAME.tmp</span></code>; for Parquet, the footer is written last.</li>
+<li><code><span class="nobr">fsync</span></code> the file.</li>
+<li>Rename it to <code><span class="nobr">NAME</span></code>.</li>
+</ol>
+<p>A finished part is therefore always complete and valid, and a crash leaves only <code><span class="nobr">.tmp</span></code> files behind. Zstd text parts include a content checksum. At the end of the scan, the manifest is written the same way (<code><span class="nobr">manifest.json.tmp</span></code>, fsync, rename), and the scan directory itself is fsynced so the renames are durable.</p>
+<h3 id="54-parquet-settings">5.4 Parquet settings<a class="anchor" href="#54-parquet-settings" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">output/</span><wbr><span class="nobr">parquet.rs</span></code> configures the writer:</p>
+<ul>
+<li><strong>Compression:</strong> zstd level 3 by default; <code><span class="nobr">--compression</span></code> also accepts other zstd or gzip levels, Snappy, LZ4, or none.</li>
+<li><strong>Row groups:</strong> up to <code><span class="nobr">--row-group-rows</span></code> (default 1,048,576) rows. An in-progress row group is also capped in bytes: <code><span class="nobr">MAX_ROW_GROUP_BYTES</span></code> (128 MiB) per writer by default, and less under <code><span class="nobr">--max-memory</span></code>, but never under 8 MiB.</li>
+<li><strong>Statistics:</strong> page-level, so DuckDB can skip data by <code><span class="nobr">mtime</span></code>, <code><span class="nobr">size</span></code>, or <code><span class="nobr">uid</span></code>.</li>
+<li><strong>Encodings,</strong> chosen by measurement on 1.24 million real entries:
+<ul>
+<li><code><span class="nobr">path</span></code> uses <code><span class="nobr">DELTA_BYTE_ARRAY</span></code>, storing each path as a suffix of the previous one, which cut it from 7.9 to 5.0 bytes per entry.</li>
+<li><code><span class="nobr">ino</span></code> uses <code><span class="nobr">DELTA_BINARY_PACKED</span></code>.</li>
+<li>Dictionary encoding is off for high-cardinality columns (<code><span class="nobr">path</span></code>, <code><span class="nobr">name</span></code>, <code><span class="nobr">path_raw</span></code>, <code><span class="nobr">ino</span></code>, <code><span class="nobr">dir_id</span></code>, and the timestamps), where it made files larger and slower.</li>
+</ul>
+</li>
+<li><strong>Footer metadata:</strong> every file records <code><span class="nobr">fs_inventory.schema_version</span></code>, <code><span class="nobr">tool_version</span></code>, <code><span class="nobr">scan_id</span></code>, <code><span class="nobr">host</span></code>, and <code><span class="nobr">roots</span></code>, so a part file identifies its scan even when separated from the manifest.</li>
+</ul>
+<p>One schema definition (<code><span class="nobr">output/</span><wbr><span class="nobr">schema.rs</span></code>) drives the Arrow schema, the CSV and JSON Lines columns, <code><span class="nobr">fs-inventory</span> <span class="nobr">schema</span></code>, and <code><span class="nobr">docs/</span><wbr><span class="nobr">schema.md</span></code>. Integer columns are signed, so scans load into databases without unsigned types. Only <code><span class="nobr">dev</span></code>, <code><span class="nobr">ino</span></code>, and <code><span class="nobr">rdev</span></code> are unsigned, because they are opaque 64-bit identifiers whose top bit can be set. A value above the signed maximum is capped, not wrapped. <code><span class="nobr">--columns</span></code> selects a subset of entry columns in any format.</p>
+<h3 id="55-text-formats-and-stdout">5.5 Text formats and stdout<a class="anchor" href="#55-text-formats-and-stdout" aria-label="Link to this section">#</a></h3>
+<p>CSV and JSON Lines rows are encoded in the sinks (<code><span class="nobr">output/</span><wbr><span class="nobr">encode.rs</span></code>) and written by the same rolling part writers, optionally through zstd or gzip. Timestamps are ISO-8601 UTC text by default, or epoch seconds with <code><span class="nobr">--time-format</span> <span class="nobr">epoch</span></code>, in microseconds or nanoseconds (<code><span class="nobr">--time-unit</span></code>). A timestamp a format can't represent is clamped, and <code><span class="nobr">time_flags</span></code> records which ones were clamped.</p>
+<p>With <code><span class="nobr">-o</span> <span class="nobr">-</span></code>, there is one writer, entry rows stream to stdout as CSV or JSON Lines, and error rows go to stderr. No manifest is written. A closed pipe, such as <code><span class="nobr">|</span> <span class="nobr">head</span></code>, ends the scan cleanly with exit code 3.</p>
+<h3 id="56-failures-and-the-manifest">5.6 Failures and the manifest<a class="anchor" href="#56-failures-and-the-manifest" aria-label="Link to this section">#</a></h3>
+<p>If a writer fails, for example because the disk is full, it records the error, sets the walk's <code><span class="nobr">stop</span></code> flag, and drains the channel so no sink blocks forever. The scan ends with status <code><span class="nobr">failed</span></code> and exit code 4. Parts committed before the failure are listed and valid.</p>
+<p>The manifest (<code><span class="nobr">output/</span><wbr><span class="nobr">manifest.rs</span></code>) records:</p>
+<ul>
+<li>the scan ID, a time-ordered UUIDv7;</li>
+<li>the tool and schema versions, host, roots, format, compression, columns, and the options that shape the output;</li>
+<li>start and finish times;</li>
+<li>totals: entries by kind, directories read, bytes, errors, vanished, revisits, spilled;</li>
+<li>errors grouped by operation and errno;</li>
+<li>stalled directories;</li>
+<li>each resume, if any (<code><span class="nobr">resumes</span></code>);</li>
+<li>every committed part, with its row count and size.</li>
+</ul>
+<p>Its <code><span class="nobr">status</span></code> is one of:</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Status</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code><span class="nobr">running</span></code></td>
+<td>Written at the start. Still present after a crash, when <code><span class="nobr">resume</span></code> continues from the last checkpoint.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">complete</span></code></td>
+<td>Every directory was visited. Per-entry errors may still have occurred.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">interrupted</span></code></td>
+<td>Stopped by a signal or a closed stdout. Queued directories were not read; <code><span class="nobr">resume</span></code> reads them.</td>
+</tr>
+<tr>
+<td><code><span class="nobr">incomplete</span></code></td>
+<td>Finished, except directories given up on after <code><span class="nobr">--stall-timeout</span></code> (listed in <code><span class="nobr">stalled</span></code>).</td>
+</tr>
+<tr>
+<td><code><span class="nobr">failed</span></code></td>
+<td>Output couldn't be written. The parts listed are valid but partial.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Exit codes follow from the status: 0 for complete without errors, 1 for complete with errors, 2 for invalid usage, 3 for interrupted or incomplete, and 4 for fatal (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">exit.rs</span></code>).</p>
+<h3 id="57-user-and-group-names">5.7 User and group names<a class="anchor" href="#57-user-and-group-names" aria-label="Link to this section">#</a></h3>
+<p>With <code><span class="nobr">--resolve-ids</span></code>, <code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">ids.rs</span></code> adds two small tables, <code><span class="nobr">users</span></code> and <code><span class="nobr">groups</span></code>:</p>
+<ul>
+<li><strong>Collecting:</strong> each sink keeps an <code><span class="nobr">IdCollector</span></code>, a set of the user and group IDs of its rows. Entries in a directory usually share an owner, so the collector skips a pair equal to the last one with a single comparison. A checkpoint merges every sink's IDs, with those of earlier runs, into its header, so a resumed scan's tables cover the whole scan.</li>
+<li><strong>Looking up:</strong> once the scan finishes (complete or incomplete, not interrupted), each unique ID is looked up once. <code><span class="nobr">getent</span> <span class="nobr">passwd</span></code> and <code><span class="nobr">getent</span> <span class="nobr">group</span></code> take up to 1,000 IDs per call and print the ones that exist; through the host's name service switch they reach LDAP, sssd, and NIS, which the static binary can't load itself. Where there's no <code><span class="nobr">getent</span></code> (macOS), <code><span class="nobr">dscacheutil</span></code> answers one ID per call through Directory Services. Each command gets 60 seconds; one that times out or fails leaves names null with a warning.</li>
+<li><strong>Writing:</strong> the tables use the scan's format and part writers, one part each, before the checkpoint is removed, so a scan killed during a slow lookup can still be resumed. The manifest lists their parts and an <code><span class="nobr">ids</span></code> summary, <code><span class="nobr">verify</span></code> checks them, and <code><span class="nobr">convert</span></code> converts them.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="6-robustness">
+<h2 id="6-robustness">6. Robustness<a class="anchor" href="#6-robustness" aria-label="Link to this section">#</a></h2>
+<h3 id="61-errors-and-vanished-entries">6.1 Errors and vanished entries<a class="anchor" href="#61-errors-and-vanished-entries" aria-label="Link to this section">#</a></h3>
+<p>Per-entry failures go to the errors table, with the path, the failed operation (<code><span class="nobr">open</span></code>, <code><span class="nobr">readdir</span></code>, <code><span class="nobr">stat</span></code>, <code><span class="nobr">verify</span></code>, <code><span class="nobr">stall</span></code>, or <code><span class="nobr">internal</span></code>), the errno and its name, and a message. Directories that failed also carry the error in their own <code><span class="nobr">entries</span></code> row. A revisit (<code><span class="nobr">--detect-cycles</span></code>) isn't a failure: it appears only in the directory's own row, as <code><span class="nobr">revisit:</span> <span class="nobr">...</span></code> in <code><span class="nobr">error</span></code>, and in the manifest's <code><span class="nobr">revisits</span></code> count. Workers keep their counts locally and add them to the shared counters once per directory. The manifest summarizes errors by operation and errno.</p>
+<p>Deletions aren't failures. An entry deleted between being listed and being stat'ed, or a directory deleted before it's opened, counts as vanished. So does a directory deleted while it's being read, which Linux reports as <code><span class="nobr">ENOENT</span></code> from <code><span class="nobr">getdents64</span></code>: a directory can only be deleted once it's empty, so nothing that remained unread is missing, and its row is written with the entries that were read. <code><span class="nobr">tests/</span><wbr><span class="nobr">churn.rs</span></code> deletes, recreates, and renames files and directories throughout a scan and checks the output.</p>
+<h3 id="62-the-stall-watchdog">6.2 The stall watchdog<a class="anchor" href="#62-the-stall-watchdog" aria-label="Link to this section">#</a></h3>
+<p>A thread stuck in a system call to a hung NFS server can't be interrupted. The walker can't free that thread, but it can stop waiting for it.</p>
+<p>The calling thread of <code><span class="nobr">walk</span></code> is the watchdog. It wakes every <code><span class="nobr">WATCHDOG_TICK</span></code> (250 ms), or as soon as a worker exits. Each worker has a <code><span class="nobr">WorkerStatus</span></code> with two fields:</p>
+<ul>
+<li>a progress word: 0 while idle, otherwise the time of its last progress in milliseconds since the walk started;</li>
+<li>the directory or batch it is working on.</li>
+</ul>
+<p>Workers update the progress word after every stat and every batch of names, and before writing a directory's row. Each update is a compare-and-swap that fails if the watchdog has stored <code><span class="nobr">ABANDONED</span></code> (<code><span class="nobr">u64::MAX</span></code>). A worker that sees that knows to stop and write nothing more.</p>
+<p>Workers don't read the system clock for these updates. The watchdog refreshes a coarse clock on each tick, kept in its own cache line, and workers read it from memory. Reading the real clock per entry would cost a system call each time in static musl builds, about 2 µs in measurements. That halved the crawl rate.</p>
+<p>On each tick, the watchdog:</p>
+<ol>
+<li>
+<p>Lists workers with no progress for 60 s (<code><span class="nobr">STALL_REPORT</span></code>). Progress output shows them as stalled.</p>
+</li>
+<li>
+<p>With <code><span class="nobr">--stall-timeout</span></code>, abandons any worker with no progress for that long. It does this only if the progress word still holds the value it read, so a worker that just moved can't be abandoned. For an abandoned directory, the watchdog:</p>
+<ul>
+<li>writes a <code><span class="nobr">stall</span></code> error;</li>
+<li>writes the directory's row with that error;</li>
+<li>counts it as abandoned, so the walk can finish without it;</li>
+<li>lists it in the result.</li>
+</ul>
+<p>The other workers finish everything else. The stuck thread is detached, and if it ever returns, it writes nothing.</p>
+</li>
+</ol>
+<p>The abandoned worker's sink was never finished, so <code><span class="nobr">Output::finish</span></code> salvages it. It waits up to 5 s (<code><span class="nobr">SALVAGE_WAIT</span></code>) for the sink's lock, keeps the rows up to the last directory mark, drops the rows of the directory the worker was stuck in, and sends the rest to the writers. Rows the sink had already sent mid-directory, which only happens in directories large enough to trigger a mid-directory send (section 5.1), can't be recalled. The scan ends with status <code><span class="nobr">incomplete</span></code> and exit code 3 instead of hanging.</p>
+<p>If a batch of a huge directory hangs, the reading worker waits for it without making progress. Both workers are eventually abandoned, and the directory gets a <code><span class="nobr">stall</span></code> row.</p>
+<h3 id="63-bounded-memory">6.3 Bounded memory<a class="anchor" href="#63-bounded-memory" aria-label="Link to this section">#</a></h3>
+<p>Every queued directory holds memory: about the size of a <code><span class="nobr">DirTask</span></code> plus its path. A broad tree can queue millions. The walker tracks the total in <code><span class="nobr">queued_bytes</span></code>. When adding a directory would push it past the queue budget (1 GiB by default), the directory goes to a spill file instead (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory-core/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">spill.rs</span></code>):</p>
+<ul>
+<li>With checkpoints, the spill file is <code><span class="nobr">checkpoint/</span><wbr><span class="nobr">spill</span></code> in the scan directory, so a checkpoint can refer to it (section 6.5); the scan removes it when it finishes. Without checkpoints, it's created next to the output (or in the temporary directory when writing to stdout) and unlinked immediately, so it never outlives the process, even after a crash.</li>
+<li>Records are length-prefixed and read first in, first out.</li>
+<li>Workers read spilled directories back only when they find no other work: nothing in their own deque, no huge-directory batches, and nothing to steal.</li>
+<li>If the spill file can't be written, the directory stays in memory. If it can't be read back, the lost directories are reported as an <code><span class="nobr">internal</span></code> error and counted as done, so the walk still finishes.</li>
+</ul>
+<p>Scale tests with generated trees (section 9) show memory staying flat as the tree grows, and growing with threads. Much of it is memory the allocator keeps rather than data the scan holds: with two Parquet writers on macOS, the live heap peaked at 160 MB with one crawl thread and 270 MB with 64, while resident memory went from 400 MB to 1.8 GB. A sink's Arrow buffers are allocated on its crawl thread and freed on a writer thread, and mimalloc by default waits a second before returning freed memory to the system. Without a budget, that's left alone, because returning memory at once costs CPU time: on Linux, peak memory was about 750 MB with 16 crawl threads, 1.7 GB with 64, and 2.3 to 3.2 GB with 256 (two Parquet writers, each extra writer about 100 MB more), constant from early in the scan to the end.</p>
+<p><code><span class="nobr">--max-memory</span></code> budgets all of it (<code><span class="nobr">MemoryBudgets</span></code> in <code><span class="nobr">scan.rs</span></code>):</p>
+<ol>
+<li><strong>Allocator:</strong> <code><span class="nobr">alloc::release_memory_promptly</span></code> sets mimalloc's purge delay to 0 and turns off eager arena commits, so freed memory goes back to the system at once. On Linux, that cut peak memory by 40 to 50%, for 5 to 8% more CPU time on scans the CPU limits.</li>
+<li><strong>Fixed costs first:</strong> 64 MiB for the process, 32 MiB per Parquet writer, and the crawl threads. Their cost was measured with 16 to 256 threads and grows with the square root of the thread count, as each thread holds less when more share the work: about √threads × (40 MiB + 48 × each thread's row buffer share). Without <code><span class="nobr">--writers</span></code>, the writer count is cut to what fits in a quarter of the budget (40 MiB each).</li>
+<li><strong>The rest,</strong> of seven eighths of the budget (peaks varied by up to a tenth between identical scans): half for queued directories (at least 16 MiB), a quarter for row buffers, priced as in step 2, so each thread's share shrinks as threads are added (to no less than 64 KiB), and a quarter for in-progress row groups (8 to 128 MiB per writer).</li>
+<li><strong>A warning</strong> at the start when the fixed costs and the smallest buffers don't fit, with the budget they need.</li>
+</ol>
+<p>Measured on Linux, scans with budgets of 512 MiB, 1 GiB, and 2 GiB and 16, 64, and 256 crawl threads either stayed under the budget or warned with an estimate above what they used. Long scans stayed flat: 256 threads under a 2 GiB budget used 1.0 to 1.15 GB throughout 300 million entries. Shares below 256 KiB, which only tight budgets with many threads reach, cost up to 40% more CPU time; <code><span class="nobr">--detect-cycles</span></code> and <code><span class="nobr">rollup</span> <span class="nobr">--age-depth</span></code> memory isn't budgeted.</p>
+<h3 id="64-signals-and-file-descriptors">6.4 Signals and file descriptors<a class="anchor" href="#64-signals-and-file-descriptors" aria-label="Link to this section">#</a></h3>
+<p>The first SIGINT or SIGTERM sets the stop flag. Workers finish their current directories, the writers drain and commit, a final checkpoint is written, and the manifest is written with status <code><span class="nobr">interrupted</span></code>. A second signal exits immediately with code 130. At startup, <code><span class="nobr">scan</span></code> raises the open-file limit, since every crawl thread holds a directory open.</p>
+<h3 id="65-checkpoints-and-resume">6.5 Checkpoints and resume<a class="anchor" href="#65-checkpoints-and-resume" aria-label="Link to this section">#</a></h3>
+<p>A billion-entry scan can run for a day, so it has to survive being killed. The design rests on one property: when every worker is between directories, every row delivered to a sink belongs to a finished directory, and every directory not yet finished is in a queue. A checkpoint waits for that moment, makes the rows durable, and records the queue.</p>
+<p><strong>Taking a checkpoint.</strong> The walker's calling thread, which is also the watchdog, starts one every <code><span class="nobr">--checkpoint-interval</span></code> (10 minutes by default; <code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory-core/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">walker.rs</span></code>):</p>
+<ol>
+<li>It sets a pause flag. Each worker checks it before taking its next directory, moves its own deque to the global injector, adds its counts to the shared totals, and waits.</li>
+<li>Paused workers keep helping with huge-directory batches (section 2.4), since the worker reading a huge directory can't pause until its batches are done. While a paused worker runs a batch, it doesn't count as paused.</li>
+<li>Once every live worker is paused, the walker takes a <code><span class="nobr">WalkState</span></code>: every directory in the injector, the spill file's position (a <code><span class="nobr">SpillMark</span></code>: what's been read, what's been written, how many are waiting), the visited log's length for <code><span class="nobr">--detect-cycles</span></code>, the <code><span class="nobr">dir_id</span></code> counter, the totals, the error counts, and the directories given up on so far.</li>
+<li>It hands the state to a <code><span class="nobr">Checkpointer</span></code>, then releases the workers.</li>
+</ol>
+<p>The pause is short: each worker only has to finish one directory, and very large directories are shared among all the paused workers. If a busy worker makes no progress for <code><span class="nobr">checkpoint_patience</span></code> (30 seconds), as when it's stuck on a hung NFS server, the walker gives up on this checkpoint, tells the checkpointer, and tries again next interval. A worker abandoned by <code><span class="nobr">--stall-timeout</span></code> doesn't block checkpoints. Its directory already has its <code><span class="nobr">stall</span></code> row, and the state lists the worker so the output keeps only its sink's rows up to the last directory boundary.</p>
+<p><strong>Making rows durable.</strong> The scan's checkpointer (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">scan.rs</span></code>) calls <code><span class="nobr">Output::checkpoint</span></code> (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">output/</span><wbr><span class="nobr">mod.rs</span></code>):</p>
+<ol>
+<li>Every sink sends its buffered rows. With workers paused, they're whole directories. The sinks of abandoned workers are salvaged (section 6.2).</li>
+<li>It waits until the writers have written every chunk sent. An in-flight counter goes up when a sink sends a chunk and down when a writer has written it.</li>
+<li>It sends each writer a commit request on that writer's own control channel. The writer commits its open parts (fsync and rename) and replies with every part it has committed.</li>
+<li>It fsyncs the table directories.</li>
+</ol>
+<p>The checkpointer then writes <code><span class="nobr">checkpoint/</span><wbr><span class="nobr">state</span></code> (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">checkpoint.rs</span></code>). The file holds a JSON header with the scan's settings, every committed part, and the totals by kind, followed by the walker state, zstd-compressed. It's written as <code><span class="nobr">state.tmp</span></code>, fsynced, and renamed, so it's always either the previous checkpoint or the new one. The first checkpoint is taken before any directory is read, so even a scan killed in its first minutes can be resumed. Each checkpoint also rewrites the manifest's part list.</p>
+<p><strong>Resuming.</strong> <code><span class="nobr">fs-inventory</span> <span class="nobr">resume</span></code> (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">resume.rs</span></code>):</p>
+<ol>
+<li>Takes the scan's lock (<code><span class="nobr">checkpoint/</span><wbr><span class="nobr">lock</span></code>, an exclusive <code><span class="nobr">flock</span></code> held for the whole run), so it can't run while the original process is still alive.</li>
+<li>Reads the checkpoint and checks that it belongs to the manifest's scan.</li>
+<li>Deletes every part file the checkpoint doesn't list, including <code><span class="nobr">.tmp</span></code> files, and any rollup. Those parts hold rows of directories that finished after the checkpoint. Those directories are either in the checkpoint's queue or below a directory that is, so they're read again.</li>
+<li>Runs the same code as <code><span class="nobr">scan</span></code>, starting from the state instead of the roots. The <code><span class="nobr">dir_id</span></code> counter, totals, and error counts continue from the checkpoint. The spill file is truncated to the mark and read from its position, and the visited log is truncated to its recorded length. New parts are named <code><span class="nobr">part-rN-wNN-...</span></code> for run N, so they never collide with an earlier run's.</li>
+</ol>
+<p>Every row ends up in the scan exactly once. Rows of directories finished before the checkpoint are in listed parts. Every other directory is read again, and whatever it wrote before the crash was deleted. After a graceful stop, the walk returns its remaining state once every worker has finished its directory, and the scan writes a final checkpoint after the output commits its parts, so a resume redoes nothing.</p>
+<p>The scan's settings live in the checkpoint, not on the command line, so a resume writes exactly what the original would have: the roots as exact bytes, the format, compression, columns, fields, excludes (including the contents of <code><span class="nobr">--exclude-from</span></code> files), and the traversal policy. Only settings that don't change the output can be changed on resume: threads, writers, memory, stall timeout, checkpoint interval, and progress. When the scan finishes, the checkpoint directory is removed.</p>
+<p><strong>Limits.</strong></p>
+<ul>
+<li>Directories given up on with <code><span class="nobr">--stall-timeout</span></code> stay given up on; resume doesn't retry them.</li>
+<li>Device numbers can change when a file system is remounted, so a resume should run on the same host without remounting in between.</li>
+<li>A checkpoint records every directory queued in memory, so on very broad trees each checkpoint can be large. The spill file and the visited log only grow, until the scan finishes.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="7-post-processing-commands">
+<h2 id="7-post-processing-commands">7. Post-processing commands<a class="anchor" href="#7-post-processing-commands" aria-label="Link to this section">#</a></h2>
+<h3 id="71-rollup">7.1 <code><span class="nobr">rollup</span></code><a class="anchor" href="#71-rollup" aria-label="Link to this section">#</a></h3>
+<p>Each directory row carries totals for its immediate children. <code><span class="nobr">rollup</span></code> (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">rollup.rs</span></code>) computes totals over whole subtrees, plus file-age histograms, from a finished Parquet scan. It reads only the columns it needs, in three passes:</p>
+<ol>
+<li><strong>Directories:</strong> <code><span class="nobr">kind</span></code>, <code><span class="nobr">dir_id</span></code>, <code><span class="nobr">parent_id</span></code>, <code><span class="nobr">depth</span></code>, <code><span class="nobr">dir_entries</span></code>, <code><span class="nobr">error</span></code>.
+<ul>
+<li>Directories go into an array indexed by <code><span class="nobr">dir_id</span></code>.</li>
+<li>A directory counts as incomplete when it has an error (other than <code><span class="nobr">revisit</span></code>) or no <code><span class="nobr">dir_entries</span></code> (not read).</li>
+<li>The directories are then sorted by depth, and each one down to <code><span class="nobr">--age-depth</span></code> gets a histogram slot. Deeper directories share their ancestor's slot.</li>
+</ul>
+</li>
+<li><strong>Every row:</strong> <code><span class="nobr">parent_id</span></code>, <code><span class="nobr">kind</span></code>, <code><span class="nobr">size</span></code>, <code><span class="nobr">alloc_bytes</span></code>, and the three timestamps.
+<ul>
+<li>Each row adds to its parent's totals and to the histogram of its parent's slot.</li>
+<li>The histogram is by age bucket, for <code><span class="nobr">mtime</span></code>, <code><span class="nobr">ctime</span></code>, and <code><span class="nobr">atime</span></code>. Ages are measured from the scan's start time, and bucket 0 is for times in the future.</li>
+<li>Rows whose parent is unknown are counted as unattached.</li>
+<li>Then, deepest first, each directory's totals and histograms are added into its parent.</li>
+</ul>
+</li>
+<li><strong>Paths:</strong> <code><span class="nobr">dir_id</span></code>, <code><span class="nobr">parent_id</span></code>, <code><span class="nobr">depth</span></code>, <code><span class="nobr">path</span></code>, <code><span class="nobr">path_raw</span></code>. The <code><span class="nobr">rollup</span></code> rows are written in this pass, then <code><span class="nobr">rollup_ages</span></code> rows for each slot.</li>
+</ol>
+<p>Memory grows with the number of directories, not files: about 100 bytes per directory. The tables are written with the same part writer and commit protocol into <code><span class="nobr">.rollup-staging/</span></code>. They replace any previous <code><span class="nobr">rollup/</span></code> and <code><span class="nobr">rollup_ages/</span></code> only once both are complete. A <code><span class="nobr">rollup</span></code> section is then added to the manifest, written atomically. It records the bucket labels, reference time, depth, directory count, incomplete directories, unattached rows, and parts. <code><span class="nobr">rollup</span></code> refuses CSV and JSON Lines scans, scans made with <code><span class="nobr">--columns</span></code> that leave out a column it needs, and schema versions it can't read.</p>
+<h3 id="72-verify">7.2 <code><span class="nobr">verify</span></code><a class="anchor" href="#72-verify" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">verify</span></code> (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">verify.rs</span></code>) checks a scan before anything ingests it:</p>
+<ul>
+<li>The manifest can be read and has a schema version this build reads: the current one or an older one it understands (<code><span class="nobr">readable_schema</span></code> in <code><span class="nobr">fs-inventory-core</span></code>).</li>
+<li>The status is <code><span class="nobr">complete</span></code>.</li>
+<li>Every listed part exists and has the size the manifest records.</li>
+<li>Every part has the row count the manifest records. For Parquet that comes from the footer. For text it comes from counting lines, after decompressing if needed, except CSV written with <code><span class="nobr">--csv-raw-controls</span></code>, whose records can span lines.</li>
+<li>Every Parquet part's footer has this scan's ID, so parts from different scans can't be mixed.</li>
+<li>No unlisted files sit in a table directory, such as leftover <code><span class="nobr">.tmp</span></code> files.</li>
+<li>The entry and error row counts across parts match the manifest totals.</li>
+</ul>
+<p>The rollup tables are checked the same way when present. <code><span class="nobr">verify</span></code> exits 0 when everything checks out, and 1 with a list of problems otherwise.</p>
+<h3 id="73-schema-and-the-duckdb-macros">7.3 <code><span class="nobr">schema</span></code> and the DuckDB macros<a class="anchor" href="#73-schema-and-the-duckdb-macros" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">fs-inventory</span> <span class="nobr">schema</span></code> prints the schema as DuckDB SQL, JSON, or Markdown from the same column definitions the writers use. The schema version changes when columns are added or change. Version 3 added <code><span class="nobr">symlink_target</span></code> and <code><span class="nobr">symlink_target_raw</span></code> at the end of the entries table, so the CSV macro reads version 2 scans too, filling the missing trailing columns with null (<code><span class="nobr">null_padding</span></code>). <code><span class="nobr">verify</span></code>, <code><span class="nobr">rollup</span></code>, and <code><span class="nobr">convert</span></code> read versions 2 and 3; <code><span class="nobr">resume</span></code> needs the version it writes, so a resumed scan's parts all match. <code><span class="nobr">docs/</span><wbr><span class="nobr">schema.md</span></code> is that Markdown. Unit tests in <code><span class="nobr">output/</span><wbr><span class="nobr">schema.rs</span></code> fail if <code><span class="nobr">docs/</span><wbr><span class="nobr">schema.md</span></code> is out of date, or if the column lists in the CSV and JSON Lines macros in <code><span class="nobr">sql/</span><wbr><span class="nobr">fs_inventory.sql</span></code> differ from the schema. Another test checks that only <code><span class="nobr">dev</span></code>, <code><span class="nobr">ino</span></code>, and <code><span class="nobr">rdev</span></code> are unsigned.</p>
+<p>Comparing two scans is a macro too, not a subcommand. <code><span class="nobr">fs_diff</span></code> joins the entries of two Parquet scans on their exact path bytes, <code><span class="nobr">coalesce(</span><wbr><span class="nobr">path_raw,</span> <span class="nobr">encode(</span><wbr><span class="nobr">path))</span></code>, with a full outer join, and lists the columns that differ for each entry in both; DuckDB runs the join in parallel and spills to disk when it doesn't fit in memory. It adds the symlink target columns to a version 2 scan, so scans of either version compare. <code><span class="nobr">tests/</span><wbr><span class="nobr">diff.rs</span></code> scans a tree, changes it, scans it again, and checks that the diff holds exactly those changes; CI installs DuckDB on Linux so the macro tests run there.</p>
+<h3 id="74-probe">7.4 <code><span class="nobr">probe</span></code><a class="anchor" href="#74-probe" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">probe</span></code> (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">probe.rs</span></code>) runs the real walker with a sink that discards rows, once per thread count. A timer thread sets the stop flag after <code><span class="nobr">--duration</span></code>. It reports entries per second for each count and suggests the smallest thread count within 90% of the best rate. On Linux, <code><span class="nobr">--drop-caches</span></code> (root only) syncs and drops the page, dentry, and inode caches before each run, so later runs don't read metadata cached by earlier ones.</p>
+<h3 id="75-convert">7.5 <code><span class="nobr">convert</span></code><a class="anchor" href="#75-convert" aria-label="Link to this section">#</a></h3>
+<p><code><span class="nobr">convert</span></code> (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">convert.rs</span></code>) re-exports a Parquet scan as CSV or JSON Lines. Rather than formatting Arrow values itself, it turns each Parquet row back into the walker's <code><span class="nobr">Entry</span></code> and hands it to the same <code><span class="nobr">Encoder</span></code> a text scan uses, so the output equals what that scan would have written. The integration tests check this byte for byte, for every encoding option.</p>
+<ul>
+<li><strong>Exact bytes:</strong> a row's path bytes are <code><span class="nobr">path_raw</span></code> when set, else the <code><span class="nobr">path</span></code> text (which equals the bytes then). The parent path and name are split from those bytes with the walker's own functions, and symlink targets come from <code><span class="nobr">symlink_target_raw</span></code> the same way.</li>
+<li><strong>Settings:</strong> fields, column selection, raw-path and control-character rules, time unit, and time format come from the manifest's <code><span class="nobr">options</span></code>. A <code><span class="nobr">time_flags</span></code> bit set in the Parquet scan (a time clamped to the nanosecond range) is kept.</li>
+<li><strong>Missing columns:</strong> scans made with <code><span class="nobr">--columns</span></code> lack some columns; their values are left empty, and an entry's type comes from <code><span class="nobr">kind</span></code> when <code><span class="nobr">mode</span></code> is missing. <code><span class="nobr">path</span></code> is required.</li>
+<li><strong>Errors:</strong> each <code><span class="nobr">error</span></code> value is <code><span class="nobr">op:</span> <span class="nobr">detail</span></code>, which an <code><span class="nobr">ErrorInfo</span></code> without an errno renders back exactly.</li>
+<li><strong>Parallelism:</strong> up to 8 threads convert part files, each writing its own output parts through <code><span class="nobr">PartWriter</span></code>; streaming to stdout converts in order on one thread.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="8-performance-notes">
+<h2 id="8-performance-notes">8. Performance notes<a class="anchor" href="#8-performance-notes" aria-label="Link to this section">#</a></h2>
+<ul>
+<li><strong>Thread count:</strong> on network file systems, each stat waits on a round trip, so throughput is roughly concurrency divided by latency (Little's law). With 0.5 ms metadata calls, 64 stats in flight can sustain about 128,000 per second until the server saturates. Network file systems want many more threads (64–256) than local disks. <code><span class="nobr">probe</span></code> measures this on the actual storage.</li>
+<li><strong>Allocator:</strong> the binary uses mimalloc (<code><span class="nobr">crates/</span><wbr><span class="nobr">fs-inventory/</span><wbr><span class="nobr">src/</span><wbr><span class="nobr">alloc.rs</span></code>). Crawl threads allocate row buffers constantly, and musl's allocator serialized them on a lock, so the static Linux build got slower as threads were added. mimalloc's default of returning freed memory a second late is kept for speed, except under <code><span class="nobr">--max-memory</span></code> (section 6.3).</li>
+<li><strong>System calls:</strong> on Linux, rustix makes system calls directly, so the musl and glibc builds stat files the same way. The remaining per-entry libc dependency, reading the clock, was removed (section 6.2).</li>
+<li><strong>Parquet size:</strong> about 25 bytes per entry with the default zstd level 3, measured on 1.24 million real entries with 126-byte average paths. A billion-entry scan is about 25 GB. Uncompressed CSV of the same data was 446 bytes per entry.</li>
+<li><strong>Writer count:</strong> writers do the CPU-heavy encoding. They start only when output backs up, so they cost nothing on scans the crawl limits, and <code><span class="nobr">--writers</span></code> caps them.</li>
+<li><strong>Directory order:</strong> each thread walks depth-first from its own deque while thieves take the shallowest directories. Queues stay short, and large subtrees spread across threads early.</li>
+</ul>
+</section>
+<section class="doc-section" data-section="9-testing">
+<h2 id="9-testing">9. Testing<a class="anchor" href="#9-testing" aria-label="Link to this section">#</a></h2>
+<p>Tests are in each crate's <code><span class="nobr">tests/</span></code> directory and in unit tests next to the code.</p>
+<ul>
+<li><strong>Oracle comparison:</strong> walker tests and scan tests build trees and compare every path and its metadata against a walk made with Rust's standard library. They run at several thread counts, for JSON Lines and Parquet output, and also check that every row's <code><span class="nobr">parent_id</span></code> links to its parent's <code><span class="nobr">dir_id</span></code> and that directory totals are correct.</li>
+<li><strong>Fault injection:</strong> test backends wrap the native one.
+<ul>
+<li><code><span class="nobr">FaultyBackend</span></code> injects <code><span class="nobr">EACCES</span></code>, <code><span class="nobr">EIO</span></code>, <code><span class="nobr">ESTALE</span></code>, vanishing entries, and a panic on chosen names. The tests assert that the crawl never stops and the errors table is right.</li>
+<li><code><span class="nobr">TracingBackend</span></code> records which thread stats each name, to show huge directories are shared.</li>
+<li><code><span class="nobr">HangingBackend</span></code> blocks on a chosen directory, to show the watchdog abandons it and the scan finishes.</li>
+<li>Other tests cover spilling with a tiny queue budget and <code><span class="nobr">--detect-cycles</span></code>.</li>
+</ul>
+</li>
+<li><strong>Output:</strong>
+<ul>
+<li>Parts roll without splitting rows.</li>
+<li>Output inside the scanned tree is skipped, and the output directory must be empty.</li>
+<li><code><span class="nobr">--columns</span></code> and skipped <code><span class="nobr">--fields</span></code> behave as documented.</li>
+<li><code><span class="nobr">verify</span></code> catches damaged scans.</li>
+<li><code><span class="nobr">rollup</span></code> totals match the tree.</li>
+<li>An abandoned sink keeps its completed directories.</li>
+</ul>
+</li>
+<li><strong>Names:</strong>
+<ul>
+<li>Property tests check that <code><span class="nobr">to_text</span></code> borrows exactly when the text equals the bytes.</li>
+<li>Linux-only tests create names that aren't valid UTF-8 (Latin-1, Shift-JIS, stray bytes), which macOS's APFS refuses.</li>
+<li>Another Linux-only test checks that the <code><span class="nobr">fstatat</span></code> fallback reads the same metadata as <code><span class="nobr">statx</span></code>.</li>
+</ul>
+</li>
+<li><strong>Checkpoints and resume:</strong>
+<ul>
+<li>Walker tests record the rows committed at every checkpoint of a slowed-down walk, then resume a new walk from each one. Committed rows plus resumed rows must be the whole tree exactly once, with consistent <code><span class="nobr">dir_id</span></code> links and directory totals. Variants cover the spill file, <code><span class="nobr">--detect-cycles</span></code>, a 12,000-entry directory (no checkpoint holds part of it), a stalled worker (the checkpoint is skipped), and an abandoned one (its <code><span class="nobr">stall</span></code> row is kept, and the directory isn't reread).</li>
+<li>CLI tests kill scans with <code><span class="nobr">kill</span> <span class="nobr">-9</span></code> at several points, during the scan and during resumes, and resume them. The result must equal an uninterrupted scan row for row, and <code><span class="nobr">verify</span></code> must pass. Other tests interrupt with SIGINT and check that the resume starts with every row already written, delete parts written after the checkpoint, cover JSON Lines output, and refuse to resume a scan another process is still writing.</li>
+<li>A hook in debug builds, <code><span class="nobr">FS_INVENTORY_DEBUG_STAT_DELAY_US</span></code>, slows every stat so these tests can stop scans partway through a small tree.</li>
+</ul>
+</li>
+<li><strong>Generated trees</strong> (section 3.4):
+<ul>
+<li>Unit tests check that trees have exactly the requested entries, are the same every time for the same options, vary like real ones, and resolve every name they list and no other.</li>
+<li><code><span class="nobr">tests/</span><wbr><span class="nobr">synthetic.rs</span></code> scans generated trees and checks their inode numbers, so every entry must appear exactly once, including after <code><span class="nobr">kill</span> <span class="nobr">-9</span></code> and <code><span class="nobr">resume</span></code>.</li>
+<li>Another test runs 120 scans of random shapes, sizes, and thread counts (1 to 256), a third of them interrupted at a random moment. Every one must exit promptly with the right code.</li>
+</ul>
+</li>
+<li><strong>Scale:</strong> <code><span class="nobr">bench/</span><wbr><span class="nobr">scale.py</span></code> scans generated trees of any size, records memory and throughput every second, and can kill and resume the scan. A billion-entry scan, and a 200-million-entry scan killed halfway and resumed with every entry exactly once, are recorded in <code><span class="nobr">PLAN.md</span></code> (section 9.2).</li>
+<li><strong>DuckDB:</strong> a test loads CSV output into DuckDB when the <code><span class="nobr">duckdb</span></code> command is available.</li>
+<li><strong>Schema sync:</strong> tests keep <code><span class="nobr">docs/</span><wbr><span class="nobr">schema.md</span></code> and the SQL macros in step with the schema (section 7.3).</li>
+</ul>
+<p>CI (<code><span class="nobr">.github/</span><wbr><span class="nobr">workflows/</span><wbr><span class="nobr">ci.yml</span></code>) runs formatting, Clippy, and docs on Linux and macOS. It runs tests on Linux x86_64, Linux aarch64, and macOS, and checks the minimum supported Rust version (from <code><span class="nobr">Cargo.toml</span></code>). It builds static musl binaries for x86_64 and aarch64 and checks that they are static and run, and it runs cargo-deny for licenses and advisories.</p>
+</section>
+    </article>
+
+    <footer class="footer">
+      <p>fs-inventory 1.0.0 · Apache License 2.0 · Copyright 2026 Robert McDermott</p>
+      <p><a href="https://github.com/robert-mcdermott/fs-inventory/blob/v1.0.0/docs/architecture.md" target="_blank" rel="noopener">View this page's source</a> · <a href="https://github.com/robert-mcdermott/fs-inventory/blob/main/docs/architecture.md" target="_blank" rel="noopener">Edit on GitHub</a> · <a href="#top">Back to top ↑</a></p>
+    </footer>
+  </main>
+
+  <aside class="onpage" aria-label="In this section">
+    <div class="onpage-inner">
+      <p class="nav-label">In this section</p>
+      <ul id="onpageList"></ul>
+    </div>
+  </aside>
+</div>
+
+<div class="search-overlay" id="searchOverlay" hidden>
+  <div class="search-dialog" role="dialog" aria-modal="true" aria-labelledby="searchLabel">
+    <label class="search-field" for="searchInput">
+      <span class="sr-only" id="searchLabel">Search the documentation</span>
+      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" fill="none"/><path d="M20 20l-3.5-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input id="searchInput" type="search" autocomplete="off" spellcheck="false" placeholder="Try “resume”, “--stall-timeout”, “heat map”, “fs_entries”…">
+      <button class="kbd kbd-btn" id="searchClose" type="button">Esc</button>
+    </label>
+    <ul class="search-results" id="searchResults" role="listbox" aria-label="Search results"></ul>
+    <p class="search-hint">↑ ↓ to move · Enter to open · Esc to close</p>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="assets/js/search-index.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.min.js"></script>
+<script src="assets/js/site.js"></script>
+</body>
+</html>
