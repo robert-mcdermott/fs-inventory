@@ -127,8 +127,8 @@ Deep trees regularly exceed the 4096-byte `PATH_MAX`. Paths are kept as growable
 
 The walker talks to a `FsBackend` trait. This also enables deterministic fault-injection tests (§9).
 
-- **Linux (primary):** `statx`, `getdents64`, `O_NOATIME`, `AT_NO_AUTOMOUNT`, and statx attributes (compressed, immutable, append-only, encrypted, mount root). Built with `rustix` raw syscalls, so the static musl binary has no glibc version dependency.
-- **macOS:** `fstatat` plus `st_birthtime` and `st_flags` in M1. M5 adds a `getattrlistbulk` backend (one call returns names and attributes for many entries), adopted only if benchmarks on APFS, SMB, and NFS justify it.
+- **Linux (primary):** `statx`, `getdents64`, `O_NOATIME`, and `AT_NO_AUTOMOUNT`. Built with `rustix` raw syscalls, so the static musl binary has no glibc version dependency.
+- **macOS:** `fstatat` plus `st_birthtime` in M1. M5 adds a `getattrlistbulk` backend (one call returns names and attributes for many entries), adopted only if benchmarks on APFS, SMB, and NFS justify it.
 - **FreeBSD and other Unix:** generic `fstatat` backend, best effort.
 
 ---
@@ -157,7 +157,7 @@ This is the core robustness feature.
   | `WINDOWS_RESERVED` | Contains `<>:"\|?*` or `\`, or is named `CON`, `PRN`, `AUX`, `NUL`, `COM1`, … |
   | `LONG_NAME` | Name longer than 255 bytes |
   | `LONG_PATH` | Path longer than 4096 bytes |
-- **Optional `--guess-encoding` (M5):** for names that aren't valid UTF-8, feed *all* such names in the same directory to `chardetng` (Firefox's detector). Siblings usually share an encoding, and short names alone are poor signals. Output columns are `name_charset_guess` (for example `Shift_JIS`, `windows-1252`, `GBK`) and `name_decoded` (a best-effort UTF-8 rendering). This helps international teams find and fix legacy names.
+- **No encoding guesses:** an option to guess the legacy character set of names that aren't valid UTF-8 (`--guess-encoding`, with `chardetng`) was dropped before 1.0 (decision 11). Detectors are unreliable on short names, and the exact bytes in `path_raw` let anyone decode names later with the right character set.
 - **Extension:** computed from the basename bytes. It is the text after the last `.`. A leading-dot name (`.bashrc`) or a trailing dot means no extension. ASCII is lowercased, and the result is capped at 32 bytes; anything longer is treated as "no extension".
 - **CSV escaping:** RFC 4180 quoting. Control characters are C-escaped (`\n`, `\t`, `\x1b`) by default, so every record is exactly one physical line. `--csv-raw-controls` keeps them as quoted literals instead.
 
@@ -305,9 +305,8 @@ fs-inventory scan [OPTIONS] <ROOT>...
       --columns <LIST>            Output column subset
       --statx-dont-sync           Accept cached attributes on network file systems
       --symlink-targets
-      --resolve-ids               Add user and group name columns
+      --resolve-ids               Write users and groups tables (ID to name)
       --raw-paths auto|always
-      --guess-encoding
       --time-unit us|ns    --time-format iso|epoch   (CSV/JSONL)
       --compression zstd[:N]|snappy|lz4|gzip|none
       --part-max-bytes <SIZE>    --row-group-rows <N>
@@ -430,7 +429,7 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 | **M2: Parquet** ✅ | Arrow builders, Parquet writer pool, key-value metadata, `--columns`, `sql/` macros and example queries, `verify`, `schema` (also generates `docs/schema.md`), mimalloc | Output size per entry measured on 1.24M real entries (§5.2), and DuckDB 2.0 loads Parquet, CSV, and JSON Lines scans. A 100M-entry scan of a generated tree ran on the laptop (§9.2); scans of real storage at that scale happen on the Linux server. |
 | **M3: Scale** (features done) | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, `--fields`, `--detect-cycles`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat: met with a generated billion-entry tree on the laptop (§9.2). Default tuning from real storage happens on the Linux server. |
 | **M4: Resume** ✅ | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run: tested by resuming from every checkpoint of a walk, and by `kill -9` at several points of real scans |
-| **M5: Platform and extras** | `diff` between two scans (§11), macOS `getattrlistbulk` backend (if benchmarks justify it), `--guess-encoding`, symlink targets, statx attributes, `--resolve-ids`, `convert`, release packaging (static binaries and `install.sh` ✅; .deb/.rpm, Homebrew), documentation site ✅ | Release 1.0 |
+| **M5: Platform and extras** | `diff` between two scans (§11), `convert`, `--symlink-targets`, `--resolve-ids` (decision 10), macOS `getattrlistbulk` backend (if benchmarks justify it), static release binaries and `install.sh` ✅, documentation site ✅, scale tests and the `--max-memory` budget ✅ (0.5.0), then hardening and a final review of the CLI and schema | Release 1.0 |
 
 ### Future ideas (post-1.0)
 
@@ -438,6 +437,8 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 - **Native-scanner ingest adapters:** convert GPFS policy-engine `LIST` output and Lustre changelog or `lfs find` output into the same schema. These are typically much faster than a POSIX crawl on those systems.
 - **Optional content hashing** for duplicate detection.
 - **Windows backend** using `NtQueryDirectoryFile`, which returns names and metadata in bulk.
+- **File attributes** (immutable, append-only, compressed, encrypted) from `statx` and macOS file flags. Parked (decision 12): `alloc_bytes` already shows compression and sparse files, and NFS reports few attributes.
+- **Packages:** `.deb` and `.rpm`, and a Homebrew tap. Parked (decision 12): the static binaries and `install.sh` cover installation.
 
 ---
 
@@ -465,7 +466,11 @@ fs-inventory will feed a separate file inventory and analytics web application: 
 | 5 | Timestamp precision | Microseconds by default, `--time-unit ns` optional |
 | 6 | v1 platforms | Linux (primary) and macOS. Windows later |
 | 7 | Binary name | `fs-inventory` (optionally also install a short `fsinv` alias) |
-| 8 | Versioning | **Decided:** the tool version follows Semantic Versioning. Each milestone is released as `0.N.0` (M3 is 0.3.0), fixes in between as patch releases, and M5 as 1.0.0. The version changes only in a release commit, which is then tagged `vX.Y.Z`. Pushing the tag runs `.github/workflows/release.yml`, which builds the binaries and drafts the release with that version's changelog section; publishing the draft makes it the latest release, which `install.sh` installs. The schema version is separate (§11) and changes only when the output format breaks readers. |
+| 8 | Versioning | **Decided:** the tool version follows Semantic Versioning. Each milestone is released as `0.N.0` (M3 is 0.3.0), and so are feature releases between milestones (0.5.0 shipped scale tests and the `--max-memory` budget). Fixes in between are patch releases, and M5 is 1.0.0. The version changes only in a release commit, which is then tagged `vX.Y.Z`. Pushing the tag runs `.github/workflows/release.yml`, which builds the binaries and drafts the release with that version's changelog section; publishing the draft makes it the latest release, which `install.sh` installs. The schema version is separate (§11) and changes only when the output format breaks readers. |
+| 9 | Default stall timeout | **Decided:** none. A stalled directory is reported after 60 seconds, and the scan waits for it; `--stall-timeout DURATION` opts in to giving up on it. An unattended scan can hang on a dead server, but never skips part of a tree unless asked to. |
+| 10 | User and group names | **Decided:** opt-in `--resolve-ids`, off by default. Each crawl thread collects the IDs it sees, and when the scan ends each unique ID is looked up once with `getent`, which reaches LDAP and sssd even from the static binary. The names go in `users` and `groups` tables next to the entries; entry rows keep numeric IDs only. |
+| 11 | Guessing legacy encodings | **Decided:** dropped (`--guess-encoding`). Guesses are unreliable on short names, and the exact bytes are kept. |
+| 12 | Parked until after 1.0 | File attributes, `.deb` and `.rpm` packages, and a Homebrew tap (§10, future ideas). |
 
 ---
 

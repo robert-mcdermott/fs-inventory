@@ -1,6 +1,6 @@
 # fs-inventory user guide
 
-This guide covers fs-inventory 0.4.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
+This guide covers fs-inventory 0.5.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
 
 Related documents:
 
@@ -39,13 +39,13 @@ Pass options to the installer after `sh -s --`:
 
 | Option | Environment variable | Effect |
 |---|---|---|
-| `--version VERSION` | `FS_INVENTORY_VERSION` | Install this release, such as `v0.4.0`, instead of the latest |
+| `--version VERSION` | `FS_INVENTORY_VERSION` | Install this release, such as `v0.5.0`, instead of the latest |
 | `--install-dir DIRECTORY` | `FS_INVENTORY_INSTALL_DIR` | Install here instead of `~/.local/bin` |
 
 For example, to install a pinned version for every user of a server:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v0.4.0 --install-dir /usr/local/bin
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v0.5.0 --install-dir /usr/local/bin
 ```
 
 To install without the script, download the binary and `SHA256SUMS` from the [releases page](https://github.com/robert-mcdermott/fs-inventory/releases), check the checksum, and make the binary executable:
@@ -91,7 +91,7 @@ fs-inventory --version
 ```
 
 ```
-fs-inventory 0.4.0
+fs-inventory 0.5.0
 ```
 
 On kernels older than 4.11 (such as RHEL 7), fs-inventory reads metadata with `fstatat` instead of `statx`, and `btime` (creation time) is always null.
@@ -775,7 +775,7 @@ Entries deleted between being listed and being read are counted as *vanished* in
   "started_at": "2026-10-26T00:11:32.698582Z",
   "status": "complete",
   "tool": "fs-inventory",
-  "tool_version": "0.4.0",
+  "tool_version": "0.5.0",
   "totals": {
     "by_kind": { "dir": 36, "file": 248, "symlink": 1 },
     "bytes": 47262948364,
@@ -1380,19 +1380,18 @@ Each checkpoint pauses the crawl while every thread finishes the directory it's 
 
 **The scan stops making progress**: look for `stalled` in the progress output. A hung NFS server blocks its thread until the server returns. Use `--stall-timeout` so the scan gives up on that directory and finishes ([4.12](#412-interrupted-crashed-and-stalled-scans)).
 
-**`--resolve-ids is not implemented yet`** (or `--symlink-targets`, `--guess-encoding`): these options are planned; see below.
+**`--resolve-ids is not implemented yet`** (or `--symlink-targets`): these options are planned; see below.
 
 ---
 
 ## 10. Not yet available
 
-These appear in `--help` but aren't implemented in 0.4.0. Using them prints `not implemented yet` and exits with code 4 (commands) or 2 (options).
+These appear in `--help` but aren't implemented in 0.5.0. Using them prints `not implemented yet` and exits with code 4 (commands) or 2 (options).
 
 | Feature | What it will do | Planned |
 |---|---|---|
 | `fs-inventory convert` | Re-export a Parquet scan as CSV or JSON Lines | Milestone M5 |
 | `--symlink-targets` | Record where each symlink points | Milestone M5 |
-| `--resolve-ids` | Add user and group name columns | Milestone M5 |
-| `--guess-encoding` | Guess the legacy character set of names that aren't valid UTF-8 | Milestone M5 |
+| `--resolve-ids` | Write `users` and `groups` tables that map user and group IDs to names, looked up once per ID when the scan ends (off by default) | Milestone M5 |
 
 Until `--resolve-ids` arrives, join user names in DuckDB ([7.5](#75-recipes)). Until `convert` arrives, DuckDB can export any scan: `COPY (SELECT * FROM fs_entries('...')) TO 'entries.csv' (HEADER)`.
