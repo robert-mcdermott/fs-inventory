@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/fs-inventory-core", "crates/fs-inventory"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
@@ -12,7 +12,7 @@ keywords = ["filesystem", "inventory", "parquet", "metadata", "hpc"]
 categories = ["command-line-utilities", "filesystem"]
 
 [workspace.dependencies]
-fs-inventory-core = { path = "crates/fs-inventory-core", version = "0.5.0" }
+fs-inventory-core = { path = "crates/fs-inventory-core", version = "0.6.0" }
 arrow-array = "60"
 arrow-schema = "60"
 base64 = "0.23"

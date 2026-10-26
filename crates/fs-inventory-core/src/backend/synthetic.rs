@@ -43,6 +43,7 @@ const NAME: u64 = 0x4e41_4d45;
 const KIND: u64 = 0x4b49_4e44;
 const SIZE: u64 = 0x5349_5a45;
 const TIME: u64 = 0x5449_4d45;
+const LINK: u64 = 0x4c49_4e4b;
 
 /// The root's inode number. Every entry's is its position in a depth-first
 /// listing after that, so they're unique and, as on most file systems, close
@@ -429,7 +430,7 @@ impl SyntheticBackend {
         };
         let s = mix(key ^ SIZE);
         let (size, blocks) = match mode & 0o170_000 {
-            0o120_000 => (20 + s % 60, 0),
+            0o120_000 => (symlink_target(key).len() as u64, 0),
             0o100_000 if s.is_multiple_of(64) => (0, 0),
             0o100_000 => {
                 // Log-uniform from 1 byte to 2 GiB.
@@ -508,17 +509,7 @@ impl Backend for SyntheticBackend {
     }
 
     fn stat_at(&self, dir: &SyntheticDir, name: &[u8]) -> io::Result<Stat> {
-        let index = parse_index(name).ok_or_else(|| io::Error::from(Errno::NOENT))?;
-        if index >= dir.shape.children() {
-            return Err(Errno::NOENT.into());
-        }
-        let is_dir = index < dir.shape.subdirs;
-        let key = child_key(dir.node.key, index);
-        let mut expected = [0u8; 128];
-        let len = entry_name_into(&mut expected, key, index, is_dir);
-        if expected[..len] != *name {
-            return Err(Errno::NOENT.into());
-        }
+        let (index, key, is_dir) = child(dir, name)?;
         if is_dir {
             let (number, budget) = dir.subdirs[index as usize];
             let child = self.child_dir(&dir.node, index, number, budget);
@@ -528,6 +519,50 @@ impl Backend for SyntheticBackend {
             Ok(self.file_stat(&dir.node, key, number))
         }
     }
+
+    fn read_link_at(&self, dir: &SyntheticDir, name: &[u8]) -> io::Result<Vec<u8>> {
+        let (index, key, is_dir) = child(dir, name)?;
+        let number = dir.first_file + index.saturating_sub(dir.shape.subdirs);
+        if is_dir || self.file_stat(&dir.node, key, number).mode & 0o170_000 != 0o120_000 {
+            return Err(Errno::INVAL.into());
+        }
+        Ok(symlink_target(key))
+    }
+}
+
+/// The child `name` of a directory: its index, key, and whether it's a
+/// directory. Names the tree doesn't have are `ENOENT`.
+fn child(dir: &SyntheticDir, name: &[u8]) -> io::Result<(u64, u64, bool)> {
+    let index = parse_index(name).ok_or_else(|| io::Error::from(Errno::NOENT))?;
+    if index >= dir.shape.children() {
+        return Err(Errno::NOENT.into());
+    }
+    let is_dir = index < dir.shape.subdirs;
+    let key = child_key(dir.node.key, index);
+    let mut expected = [0u8; 128];
+    let len = entry_name_into(&mut expected, key, index, is_dir);
+    if expected[..len] != *name {
+        return Err(Errno::NOENT.into());
+    }
+    Ok((index, key, is_dir))
+}
+
+/// A symlink's target: relative or absolute, now and then with a byte
+/// that isn't valid UTF-8.
+fn symlink_target(key: u64) -> Vec<u8> {
+    let r = mix(key ^ LINK);
+    let mut target = Vec::with_capacity(64);
+    target.extend_from_slice(
+        [&b"../"[..], b"../../", b"./", b"/archive/", b"/scratch/"][(r % 5) as usize],
+    );
+    target.extend_from_slice(WORDS[((r >> 8) % 16) as usize]);
+    target.push(b'/');
+    target.extend_from_slice(WORDS[((r >> 12) % 16) as usize]);
+    if (r >> 20).is_multiple_of(64) {
+        target.extend_from_slice(b"_\xff");
+    }
+    target.extend_from_slice(EXTENSIONS[((r >> 16) % 16) as usize]);
+    target
 }
 
 /// SplitMix64's finalizer: a fast, well-mixed 64-bit hash.
@@ -736,6 +771,43 @@ mod tests {
         for s in &stats {
             assert!(s.atime >= s.mtime && s.ctime >= s.mtime && s.btime.unwrap() <= s.mtime);
         }
+    }
+
+    #[test]
+    fn symlinks_have_targets_as_long_as_their_size() {
+        let backend = SyntheticBackend::new(
+            SyntheticOptions::parse("100000").unwrap(),
+            &[b"/s".to_vec()],
+        );
+        let mut scratch = backend.new_scratch();
+        let (mut links, mut invalid) = (0, 0);
+        let mut pending = vec![b"/s".to_vec()];
+        while let Some(path) = pending.pop() {
+            let dir = backend.open_dir(&path, false).unwrap();
+            let mut names = NameBatch::default();
+            while backend.read_names(&dir, &mut scratch, &mut names).unwrap() {}
+            for name in names.iter() {
+                let stat = backend.stat_at(&dir, name).unwrap();
+                let target = backend.read_link_at(&dir, name);
+                match stat.kind() {
+                    EntryKind::Symlink => {
+                        let target = target.unwrap();
+                        assert_eq!(target.len() as i64, stat.size);
+                        invalid += usize::from(std::str::from_utf8(&target).is_err());
+                        links += 1;
+                    }
+                    kind => {
+                        let errno = target.unwrap_err().raw_os_error();
+                        assert_eq!(errno, Some(Errno::INVAL.raw_os_error()), "{kind:?}");
+                        if kind == EntryKind::Dir {
+                            pending.push([&path[..], b"/", name].concat());
+                        }
+                    }
+                }
+            }
+        }
+        assert!(links > 300, "{links} symlinks");
+        assert!(invalid > 0, "no target with invalid UTF-8");
     }
 
     #[test]

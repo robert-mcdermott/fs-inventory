@@ -59,6 +59,10 @@ impl<B: Backend> Backend for Delayed<B> {
         self.inner.read_names(dir, scratch, names)
     }
 
+    fn read_link_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Vec<u8>> {
+        self.inner.read_link_at(dir, name)
+    }
+
     fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
         if !self.delay.is_zero() {
             std::thread::sleep(self.delay);

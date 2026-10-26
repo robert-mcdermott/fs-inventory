@@ -83,6 +83,10 @@ impl Backend for NativeBackend {
         Ok(true)
     }
 
+    fn read_link_at(&self, dir: &PosixDir, name: &[u8]) -> io::Result<Vec<u8>> {
+        Ok(rustix::fs::readlinkat(&dir.fd, name, Vec::new())?.into_bytes())
+    }
+
     fn stat_at(&self, dir: &PosixDir, name: &[u8]) -> io::Result<Stat> {
         Ok(from_stat(&rustix::fs::statat(
             &dir.fd,

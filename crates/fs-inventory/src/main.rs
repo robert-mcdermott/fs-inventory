@@ -6,9 +6,11 @@
 mod alloc;
 mod checkpoint;
 mod cli;
+mod convert;
 #[cfg(debug_assertions)]
 mod debug;
 mod exit;
+mod ids;
 mod output;
 mod parse;
 mod probe;
@@ -48,17 +50,15 @@ fn usage_error(subcommand: &str, message: String) -> ! {
 }
 
 fn run(command: &Command) -> Exit {
-    let (name, milestone) = match command {
-        Command::Scan(args) => return scan::run(args),
-        Command::Verify(args) => return verify::run(&args.scan_dir),
-        Command::Schema(args) => return schema(args.format),
-        Command::Rollup(args) => return rollup::run(args),
-        Command::Probe(args) => return probe::run(args),
-        Command::Resume(args) => return resume::run(args),
-        Command::Convert(_) => ("convert", "M5"),
-    };
-    eprintln!("fs-inventory: `{name}` is not implemented yet (planned for milestone {milestone})");
-    Exit::Fatal
+    match command {
+        Command::Scan(args) => scan::run(args),
+        Command::Verify(args) => verify::run(&args.scan_dir),
+        Command::Schema(args) => schema(args.format),
+        Command::Rollup(args) => rollup::run(args),
+        Command::Probe(args) => probe::run(args),
+        Command::Resume(args) => resume::run(args),
+        Command::Convert(args) => convert::run(args),
+    }
 }
 
 fn schema(format: cli::SchemaFormat) -> Exit {

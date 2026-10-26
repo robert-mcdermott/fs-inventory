@@ -55,11 +55,11 @@ pub fn check(scan_dir: &Path) -> Report {
         }
     };
 
-    let schema_version = manifest["schema_version"].as_u64();
-    if schema_version != Some(u64::from(fs_inventory_core::SCHEMA_VERSION)) {
+    if !fs_inventory_core::readable_schema(manifest["schema_version"].as_u64()) {
         report.problems.push(format!(
-            "schema version is {}, but this fs-inventory reads version {}",
+            "schema version is {}, but this fs-inventory reads versions {} to {}",
             manifest["schema_version"],
+            fs_inventory_core::OLDEST_READABLE_SCHEMA,
             fs_inventory_core::SCHEMA_VERSION
         ));
     }
@@ -76,8 +76,9 @@ pub fn check(scan_dir: &Path) -> Report {
     let count_text_rows =
         !(format == "csv" && manifest["options"]["csv_raw_controls"].as_bool() == Some(true));
 
-    // The scan's own tables, then any rollup tables (always Parquet).
-    let mut tables: Vec<(&str, Vec<Value>, &str)> = ["entries", "errors"]
+    // The scan's own tables (users and groups only with --resolve-ids), then
+    // any rollup tables (always Parquet).
+    let mut tables: Vec<(&str, Vec<Value>, &str)> = ["entries", "errors", "users", "groups"]
         .into_iter()
         .map(|t| {
             let parts = manifest["parts"][t].as_array().cloned().unwrap_or_default();
@@ -167,6 +168,22 @@ pub fn check(scan_dir: &Path) -> Report {
         if table_rows[t] != expected {
             report.problems.push(format!(
                 "{name} parts hold {} rows, but the totals say {expected}",
+                table_rows[t]
+            ));
+        }
+    }
+    let ids = &manifest["ids"];
+    if manifest["options"]["resolve_ids"] == true && status == "complete" && ids.is_null() {
+        report.problems.push(
+            "the scan was made with --resolve-ids, but has no users and groups tables".into(),
+        );
+    }
+    for (t, name) in [(2, "users"), (3, "groups")] {
+        if let Some(expected) = ids[name].as_u64()
+            && table_rows[t] != expected
+        {
+            report.problems.push(format!(
+                "{name} parts hold {} rows, but the manifest lists {expected} IDs",
                 table_rows[t]
             ));
         }

@@ -80,6 +80,9 @@ pub struct WalkOptions {
     /// Directories to skip entirely, by `(dev, ino)`, such as the scan's own
     /// output directory.
     pub skip_dirs: Vec<(u64, u64)>,
+    /// Read each symlink's target into [`Entry::symlink_target`]: one more
+    /// call per symlink.
+    pub symlink_targets: bool,
     /// Remember every directory entered, by `(dev, ino)`, and never enter
     /// one twice. Guards against bind-mount loops, hard-linked directories,
     /// and overlapping roots, at about 50 bytes per directory.
@@ -116,6 +119,7 @@ impl Default for WalkOptions {
             excludes: None,
             include_snapshots: false,
             skip_dirs: Vec::new(),
+            symlink_targets: false,
             detect_cycles: false,
             stall_report: Duration::from_secs(60),
             stall_timeout: None,
@@ -682,15 +686,17 @@ impl<B: Backend> WalkShared<B> {
     }
 }
 
-/// Splits a path into the index where its final component starts.
-fn name_start(path: &[u8]) -> usize {
+/// The index in `path` where its final component starts (0 for `/`).
+pub fn name_start(path: &[u8]) -> usize {
     if path == b"/" {
         return 0;
     }
     path.iter().rposition(|&b| b == b'/').map_or(0, |i| i + 1)
 }
 
-fn parent_of(path: &[u8], name_start: usize) -> &[u8] {
+/// The path of the directory containing `path`, given [`name_start`]:
+/// empty for `/`.
+pub fn parent_of(path: &[u8], name_start: usize) -> &[u8] {
     match name_start {
         0 => b"",
         1 => b"/",
@@ -1132,6 +1138,7 @@ fn add_roots<B: Backend, S: Sink>(
                 is_mount_point: false,
                 totals: None,
                 error,
+                symlink_target: None,
             });
         };
         match shared.backend.stat_root(root) {
@@ -1251,6 +1258,7 @@ fn watchdog<B: Backend, S: Sink>(
                     is_mount_point: task.is_mount_point,
                     totals: None,
                     error: Some(&info),
+                    symlink_target: None,
                 });
                 tally.entries += 1;
             }
@@ -1720,6 +1728,7 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
             is_mount_point: task.is_mount_point,
             totals: read.then_some(totals),
             error: error.as_ref(),
+            symlink_target: None,
         });
         self.tally.entries += 1;
     }
@@ -1837,7 +1846,7 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
                     return false;
                 }
                 match result {
-                    Ok(stat) => self.child(ctx, &child_path, base_len, stat, totals),
+                    Ok(stat) => self.child(ctx, dir, &child_path, base_len, stat, totals),
                     Err(e) if e.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) => {
                         self.tally.vanished += 1;
                     }
@@ -1865,6 +1874,7 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
     fn child(
         &mut self,
         dir: &DirCtx,
+        open: &B::Dir,
         path: &[u8],
         name_start: usize,
         stat: Stat,
@@ -1937,12 +1947,48 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
                 &stat,
                 is_mount_point,
                 error.as_ref(),
+                None,
             );
         } else {
             self.tally.bytes += stat.size.max(0) as u64;
+            let target = if options.symlink_targets && stat.kind() == EntryKind::Symlink {
+                self.read_link(open, path, name_start)
+            } else {
+                None
+            };
             self.emit(
-                path, name_start, depth, None, dir.dir_id, &stat, false, None,
+                path,
+                name_start,
+                depth,
+                None,
+                dir.dir_id,
+                &stat,
+                false,
+                None,
+                target.as_deref(),
             );
+        }
+    }
+
+    /// Reads a symlink's target, recording a failure in the errors table.
+    fn read_link(&mut self, open: &B::Dir, path: &[u8], name_start: usize) -> Option<Vec<u8>> {
+        match self.shared.backend.read_link_at(open, &path[name_start..]) {
+            Ok(target) => Some(target),
+            // Replaced or deleted since its stat: the row stands without a
+            // target, as for anything else that changes during a scan.
+            Err(e)
+                if [rustix::io::Errno::NOENT, rustix::io::Errno::INVAL]
+                    .iter()
+                    .any(|n| e.raw_os_error() == Some(n.raw_os_error())) =>
+            {
+                None
+            }
+            Err(e) => {
+                let info = ErrorInfo::from_io(Op::ReadLink, &e);
+                self.sink.error(&ErrorRecord { path, info: &info });
+                self.tally.record_error(&info);
+                None
+            }
         }
     }
 
@@ -1957,6 +2003,7 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
         stat: &Stat,
         is_mount_point: bool,
         error: Option<&ErrorInfo>,
+        symlink_target: Option<&[u8]>,
     ) {
         self.sink.entry(&Entry {
             path,
@@ -1969,6 +2016,7 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
             is_mount_point,
             totals: None,
             error,
+            symlink_target,
         });
         self.tally.entries += 1;
     }

@@ -115,6 +115,12 @@ impl Encoder {
     }
 
     pub fn entry(&self, e: &Entry<'_>, out: &mut Vec<u8>) {
+        self.entry_clamped(e, 0, out);
+    }
+
+    /// Like [`Self::entry`], with times already clamped by an earlier
+    /// encoding (`time_flags` bits), such as a Parquet scan being converted.
+    pub fn entry_clamped(&self, e: &Entry<'_>, clamped_before: u8, out: &mut Vec<u8>) {
         let controls = self.controls();
         let path = names::to_text(e.path, controls);
         let path_b64 = (self.options.raw_paths_always || matches!(path, Cow::Owned(_)))
@@ -135,7 +141,7 @@ impl Encoder {
         let mtime = read(Fields::MTIME).then_some(stat.mtime);
         let ctime = read(Fields::CTIME).then_some(stat.ctime);
         let btime = stat.btime.filter(|_| read(Fields::BTIME));
-        let mut time_flags = 0;
+        let mut time_flags = clamped_before;
         for (time, clamped) in [
             (atime, ATIME_CLAMPED),
             (mtime, MTIME_CLAMPED),
@@ -194,6 +200,21 @@ impl Encoder {
         row.uint("time_flags", u64::from(time_flags));
         let error = e.error.map(error_summary);
         row.opt_text("error", error.as_deref());
+        let target = e.symlink_target.map(|t| names::to_text(t, controls));
+        let target_b64 = e.symlink_target.zip(target.as_ref()).and_then(|(t, text)| {
+            (self.options.raw_paths_always || matches!(text, Cow::Owned(_)))
+                .then(|| BASE64.encode(t))
+        });
+        row.opt_text("symlink_target", target.as_deref());
+        row.opt_text("symlink_target_b64", target_b64.as_deref());
+        row.end();
+    }
+
+    /// A row of the `users` or `groups` table, whose ID column is `column`.
+    pub fn id(&self, column: &str, id: u32, name: Option<&str>, out: &mut Vec<u8>) {
+        let mut row = Row::new(self.options.format, None, out);
+        row.int(column, i64::from(id));
+        row.opt_text("name", name);
         row.end();
     }
 
@@ -453,6 +474,7 @@ mod tests {
             is_mount_point: false,
             totals: None,
             error: None,
+            symlink_target: None,
         };
         let mut out = Vec::new();
         Encoder::new(options(format)).entry(&entry, &mut out);
@@ -466,7 +488,7 @@ mod tests {
             row,
             "/data/Report.PDF,/data,Report.PDF,pdf,,0,file,1,,7,66,1234,1,1000,100,33188,42,4096,\
              1970-01-01T00:00:00.000000Z,1970-01-01T00:00:00.000001Z,1970-01-01T00:00:00.000000Z,\
-             ,,,,,,,false,0,\n"
+             ,,,,,,,false,0,,,\n"
         );
         assert_eq!(row.split(',').count(), ENTRY_COLUMNS.len());
     }
@@ -539,6 +561,7 @@ mod tests {
                 alloc_bytes: 4096,
             }),
             error: Some(&info),
+            symlink_target: None,
         };
         let mut out = Vec::new();
         Encoder::new(options(TextFormat::Jsonl)).entry(&entry, &mut out);
@@ -619,6 +642,7 @@ mod tests {
                 is_mount_point: false,
                 totals: None,
                 error: None,
+                symlink_target: None,
             };
             let mut out = Vec::new();
             encoder.entry(&entry, &mut out);

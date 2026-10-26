@@ -49,18 +49,15 @@ fn usage_errors_exit_2() {
 }
 
 #[test]
-fn unimplemented_commands_exit_4() {
-    let out = fs_inventory(&["convert", "/scans/x", "--to", "csv", "-o", "-"]);
-    assert_eq!(out.status.code(), Some(4));
+fn convert_reports_a_missing_scan() {
+    let out = fs_inventory(&["convert", "/nonexistent/scan", "--to", "csv", "-o", "-"]);
+    assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("not implemented yet"), "{stderr}");
+    assert!(stderr.contains("manifest"), "{stderr}");
 }
 
 #[test]
-fn unimplemented_or_invalid_scan_options_are_refused() {
-    let out = fs_inventory(&["scan", "/data", "-o", "out", "--symlink-targets"]);
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--symlink-targets"));
+fn invalid_scan_options_are_refused() {
     let out = fs_inventory(&["scan", "/data", "-o", "out", "--columns", "path,bogus"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("bogus"));
@@ -79,7 +76,7 @@ fn schema_describes_every_format() {
     }
     let json: serde_json::Value =
         serde_json::from_slice(&fs_inventory(&["schema", "--format", "json"]).stdout).unwrap();
-    assert_eq!(json["entries"].as_array().unwrap().len(), 31);
+    assert_eq!(json["entries"].as_array().unwrap().len(), 33);
 }
 
 #[test]

@@ -45,6 +45,7 @@ use self::encode::Encoder;
 use self::parquet::{ParquetPartWriter, ParquetSettings};
 use self::parts::{PartInfo, PartWriter, RollLimits, compression_suffix, sync_dir};
 use self::schema::{ERROR_COLUMNS, Selection, arrow_schema};
+use crate::ids::{IdCollector, Ids};
 use crate::parse::Compression;
 
 /// Default memory shared by every worker's row buffer. Each worker sends its
@@ -102,6 +103,8 @@ pub struct OutputConfig {
     pub run: u32,
     /// What earlier runs of a resumed scan committed.
     pub previous: OutputState,
+    /// Collect the user and group IDs of the rows (`--resolve-ids`).
+    pub collect_ids: bool,
 }
 
 /// Every committed part, and the rows in them.
@@ -112,6 +115,8 @@ pub struct OutputState {
     /// Entry rows by kind, in [`EntryKind::ALL`] order.
     pub kinds: [u64; EntryKind::ALL.len()],
     pub error_rows: u64,
+    /// User and group IDs of the rows, with `collect_ids`.
+    pub ids: Ids,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -237,6 +242,8 @@ pub struct OutputReport {
     /// Rows written, by kind, in [`EntryKind::ALL`] order.
     pub kinds: [u64; EntryKind::ALL.len()],
     pub error_rows: u64,
+    /// User and group IDs of the rows, with `collect_ids`.
+    pub ids: Ids,
     /// Sinks whose rows were salvaged after their worker was abandoned.
     pub salvaged: usize,
     /// The first failure, if any. Output after it was discarded.
@@ -314,6 +321,7 @@ impl Output {
             pending_kinds: [0; EntryKind::ALL.len()],
             closed: false,
             salvaged: None,
+            ids: self.shared.config.collect_ids.then(IdCollector::default),
         }));
         if let Ok(mut sinks) = self.shared.sinks.lock() {
             sinks.push(Arc::clone(&state));
@@ -334,9 +342,16 @@ impl Output {
             Err(_) => Vec::new(),
         };
         let mut salvaged = self.shared.salvaged.load(Ordering::Relaxed);
+        let mut ids = self.shared.config.previous.ids.clone();
         for state in sinks {
             if salvage(&state, &self.shared) {
                 salvaged += 1;
+            }
+            // A worker stuck in a system call may still hold its sink.
+            if let Ok(state) = state.try_lock()
+                && let Some(collector) = &state.ids
+            {
+                ids.merge(&collector.ids);
             }
         }
         // Writers drain what's queued and stop, even if a stuck worker still
@@ -351,6 +366,7 @@ impl Output {
         let mut report = OutputReport {
             entry_parts: previous.entry_parts.clone(),
             error_parts: previous.error_parts.clone(),
+            ids,
             salvaged,
             ..OutputReport::default()
         };
@@ -400,16 +416,25 @@ impl Output {
             .map(|sinks| sinks.clone())
             .map_err(|_| io::Error::other("output sinks poisoned"))?;
         let mut kinds = [0u64; EntryKind::ALL.len()];
+        let mut ids = shared.config.previous.ids.clone();
         for (index, state) in sinks.iter().enumerate() {
             if abandoned.contains(&index) {
                 if salvage(state, shared) {
                     shared.salvaged.fetch_add(1, Ordering::Relaxed);
+                }
+                if let Ok(state) = state.try_lock()
+                    && let Some(collector) = &state.ids
+                {
+                    ids.merge(&collector.ids);
                 }
                 continue;
             }
             let Ok(mut state) = state.lock() else {
                 continue;
             };
+            if let Some(collector) = &state.ids {
+                ids.merge(&collector.ids);
+            }
             if state.closed {
                 continue;
             }
@@ -437,6 +462,7 @@ impl Output {
             error_parts: previous.error_parts.clone(),
             kinds,
             error_rows: previous.error_rows + shared.error_rows.load(Ordering::Relaxed),
+            ids,
         };
         for ((total, kind), before) in state
             .kinds
@@ -711,14 +737,14 @@ fn write_parts(
 }
 
 /// A compressed or plain stream over stdout.
-enum StdoutStream {
+pub(crate) enum StdoutStream {
     Plain(BufWriter<io::Stdout>),
     Zstd(zstd::Encoder<'static, BufWriter<io::Stdout>>),
     Gzip(GzEncoder<BufWriter<io::Stdout>>),
 }
 
 impl StdoutStream {
-    fn new(compression: Compression) -> io::Result<Self> {
+    pub(crate) fn new(compression: Compression) -> io::Result<Self> {
         let out = BufWriter::with_capacity(1 << 20, io::stdout());
         Ok(match compression {
             Compression::Zstd(level) => Self::Zstd(zstd::Encoder::new(out, level)?),
@@ -729,7 +755,7 @@ impl StdoutStream {
         })
     }
 
-    fn writer(&mut self) -> &mut dyn Write {
+    pub(crate) fn writer(&mut self) -> &mut dyn Write {
         match self {
             Self::Plain(w) => w,
             Self::Zstd(w) => w,
@@ -737,7 +763,7 @@ impl StdoutStream {
         }
     }
 
-    fn finish(self) -> io::Result<()> {
+    pub(crate) fn finish(self) -> io::Result<()> {
         let mut out = match self {
             Self::Plain(w) => w,
             Self::Zstd(w) => w.finish()?,
@@ -816,6 +842,8 @@ struct SinkState {
     closed: bool,
     /// The salvaged Arrow rows, already sliced to the mark.
     salvaged: Option<RecordBatch>,
+    /// The rows' user and group IDs, with `collect_ids`.
+    ids: Option<IdCollector>,
 }
 
 impl SinkState {
@@ -945,6 +973,9 @@ impl Sink for RowSink {
             resume_unwind(panic);
         }
         state.entry_rows += 1;
+        if let Some(collector) = &mut state.ids {
+            collector.add(entry.stat.uid, entry.stat.gid);
+        }
         if let Some(i) = EntryKind::ALL.iter().position(|k| *k == entry.kind()) {
             state.pending_kinds[i] += 1;
         }
@@ -1062,6 +1093,7 @@ mod tests {
             },
             run: 0,
             previous: OutputState::default(),
+            collect_ids: false,
         }
     }
 
@@ -1081,6 +1113,7 @@ mod tests {
             is_mount_point: false,
             totals: None,
             error: None,
+            symlink_target: None,
         });
     }
 
@@ -1203,6 +1236,7 @@ mod tests {
                 error_parts: Vec::new(),
                 kinds,
                 error_rows: 1,
+                ids: Ids::default(),
             },
             ..config(tmp.path())
         };

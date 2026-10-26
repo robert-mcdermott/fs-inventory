@@ -129,6 +129,10 @@ impl Backend for NativeBackend {
         }
     }
 
+    fn read_link_at(&self, dir: &LinuxDir, name: &[u8]) -> io::Result<Vec<u8>> {
+        Ok(rustix::fs::readlinkat(&dir.fd, name, Vec::new())?.into_bytes())
+    }
+
     fn stat_at(&self, dir: &LinuxDir, name: &[u8]) -> io::Result<Stat> {
         self.statx(&dir.fd, name, AtFlags::SYMLINK_NOFOLLOW)
     }

@@ -34,6 +34,7 @@ struct Row {
     stat: Stat,
     totals: Option<DirTotals>,
     error: Option<Op>,
+    symlink_target: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Default)]
@@ -65,6 +66,7 @@ impl Sink for CollectingSink {
             stat: *e.stat,
             totals: e.totals,
             error: e.error.map(|i| i.op),
+            symlink_target: e.symlink_target.map(<[u8]>::to_vec),
         });
     }
 
@@ -466,6 +468,15 @@ impl Backend for FaultyBackend {
         self.0.read_names(&dir.0, scratch, names)
     }
 
+    fn read_link_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Vec<u8>> {
+        if name.starts_with(b"fail-link") {
+            return Err(io::Error::from_raw_os_error(
+                rustix::io::Errno::IO.raw_os_error(),
+            ));
+        }
+        self.0.read_link_at(&dir.0, name)
+    }
+
     fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
         if name.starts_with(b"fail-stat") {
             return Err(io::Error::from_raw_os_error(
@@ -537,6 +548,55 @@ fn failures_are_recorded_and_never_stop_the_walk() {
     let boom = row(b"boom-dir").unwrap();
     assert_eq!(boom.totals.map(|t| t.entries), Some(1));
     assert!(got.rows.iter().any(|r| r.path.ends_with(b"boom-dir/child")));
+}
+
+#[test]
+fn symlink_targets_are_read_only_when_asked() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap();
+    fs::create_dir(root.join("dir")).unwrap();
+    fs::write(root.join("dir/file"), "x").unwrap();
+    std::os::unix::fs::symlink("dir/file", root.join("relative")).unwrap();
+    std::os::unix::fs::symlink("/no/such/place", root.join("dangling")).unwrap();
+    std::os::unix::fs::symlink("dir", root.join("fail-link")).unwrap();
+    let walk_with = |symlink_targets| {
+        run_walk(
+            vec![bytes(&root)],
+            WalkOptions {
+                symlink_targets,
+                ..options(2)
+            },
+            FaultyBackend(NativeBackend::new(BackendOptions::default())),
+            false,
+        )
+        .0
+    };
+
+    let without = walk_with(false);
+    assert!(without.rows.iter().all(|r| r.symlink_target.is_none()));
+    assert!(without.errors.is_empty());
+
+    let with = walk_with(true);
+    let target = |name: &[u8]| {
+        with.rows
+            .iter()
+            .find(|r| name_of(&r.path) == name)
+            .unwrap()
+            .symlink_target
+            .clone()
+    };
+    assert_eq!(target(b"relative"), Some(b"dir/file".to_vec()));
+    assert_eq!(target(b"dangling"), Some(b"/no/such/place".to_vec()));
+    assert_eq!(target(b"file"), None);
+    assert_eq!(target(b"dir"), None);
+    // A failure leaves the row without a target and records the error.
+    assert_eq!(target(b"fail-link"), None);
+    let errors: Vec<(Vec<u8>, Op)> = with
+        .errors
+        .iter()
+        .map(|(path, op, _)| (name_of(path).to_vec(), *op))
+        .collect();
+    assert_eq!(errors, [(b"fail-link".to_vec(), Op::ReadLink)]);
 }
 
 #[test]
@@ -630,6 +690,10 @@ impl Backend for TracingBackend {
         names: &mut NameBatch,
     ) -> io::Result<bool> {
         self.inner.read_names(dir, scratch, names)
+    }
+
+    fn read_link_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Vec<u8>> {
+        self.inner.read_link_at(dir, name)
     }
 
     fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
@@ -741,6 +805,10 @@ impl Backend for HangingBackend {
         names: &mut NameBatch,
     ) -> io::Result<bool> {
         self.inner.read_names(dir, scratch, names)
+    }
+
+    fn read_link_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Vec<u8>> {
+        self.inner.read_link_at(dir, name)
     }
 
     fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
@@ -912,6 +980,10 @@ impl Backend for SlowBackend {
         names: &mut NameBatch,
     ) -> io::Result<bool> {
         self.inner.read_names(dir, scratch, names)
+    }
+
+    fn read_link_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Vec<u8>> {
+        self.inner.read_link_at(dir, name)
     }
 
     fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
