@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Tag or branch whose docs to publish [default: the latest release]
+        description: 'Tag or branch whose docs to publish (default: the latest release)'
         required: false
 
 permissions:
