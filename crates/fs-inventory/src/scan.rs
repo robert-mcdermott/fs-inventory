@@ -17,7 +17,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use fs_inventory_core::backend::{BackendOptions, NativeBackend};
+use fs_inventory_core::backend::synthetic::{SyntheticBackend, SyntheticOptions};
+use fs_inventory_core::backend::{Backend, BackendOptions, NativeBackend};
 use fs_inventory_core::model::{EntryKind, Fields, errno_name};
 use fs_inventory_core::names::{self, Controls};
 use fs_inventory_core::walker::{
@@ -145,6 +146,9 @@ pub struct ScanSettings {
     csv_raw_controls: bool,
     time_unit: TimeUnit,
     time_format: TimeFormat,
+    /// `--synthetic`: the generated tree scanned instead of the file system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    synthetic: Option<String>,
 }
 
 impl ScanSettings {
@@ -185,6 +189,7 @@ impl ScanSettings {
             csv_raw_controls: args.encoding.csv_raw_controls,
             time_unit: args.encoding.time_unit,
             time_format: args.encoding.time_format,
+            synthetic: args.synthetic.map(|tree| tree.to_string()),
         };
         // Check everything now, before creating any output.
         settings.selection()?;
@@ -210,6 +215,14 @@ impl ScanSettings {
 
     fn fields(&self) -> Result<Fields, SetupError> {
         Fields::parse(&self.fields.join(",")).map_err(SetupError::usage)
+    }
+
+    fn synthetic(&self) -> Result<Option<SyntheticOptions>, SetupError> {
+        self.synthetic
+            .as_deref()
+            .map(SyntheticOptions::parse)
+            .transpose()
+            .map_err(SetupError::usage)
     }
 }
 
@@ -290,6 +303,7 @@ pub fn execute(
     let selection = settings.selection()?;
     let fields = settings.fields()?;
     let compression = settings.compression()?;
+    let synthetic = settings.synthetic()?;
     let roots = settings.roots()?;
     let excludes = build_excludes(&settings.excludes)?;
     let budgets = MemoryBudgets::new(runtime.max_memory);
@@ -502,6 +516,11 @@ pub fn execute(
         Style::None if progress_options.progress == Progress::Auto => Style::Plain,
         other => other,
     };
+    if let Some(tree) = synthetic
+        && summary_style != Style::None
+    {
+        eprintln!("fs-inventory: scanning a generated tree ({tree}), not the file system");
+    }
     if let Some((header, state)) = &resume
         && summary_style != Style::None
     {
@@ -520,11 +539,11 @@ pub fn execute(
         base_entries,
     );
 
-    let backend = scan_backend(BackendOptions {
+    let backend_options = BackendOptions {
         statx_dont_sync: settings.statx_dont_sync,
         fields,
         ..BackendOptions::default()
-    });
+    };
     let walk_options = WalkOptions {
         threads: usize::from(runtime.threads),
         cross_mounts: settings.cross_mounts,
@@ -574,15 +593,18 @@ pub fn execute(
         manifest: &mut manifest,
         warned: false,
     };
-    let result = walker::walk_from(
+    let walk = Walk {
         start,
-        walk_options,
-        Arc::new(backend),
-        |_| output.sink(),
-        Arc::clone(&counters),
-        Arc::clone(&stop),
-        checkpointing.then_some(&mut checkpointer as &mut dyn Checkpointer),
-    )
+        options: walk_options,
+        output: &output,
+        counters: &counters,
+        stop: &stop,
+        checkpointer: checkpointing.then_some(&mut checkpointer as &mut dyn Checkpointer),
+    };
+    let result = match synthetic {
+        Some(tree) => walk.run(SyntheticBackend::new(tree, &roots)),
+        None => walk.run(NativeBackend::new(backend_options)),
+    }
     .map_err(|e| SetupError::fatal(format!("cannot open the checkpoint files: {e}")))?;
     let header = checkpointer.header;
     let report = output.finish();
@@ -724,15 +746,31 @@ impl Checkpointer for ScanCheckpointer<'_> {
     }
 }
 
-/// The file system backend. Debug builds can slow it down for tests.
-#[cfg(debug_assertions)]
-fn scan_backend(options: BackendOptions) -> crate::debug::Delayed<NativeBackend> {
-    crate::debug::Delayed::from_env(NativeBackend::new(options))
+/// Everything a walk needs but the backend, which is chosen at run time.
+struct Walk<'a> {
+    start: Start<'a>,
+    options: WalkOptions,
+    output: &'a Output,
+    counters: &'a Arc<Counters>,
+    stop: &'a Arc<AtomicBool>,
+    checkpointer: Option<&'a mut dyn Checkpointer>,
 }
 
-#[cfg(not(debug_assertions))]
-fn scan_backend(options: BackendOptions) -> NativeBackend {
-    NativeBackend::new(options)
+impl Walk<'_> {
+    /// Walks with `backend`. Debug builds can slow it down for tests.
+    fn run<B: Backend + 'static>(self, backend: B) -> io::Result<WalkResult> {
+        #[cfg(debug_assertions)]
+        let backend = crate::debug::Delayed::from_env(backend);
+        walker::walk_from(
+            self.start,
+            self.options,
+            Arc::new(backend),
+            |_| self.output.sink(),
+            Arc::clone(self.counters),
+            Arc::clone(self.stop),
+            self.checkpointer,
+        )
+    }
 }
 
 /// Options that parse but do nothing yet. Accepting them silently would be
@@ -938,6 +976,10 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<String, serde_j
         ("row_group_rows", json!(args.output.row_group_rows)),
     ])
     .into_iter()
+    .chain(
+        args.synthetic
+            .map(|tree| ("synthetic", json!(tree.to_string()))),
+    )
     .map(|(key, value)| (key.to_string(), value))
     .collect()
 }

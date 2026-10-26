@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use fs_inventory_core::backend::synthetic::SyntheticOptions;
 use serde::{Deserialize, Serialize};
 
 use crate::parse::{Compression, parse_compression, parse_duration, parse_size};
@@ -64,6 +65,13 @@ pub struct ScanArgs {
 
     #[command(flatten)]
     pub progress: ProgressOptions,
+
+    /// Scan a generated tree at each ROOT instead of the file system, for
+    /// benchmarks and scale tests: `100M`, or
+    /// `entries=100M,files=32,fanout=8,huge=1M,seed=0`. The roots needn't
+    /// exist.
+    #[arg(long, hide = true, value_name = "SPEC", value_parser = SyntheticOptions::parse)]
+    pub synthetic: Option<SyntheticOptions>,
 }
 
 #[derive(Debug, Args)]

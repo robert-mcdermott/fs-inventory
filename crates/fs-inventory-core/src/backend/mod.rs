@@ -4,7 +4,8 @@
 //! Platform access to directories and metadata.
 //!
 //! The walker only talks to the [`Backend`] trait, so tests can wrap the
-//! native backend to inject failures and delays.
+//! native backend to inject failures and delays, and benchmarks can walk a
+//! generated tree ([`synthetic`]) instead of the file system.
 
 use std::io;
 #[cfg(target_os = "linux")]
@@ -20,6 +21,7 @@ use crate::model::{Fields, Stat};
 mod linux;
 #[cfg(not(target_os = "linux"))]
 mod posix;
+pub mod synthetic;
 
 #[cfg(target_os = "linux")]
 pub use linux::NativeBackend;
