@@ -27,6 +27,21 @@ SELECT * FROM read_parquet(scan_dir || '/entries/*.parquet');
 CREATE OR REPLACE MACRO fs_errors(scan_dir) AS TABLE
 SELECT * FROM read_parquet(scan_dir || '/errors/*.parquet');
 
+-- Written with --resolve-ids: the name of every user and group ID in the
+-- scan (null for IDs with no account), and every entry with its owner's
+-- names added as user_name and group_name.
+CREATE OR REPLACE MACRO fs_users(scan_dir) AS TABLE
+SELECT * FROM read_parquet(scan_dir || '/users/*.parquet');
+
+CREATE OR REPLACE MACRO fs_groups(scan_dir) AS TABLE
+SELECT * FROM read_parquet(scan_dir || '/groups/*.parquet');
+
+CREATE OR REPLACE MACRO fs_entries_named(scan_dir) AS TABLE
+SELECT e.*, u.name AS user_name, g.name AS group_name
+FROM read_parquet(scan_dir || '/entries/*.parquet') AS e
+LEFT JOIN read_parquet(scan_dir || '/users/*.parquet') AS u USING (uid)
+LEFT JOIN read_parquet(scan_dir || '/groups/*.parquet') AS g USING (gid);
+
 -- Written by `fs-inventory rollup SCAN_DIR`: totals over each directory's
 -- subtree, and file ages for directories near the top of the tree.
 CREATE OR REPLACE MACRO fs_rollup(scan_dir) AS TABLE
@@ -160,6 +175,54 @@ FROM read_json(
         'errno_name': 'VARCHAR',
         'message': 'VARCHAR',
         'time': 'TIMESTAMPTZ'
+    }
+);
+
+CREATE OR REPLACE MACRO fs_users_csv(scan_dir) AS TABLE
+SELECT * FROM read_csv(
+    scan_dir || '/users/*.csv*',
+    header = true,
+    auto_detect = false,
+    delim = ',',
+    quote = '"',
+    escape = '"',
+    columns = {
+        'uid': 'BIGINT',
+        'name': 'VARCHAR'
+    }
+);
+
+CREATE OR REPLACE MACRO fs_users_jsonl(scan_dir) AS TABLE
+SELECT * FROM read_json(
+    scan_dir || '/users/*.jsonl*',
+    format = 'newline_delimited',
+    columns = {
+        'uid': 'BIGINT',
+        'name': 'VARCHAR'
+    }
+);
+
+CREATE OR REPLACE MACRO fs_groups_csv(scan_dir) AS TABLE
+SELECT * FROM read_csv(
+    scan_dir || '/groups/*.csv*',
+    header = true,
+    auto_detect = false,
+    delim = ',',
+    quote = '"',
+    escape = '"',
+    columns = {
+        'gid': 'BIGINT',
+        'name': 'VARCHAR'
+    }
+);
+
+CREATE OR REPLACE MACRO fs_groups_jsonl(scan_dir) AS TABLE
+SELECT * FROM read_json(
+    scan_dir || '/groups/*.jsonl*',
+    format = 'newline_delimited',
+    columns = {
+        'gid': 'BIGINT',
+        'name': 'VARCHAR'
     }
 );
 

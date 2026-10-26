@@ -54,6 +54,9 @@ pub struct Header {
     /// Entry rows by kind, in `EntryKind::ALL` order.
     pub kinds: Vec<u64>,
     pub error_rows: u64,
+    /// User and group IDs seen, with `--resolve-ids`.
+    #[serde(default)]
+    pub ids: crate::ids::Ids,
 }
 
 /// The checkpoint directory of `scan_dir`.

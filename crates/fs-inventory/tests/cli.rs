@@ -57,10 +57,7 @@ fn convert_reports_a_missing_scan() {
 }
 
 #[test]
-fn unimplemented_or_invalid_scan_options_are_refused() {
-    let out = fs_inventory(&["scan", "/data", "-o", "out", "--resolve-ids"]);
-    assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("--resolve-ids"));
+fn invalid_scan_options_are_refused() {
     let out = fs_inventory(&["scan", "/data", "-o", "out", "--columns", "path,bogus"]);
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("bogus"));

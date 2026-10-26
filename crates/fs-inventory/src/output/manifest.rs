@@ -88,6 +88,23 @@ pub struct Resume {
 pub struct Parts {
     pub entries: Vec<PartInfo>,
     pub errors: Vec<PartInfo>,
+    /// With `--resolve-ids`, once the scan finishes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub users: Option<Vec<PartInfo>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub groups: Option<Vec<PartInfo>>,
+}
+
+/// What `--resolve-ids` found.
+#[derive(Debug, Clone, Serialize)]
+pub struct IdSummary {
+    pub users: usize,
+    pub groups: usize,
+    /// IDs with no account or group on the scanning host.
+    pub users_unnamed: usize,
+    pub groups_unnamed: usize,
+    /// The command that looked them up: `getent` or `dscacheutil`.
+    pub source: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,6 +132,9 @@ pub struct Manifest {
     /// Each time the scan was resumed after being interrupted.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resumes: Vec<Resume>,
+    /// With `--resolve-ids`, once the scan finishes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ids: Option<IdSummary>,
     pub parts: Parts,
 }
 

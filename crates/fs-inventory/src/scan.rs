@@ -31,6 +31,7 @@ use serde_json::json;
 use crate::checkpoint;
 use crate::cli::{Format, Progress, ProgressOptions, RawPaths, ScanArgs, TimeFormat, TimeUnit};
 use crate::exit::Exit;
+use crate::ids::{self, Ids};
 use crate::output::arrow::ArrowOptions;
 use crate::output::encode::{EncodeOptions, Encoder, TextFormat, TimeStyle};
 use crate::output::manifest::{
@@ -191,6 +192,9 @@ pub struct ScanSettings {
     /// `--symlink-targets`.
     #[serde(default)]
     symlink_targets: bool,
+    /// `--resolve-ids`.
+    #[serde(default)]
+    resolve_ids: bool,
     /// Optional metadata fields read.
     fields: Vec<String>,
     statx_dont_sync: bool,
@@ -229,6 +233,7 @@ impl ScanSettings {
             include_snapshots: args.traversal.include_snapshots,
             detect_cycles: args.traversal.detect_cycles,
             symlink_targets: args.metadata.symlink_targets,
+            resolve_ids: args.metadata.resolve_ids,
             fields: args
                 .metadata
                 .fields
@@ -334,10 +339,14 @@ pub fn run(args: &ScanArgs) -> Exit {
 }
 
 fn run_scan(args: &ScanArgs) -> Result<Exit, SetupError> {
-    reject_unimplemented(args)?;
     let settings = ScanSettings::from_args(args)?;
     let runtime = RunSettings::from_args(args);
     let destination = if args.output.output == Path::new("-") {
+        if args.metadata.resolve_ids {
+            return Err(SetupError::usage(
+                "--resolve-ids writes users and groups tables, so it needs an output directory, not `-`",
+            ));
+        }
         Destination::Stdout
     } else {
         Destination::Dir(prepare_output_dir(&args.output.output)?)
@@ -455,6 +464,7 @@ pub fn execute(
                 error_parts: header.error_parts.clone(),
                 kinds: std::array::from_fn(|i| header.kinds.get(i).copied().unwrap_or(0)),
                 error_rows: header.error_rows,
+                ids: header.ids.clone(),
             },
             header.elapsed_seconds,
             header.resumes.clone(),
@@ -569,7 +579,10 @@ pub fn execute(
         parts: Parts {
             entries: previous.entry_parts.clone(),
             errors: previous.error_parts.clone(),
+            users: None,
+            groups: None,
         },
+        ids: None,
     };
     if let Some(dir) = &scan_dir {
         manifest
@@ -577,6 +590,12 @@ pub fn execute(
             .map_err(|e| SetupError::fatal(format!("cannot write the manifest: {e}")))?;
     }
 
+    // The users and groups tables are written in the scan's format.
+    let table_format = settings.resolve_ids.then(|| format.clone());
+    let limits = RollLimits {
+        max_bytes: settings.part_max_bytes,
+        max_rows: settings.part_max_rows,
+    };
     let output = Output::start(
         OutputConfig {
             destination: destination.clone(),
@@ -586,12 +605,10 @@ pub fn execute(
             writers,
             crawl_threads: usize::from(runtime.threads),
             sink_budget: budgets.sinks,
-            limits: RollLimits {
-                max_bytes: settings.part_max_bytes,
-                max_rows: settings.part_max_rows,
-            },
+            limits,
             run,
             previous,
+            collect_ids: settings.resolve_ids && scan_dir.is_some(),
         },
         Arc::clone(&stop),
     )
@@ -668,6 +685,7 @@ pub fn execute(
         error_parts: Vec::new(),
         kinds: Vec::new(),
         error_rows: 0,
+        ids: Ids::default(),
     };
     let start = match resume {
         Some((_, state)) => Start::Resume(state),
@@ -712,7 +730,7 @@ pub fn execute(
             .failure
             .as_ref()
             .is_some_and(|e| e.kind() == io::ErrorKind::BrokenPipe);
-    let (status, exit) = match (&report.failure, signaled.load(Ordering::Relaxed)) {
+    let (status, mut exit) = match (&report.failure, signaled.load(Ordering::Relaxed)) {
         _ if stdout_closed => (Status::Interrupted, Exit::Incomplete),
         (Some(e), _) => {
             eprintln!("fs-inventory: writing output failed: {e}");
@@ -726,6 +744,35 @@ pub fn execute(
     };
 
     let elapsed = previous_elapsed + started.elapsed().as_secs_f64();
+    // Names are looked up once the scan has finished (an interrupted scan
+    // gets them when it's resumed), before the checkpoint is removed, so a
+    // scan killed during a slow lookup can still be resumed.
+    let id_tables = match (&scan_dir, &table_format, status) {
+        (Some(dir), Some(format), Status::Complete | Status::Incomplete) => {
+            if summary_style != Style::None {
+                let (users, groups) = (report.ids.uids.len() as u64, report.ids.gids.len() as u64);
+                eprintln!(
+                    "fs-inventory: looking up the names of {users} user {} and {groups} group {}",
+                    progress::noun(users, "ID", "IDs"),
+                    progress::noun(groups, "ID", "IDs")
+                );
+            }
+            let mut warnings = Vec::new();
+            let names = ids::resolve(&report.ids, &mut warnings);
+            for warning in warnings {
+                eprintln!("fs-inventory: {warning}");
+            }
+            match ids::write_tables(dir, format, compression, limits, &names) {
+                Ok(tables) => Some(tables),
+                Err(e) => {
+                    eprintln!("fs-inventory: cannot write the users and groups tables: {e}");
+                    exit = Exit::Fatal;
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     let output_label = match &scan_dir {
         Some(dir) => {
             if checkpointing {
@@ -742,6 +789,7 @@ pub fn execute(
                             error_parts: report.error_parts.clone(),
                             kinds: report.kinds.to_vec(),
                             error_rows: report.error_rows,
+                            ids: report.ids.clone(),
                             ..header
                         };
                         if let Err(e) = checkpoint::write(dir, &header, state) {
@@ -758,6 +806,11 @@ pub fn execute(
                 }
             }
             finalize_manifest(&mut manifest, status, &snapshot, &result, report, elapsed);
+            if let Some((users, groups, summary)) = id_tables {
+                manifest.parts.users = Some(users);
+                manifest.parts.groups = Some(groups);
+                manifest.ids = Some(summary);
+            }
             if let Err(e) = manifest.write(dir).and_then(|()| sync_dir(dir)) {
                 eprintln!("fs-inventory: cannot write the manifest: {e}");
                 return Ok(Exit::Fatal);
@@ -811,12 +864,15 @@ impl Checkpointer for ScanCheckpointer<'_> {
                 error_parts: committed.error_parts.clone(),
                 kinds: committed.kinds.to_vec(),
                 error_rows: committed.error_rows,
+                ids: committed.ids,
                 ..self.header.clone()
             };
             checkpoint::write(dir, &header, state)?;
             self.manifest.parts = Parts {
                 entries: committed.entry_parts,
                 errors: committed.error_parts,
+                users: None,
+                groups: None,
             };
             self.manifest.write(dir)
         })();
@@ -859,18 +915,6 @@ impl Walk<'_> {
             Arc::clone(self.stop),
             self.checkpointer,
         )
-    }
-}
-
-/// Options that parse but do nothing yet. Accepting them silently would be
-/// worse than refusing them.
-fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 1] = [(args.metadata.resolve_ids, "--resolve-ids", "M5")];
-    match pending.iter().find(|(set, _, _)| *set) {
-        Some((_, what, milestone)) => Err(SetupError::usage(format!(
-            "{what} is not implemented yet (planned for milestone {milestone})"
-        ))),
-        None => Ok(()),
     }
 }
 
@@ -1047,6 +1091,7 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<String, serde_j
         ("include_snapshots", json!(args.traversal.include_snapshots)),
         ("detect_cycles", json!(args.traversal.detect_cycles)),
         ("symlink_targets", json!(args.metadata.symlink_targets)),
+        ("resolve_ids", json!(args.metadata.resolve_ids)),
         ("max_memory", json!(args.robustness.max_memory)),
         ("statx_dont_sync", json!(args.metadata.statx_dont_sync)),
         (
@@ -1121,6 +1166,8 @@ fn finalize_manifest(
     manifest.parts = Parts {
         entries: report.entry_parts,
         errors: report.error_parts,
+        users: None,
+        groups: None,
     };
 }
 

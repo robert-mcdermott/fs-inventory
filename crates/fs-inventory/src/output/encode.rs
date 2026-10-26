@@ -210,6 +210,14 @@ impl Encoder {
         row.end();
     }
 
+    /// A row of the `users` or `groups` table, whose ID column is `column`.
+    pub fn id(&self, column: &str, id: u32, name: Option<&str>, out: &mut Vec<u8>) {
+        let mut row = Row::new(self.options.format, None, out);
+        row.int(column, i64::from(id));
+        row.opt_text("name", name);
+        row.end();
+    }
+
     pub fn error(&self, r: &ErrorRecord<'_>, now: Timestamp, out: &mut Vec<u8>) {
         let controls = self.controls();
         let path = names::to_text(r.path, controls);

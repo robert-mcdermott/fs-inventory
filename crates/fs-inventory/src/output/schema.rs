@@ -308,6 +308,38 @@ pub const ERROR_COLUMNS: [Column; 7] = [
     col("time", Timestamp, false, "When the error happened."),
 ];
 
+/// The users table written with `--resolve-ids`.
+pub const USER_COLUMNS: [Column; 2] = [
+    col(
+        "uid",
+        Int64,
+        false,
+        "A user ID that owns at least one entry.",
+    ),
+    col(
+        "name",
+        Text,
+        true,
+        "The user's name, as the scanning host looked it up when the scan finished; null when no account has that ID (such as a deleted user).",
+    ),
+];
+
+/// The groups table written with `--resolve-ids`.
+pub const GROUP_COLUMNS: [Column; 2] = [
+    col(
+        "gid",
+        Int64,
+        false,
+        "A group ID that owns at least one entry.",
+    ),
+    col(
+        "name",
+        Text,
+        true,
+        "The group's name, as the scanning host looked it up when the scan finished; null when no group has that ID.",
+    ),
+];
+
 /// The rollup table written by `fs-inventory rollup`: recursive totals for
 /// every directory.
 pub const ROLLUP_COLUMNS: [Column; 15] = [
@@ -434,7 +466,7 @@ pub const ROLLUP_AGE_COLUMNS: [Column; 6] = [
 ];
 
 /// Every table, with an introduction for the docs.
-pub const TABLES: [(&str, &[Column], &str); 4] = [
+pub const TABLES: [(&str, &[Column], &str); 6] = [
     (
         "entries",
         &ENTRY_COLUMNS,
@@ -444,6 +476,16 @@ pub const TABLES: [(&str, &[Column], &str); 4] = [
         "errors",
         &ERROR_COLUMNS,
         "One row per failed operation. Present only if there were any.",
+    ),
+    (
+        "users",
+        &USER_COLUMNS,
+        "With `--resolve-ids`: one row per user ID in `entries.uid`, with its name. Written when the scan finishes.",
+    ),
+    (
+        "groups",
+        &GROUP_COLUMNS,
+        "With `--resolve-ids`: one row per group ID in `entries.gid`, with its name. Written when the scan finishes.",
     ),
     (
         "rollup",
@@ -572,6 +614,8 @@ fn describe_json() -> String {
         "schema_version": fs_inventory_core::SCHEMA_VERSION,
         "entries": table(&ENTRY_COLUMNS),
         "errors": table(&ERROR_COLUMNS),
+        "users": table(&USER_COLUMNS),
+        "groups": table(&GROUP_COLUMNS),
         "rollup": table(&ROLLUP_COLUMNS),
         "rollup_ages": table(&ROLLUP_AGE_COLUMNS),
         "name_flags": NameFlags::ALL.iter().map(|(f, n)| serde_json::json!({"bit": f.bits(), "name": n})).collect::<Vec<_>>(),
@@ -725,6 +769,10 @@ mod tests {
             ("fs_entries_jsonl", &ENTRY_COLUMNS[..]),
             ("fs_errors_csv", &ERROR_COLUMNS[..]),
             ("fs_errors_jsonl", &ERROR_COLUMNS[..]),
+            ("fs_users_csv", &USER_COLUMNS[..]),
+            ("fs_users_jsonl", &USER_COLUMNS[..]),
+            ("fs_groups_csv", &GROUP_COLUMNS[..]),
+            ("fs_groups_jsonl", &GROUP_COLUMNS[..]),
         ] {
             let body = &sql[sql.find(&format!("MACRO {name}(")).unwrap()..];
             let body = &body[body.find("columns = {").unwrap()..];

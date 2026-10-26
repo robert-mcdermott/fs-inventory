@@ -62,6 +62,24 @@ One row per failed operation. Present only if there were any.
 | `message` | VARCHAR |  | Human-readable description. |
 | `time` | TIMESTAMPTZ |  | When the error happened. |
 
+## `users`
+
+With `--resolve-ids`: one row per user ID in `entries.uid`, with its name. Written when the scan finishes.
+
+| Column | Type | Null | Description |
+|---|---|---|---|
+| `uid` | BIGINT |  | A user ID that owns at least one entry. |
+| `name` | VARCHAR | yes | The user's name, as the scanning host looked it up when the scan finished; null when no account has that ID (such as a deleted user). |
+
+## `groups`
+
+With `--resolve-ids`: one row per group ID in `entries.gid`, with its name. Written when the scan finishes.
+
+| Column | Type | Null | Description |
+|---|---|---|---|
+| `gid` | BIGINT |  | A group ID that owns at least one entry. |
+| `name` | VARCHAR | yes | The group's name, as the scanning host looked it up when the scan finished; null when no group has that ID. |
+
 ## `rollup`
 
 Written by `fs-inventory rollup`: one row per directory with totals over its whole subtree. Parquet only.

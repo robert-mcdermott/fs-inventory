@@ -10,6 +10,7 @@ mod convert;
 #[cfg(debug_assertions)]
 mod debug;
 mod exit;
+mod ids;
 mod output;
 mod parse;
 mod probe;

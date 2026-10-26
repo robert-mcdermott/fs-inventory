@@ -198,6 +198,20 @@ fn convert(args: &ConvertArgs) -> Result<Exit, SetupError> {
             .map_err(|e| fail(&dir, e))?;
     }
     let error_out = out.finish().map_err(|e| fail(&dir, e))?;
+    // The users and groups tables of a scan made with --resolve-ids.
+    let mut id_parts = serde_json::Map::new();
+    for (table, column) in [("users", "uid"), ("groups", "gid")] {
+        if manifest["parts"][table].is_null() {
+            continue;
+        }
+        let mut out = writer(table, 0, vec![column, "name"]);
+        for part in parts(table) {
+            id_rows(&part, column, &encoder, &mut |bytes, n| out.write(bytes, n))
+                .map_err(|e| fail(&dir, e))?;
+        }
+        let written = out.finish().map_err(|e| fail(&dir, e))?;
+        id_parts.insert(table.into(), json!(written));
+    }
 
     let mut converted = manifest.clone();
     converted["format"] = json!(text_format.extension());
@@ -206,6 +220,9 @@ fn convert(args: &ConvertArgs) -> Result<Exit, SetupError> {
     converted["columns"] = json!(encoder.entry_columns());
     converted["error_columns"] = json!(encoder.error_columns());
     converted["parts"] = json!({ "entries": entry_out, "errors": error_out });
+    if let Some(parts) = converted["parts"].as_object_mut() {
+        parts.extend(id_parts);
+    }
     converted["converted_from"] = json!({
         "scan_dir": source.display().to_string(),
         "format": "parquet",
@@ -356,6 +373,38 @@ fn errors(
         rows += 1;
         emit(&out, 1)
     })?;
+    Ok(rows)
+}
+
+/// Encodes every row of a `users` or `groups` part, whose ID column is
+/// `column`.
+fn id_rows(
+    part: &Path,
+    column: &str,
+    encoder: &Encoder,
+    emit: &mut dyn FnMut(&[u8], u64) -> io::Result<()>,
+) -> io::Result<u64> {
+    let mut rows = 0;
+    for batch in batches(part)? {
+        let batch = batch?;
+        let missing = |name: &str| annotate(part, &io::Error::other(format!("no `{name}` column")));
+        let ids = batch
+            .column_by_name(column)
+            .ok_or_else(|| missing(column))?
+            .as_primitive::<Int64Type>();
+        let names = batch
+            .column_by_name("name")
+            .ok_or_else(|| missing("name"))?
+            .as_string::<i32>();
+        let mut out = Vec::new();
+        for row in 0..batch.num_rows() {
+            let id = u32::try_from(ids.value(row)).unwrap_or(u32::MAX);
+            let name = (!names.is_null(row)).then(|| names.value(row));
+            encoder.id(column, id, name, &mut out);
+        }
+        emit(&out, batch.num_rows() as u64)?;
+        rows += batch.num_rows() as u64;
+    }
     Ok(rows)
 }
 
