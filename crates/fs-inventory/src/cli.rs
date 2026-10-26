@@ -174,7 +174,8 @@ pub struct MetadataOptions {
     #[arg(long)]
     pub symlink_targets: bool,
 
-    /// Add user and group name columns.
+    /// Write `users` and `groups` tables that map the scan's user and group
+    /// IDs to names, looked up once per ID when the scan ends.
     #[arg(long)]
     pub resolve_ids: bool,
 }
@@ -185,10 +186,6 @@ pub struct EncodingOptions {
     /// When to fill the exact-bytes path column.
     #[arg(long, value_enum, default_value_t = RawPaths::Auto)]
     pub raw_paths: RawPaths,
-
-    /// Guess the legacy character set of names that are not valid UTF-8.
-    #[arg(long)]
-    pub guess_encoding: bool,
 
     /// Write control characters in CSV names as quoted literals instead of
     /// C-style escapes.

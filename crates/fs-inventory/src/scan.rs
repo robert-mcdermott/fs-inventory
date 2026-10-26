@@ -860,10 +860,9 @@ impl Walk<'_> {
 /// Options that parse but do nothing yet. Accepting them silently would be
 /// worse than refusing them.
 fn reject_unimplemented(args: &ScanArgs) -> Result<(), SetupError> {
-    let pending: [(bool, &str, &str); 3] = [
+    let pending: [(bool, &str, &str); 2] = [
         (args.metadata.symlink_targets, "--symlink-targets", "M5"),
         (args.metadata.resolve_ids, "--resolve-ids", "M5"),
-        (args.encoding.guess_encoding, "--guess-encoding", "M5"),
     ];
     match pending.iter().find(|(set, _, _)| *set) {
         Some((_, what, milestone)) => Err(SetupError::usage(format!(
