@@ -1,11 +1,11 @@
 name: Docs site
 
-# Publishing a release builds the documentation site from that release's Markdown and deploys it
-# to GitHub Pages, so the site describes the version install.sh installs. Run it by hand to
-# rebuild, for example after a fix to the docs or the site's templates: it publishes the latest
-# release's docs, or those of the tag or branch you give.
-#   gh workflow run pages.yml
-#   gh workflow run pages.yml -f ref=v0.4.0
+# Builds the documentation site and commits it to the gh-pages branch, which GitHub Pages serves
+# (Settings → Pages → Deploy from a branch → gh-pages, / (root)). It runs when a release is
+# published, so the site describes the version install.sh installs. Run it by hand to republish,
+# such as after fixing a typo in the docs:
+#   gh workflow run pages.yml              the latest release's docs
+#   gh workflow run pages.yml -f ref=main  the docs on main
 
 on:
   release:
@@ -13,21 +13,19 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Tag or branch whose docs to publish [default: the latest release]
+        description: 'Tag or branch whose docs to publish (default: the latest release)'
         required: false
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
   group: pages
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build the site
+  publish:
+    name: Build and publish the site
     runs-on: ubuntu-latest
     steps:
       - name: Choose the docs to publish
@@ -51,18 +49,16 @@ jobs:
           path: content
       - uses: astral-sh/setup-uv@v10.3.2
       - run: uv run --no-project --with markdown-it-py==4.2.0 site/build.py --source content --ref "${{ steps.ref.outputs.ref }}" --out _site
-      - uses: actions/configure-pages@v6
-      - uses: actions/upload-pages-artifact@v5
-        with:
-          path: _site
-
-  deploy:
-    name: Deploy to GitHub Pages
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v5
+      - name: Commit the site to gh-pages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          # The branch holds only the latest site, as a single commit.
+          cd _site
+          git init -q -b gh-pages
+          git add -A
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Docs site for $REF"
+          git push --force "https://x-access-token:$GH_TOKEN@github.com/$GITHUB_REPOSITORY.git" gh-pages
