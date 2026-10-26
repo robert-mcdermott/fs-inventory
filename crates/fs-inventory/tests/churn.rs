@@ -16,7 +16,8 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -109,32 +110,53 @@ fn scans_a_tree_that_changes_throughout() {
     make_tree(&root);
     let stable: BTreeMap<Vec<u8>, fs::Metadata> = walk(&root.join("stable"));
 
+    let entries = walk(&root).len();
+
     let stop = Arc::new(AtomicBool::new(false));
+    let passes = Arc::new(AtomicUsize::new(0));
     let churner = {
-        let (root, stop) = (root.clone(), Arc::clone(&stop));
+        let (root, stop, passes) = (root.clone(), Arc::clone(&stop), Arc::clone(&passes));
         std::thread::spawn(move || {
-            let mut rounds = 0;
+            let mut round = 0;
             while !stop.load(Ordering::Relaxed) {
-                churn(&root, rounds);
-                rounds += 1;
+                churn(&root, round);
+                round += 1;
+                passes.store(round, Ordering::Relaxed);
             }
-            rounds
         })
     };
+    // Start the scan once the tree is changing, and time a pass of changes.
+    let started = Instant::now();
+    while passes.load(Ordering::Relaxed) == 0 {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let pass = started.elapsed();
+    // Slow every stat (a hook in debug builds) so the scan lasts about eight
+    // passes, however fast this machine changes the tree: each of the
+    // crawl threads stats about `entries / THREADS` names. Directories then
+    // stay open long enough for changes to land in the middle of reading
+    // them.
+    const THREADS: u128 = 4;
+    let scan_time = (pass * 8).max(Duration::from_secs(1));
+    let delay_us = scan_time.as_micros() * THREADS / entries as u128;
     let scan = tmp.path().join("scan");
-    // 300 µs per stat (a hook in debug builds) keeps each directory open
-    // long enough for the changes to land in the middle of reading it.
+    let before = passes.load(Ordering::Relaxed);
     let out = Command::new(env!("CARGO_BIN_EXE_fs-inventory"))
-        .args(["scan", root.to_str().unwrap(), "-f", "jsonl", "-t", "4"])
+        .args(["scan", root.to_str().unwrap(), "-f", "jsonl"])
+        .args(["-t", &THREADS.to_string()])
         .args(["-o", scan.to_str().unwrap(), "--progress", "none"])
-        .env("FS_INVENTORY_DEBUG_STAT_DELAY_US", "300")
+        .env("FS_INVENTORY_DEBUG_STAT_DELAY_US", delay_us.to_string())
         .output()
         .unwrap();
+    let during = passes.load(Ordering::Relaxed) - before;
     stop.store(true, Ordering::Relaxed);
-    let rounds = churner.join().unwrap();
+    churner.join().unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(matches!(out.status.code(), Some(0 | 1)), "{stderr}");
-    assert!(rounds > 1, "the tree changed during only {rounds} passes");
+    assert!(
+        during >= 2,
+        "the tree changed during only {during} passes ({pass:?} each)"
+    );
 
     let manifest: Value =
         serde_json::from_str(&fs::read_to_string(scan.join("manifest.json")).unwrap()).unwrap();
