@@ -222,7 +222,7 @@ fn text_tables_name_the_current_user() {
         .output()
         .unwrap());
     ok(
-        &command(&["convert", parquet.to_str().unwrap(), "--to", "csv"])
+        &command(&["convert", parquet.to_str().unwrap(), "-f", "csv"])
             .args(["-o", converted.to_str().unwrap()])
             .output()
             .unwrap(),

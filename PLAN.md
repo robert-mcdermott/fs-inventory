@@ -245,7 +245,7 @@ Repeated scans can sit side by side (`scans/scan_date=2026-10-25/…`), so DuckD
 - **Same directory layout and writer pool**, with optional compression (`.csv.zst`, `.jsonl.gz`).
 - **`-o -` streams to stdout** for piping. Workers format rows into byte buffers in parallel, and a single writer thread calls `write_all` on whole buffers. There is no per-row locking.
 - **JSON output is always JSON Lines** (one object per line). A single billion-element array can't be streamed or loaded.
-- `fs-inventory convert <scan-dir> --to csv|jsonl` re-exports a Parquet scan without crawling again.
+- `fs-inventory convert <scan-dir> -f csv|jsonl` re-exports a Parquet scan without crawling again.
 
 ---
 
@@ -317,7 +317,7 @@ fs-inventory scan [OPTIONS] <ROOT>...
 
 fs-inventory resume  <SCAN_DIR> [--threads N] [--checkpoint-interval DUR] ...
 fs-inventory rollup  <SCAN_DIR> [--age-buckets LIST] [--age-depth N]
-fs-inventory convert <SCAN_DIR> --to csv|jsonl
+fs-inventory convert <SCAN_DIR> -f csv|jsonl
 fs-inventory verify  <SCAN_DIR>     Check manifest, parts, and row counts
 fs-inventory schema  [--format sql|json]
 fs-inventory probe   <PATH> [--threads LIST] [--duration DUR] [--drop-caches]

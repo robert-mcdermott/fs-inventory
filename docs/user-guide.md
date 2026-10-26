@@ -450,7 +450,7 @@ Text output is several times larger than Parquet and slower to query. Parquet wi
 To get text from a Parquet scan you already have, convert it instead of scanning again ([5.7](#57-convert)):
 
 ```bash
-fs-inventory convert /scratch/inventory/projects-2026-10-25 --to csv -o /scratch/inventory/projects-csv --compression zstd
+fs-inventory convert /scratch/inventory/projects-2026-10-25 -f csv -o /scratch/inventory/projects-csv --compression zstd
 ```
 
 ### 4.12 Interrupted, crashed, and stalled scans
@@ -531,7 +531,7 @@ fs-inventory rollup   SCAN_DIR           Add subtree totals and age histograms t
 fs-inventory schema                      Print the inventory schema
 fs-inventory probe    PATH               Time crawls at several thread counts
 fs-inventory resume   SCAN_DIR           Continue an interrupted scan from its checkpoint
-fs-inventory convert  SCAN_DIR --to F    Re-export a Parquet scan as CSV or JSON Lines
+fs-inventory convert  SCAN_DIR -f F      Re-export a Parquet scan as CSV or JSON Lines
 ```
 
 `fs-inventory COMMAND --help` lists every option. Sizes accept `K`, `M`, `G`, `T` (or `KiB`, `MiB`, `GiB`, `TiB`) for powers of 1024 and `KB`, `MB`, `GB`, `TB` for powers of 1000, such as `512MiB`. Durations accept forms such as `30s`, `10m`, `1h 30m`, `7d`, and `1y`.
@@ -690,14 +690,14 @@ Continues a scan from its last checkpoint; see [4.12](#412-interrupted-crashed-a
 ### 5.7 convert
 
 ```
-fs-inventory convert [OPTIONS] --to <csv|jsonl> --output <DIR|-> <SCAN_DIR>
+fs-inventory convert [OPTIONS] --format <csv|jsonl> --output <DIR|-> <SCAN_DIR>
 ```
 
 Re-exports a Parquet scan as CSV or JSON Lines, for tools that only read text. The result is what the same scan would have written in that format: the same columns, escaping, `path_b64` exact bytes, and time formatting, taken from the scan's own settings (`--columns`, `--fields`, `--raw-paths`, `--csv-raw-controls`, `--time-unit`, and `--time-format`).
 
 | Option | Effect |
 |---|---|
-| `--to csv\|jsonl` | Target format |
+| `-f, --format csv\|jsonl` | Output format, as for `scan`. (`--to`, its name in 0.6.0, still works.) |
 | `-o, --output DIR\|-` | A new or empty directory, laid out like a scan with its own manifest, or `-` to stream entries to stdout (errors go to stderr, as for `scan -o -`) |
 | `--compression CODEC` | `zstd`, `zstd:LEVEL`, `gzip`, `gzip:LEVEL`, or `none` (the default) |
 

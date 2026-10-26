@@ -117,7 +117,7 @@ fn deep_trees_and_long_paths() {
     ok(&fs_inventory(&[
         "convert",
         scan_arg,
-        "--to",
+        "-f",
         "jsonl",
         "-o",
         jsonl.to_str().unwrap(),

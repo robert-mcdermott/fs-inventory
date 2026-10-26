@@ -98,7 +98,7 @@ fn convert(args: &ConvertArgs) -> Result<Exit, SetupError> {
         .map_err(SetupError::usage)?,
         None => Fields::ALL,
     };
-    let text_format = match args.to {
+    let text_format = match args.format {
         Target::Csv => TextFormat::Csv,
         Target::Jsonl => TextFormat::Jsonl,
     };
