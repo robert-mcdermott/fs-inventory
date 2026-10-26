@@ -115,6 +115,12 @@ impl Encoder {
     }
 
     pub fn entry(&self, e: &Entry<'_>, out: &mut Vec<u8>) {
+        self.entry_clamped(e, 0, out);
+    }
+
+    /// Like [`Self::entry`], with times already clamped by an earlier
+    /// encoding (`time_flags` bits), such as a Parquet scan being converted.
+    pub fn entry_clamped(&self, e: &Entry<'_>, clamped_before: u8, out: &mut Vec<u8>) {
         let controls = self.controls();
         let path = names::to_text(e.path, controls);
         let path_b64 = (self.options.raw_paths_always || matches!(path, Cow::Owned(_)))
@@ -135,7 +141,7 @@ impl Encoder {
         let mtime = read(Fields::MTIME).then_some(stat.mtime);
         let ctime = read(Fields::CTIME).then_some(stat.ctime);
         let btime = stat.btime.filter(|_| read(Fields::BTIME));
-        let mut time_flags = 0;
+        let mut time_flags = clamped_before;
         for (time, clamped) in [
             (atime, ATIME_CLAMPED),
             (mtime, MTIME_CLAMPED),

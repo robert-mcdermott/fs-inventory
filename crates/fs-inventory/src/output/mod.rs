@@ -711,14 +711,14 @@ fn write_parts(
 }
 
 /// A compressed or plain stream over stdout.
-enum StdoutStream {
+pub(crate) enum StdoutStream {
     Plain(BufWriter<io::Stdout>),
     Zstd(zstd::Encoder<'static, BufWriter<io::Stdout>>),
     Gzip(GzEncoder<BufWriter<io::Stdout>>),
 }
 
 impl StdoutStream {
-    fn new(compression: Compression) -> io::Result<Self> {
+    pub(crate) fn new(compression: Compression) -> io::Result<Self> {
         let out = BufWriter::with_capacity(1 << 20, io::stdout());
         Ok(match compression {
             Compression::Zstd(level) => Self::Zstd(zstd::Encoder::new(out, level)?),
@@ -729,7 +729,7 @@ impl StdoutStream {
         })
     }
 
-    fn writer(&mut self) -> &mut dyn Write {
+    pub(crate) fn writer(&mut self) -> &mut dyn Write {
         match self {
             Self::Plain(w) => w,
             Self::Zstd(w) => w,
@@ -737,7 +737,7 @@ impl StdoutStream {
         }
     }
 
-    fn finish(self) -> io::Result<()> {
+    pub(crate) fn finish(self) -> io::Result<()> {
         let mut out = match self {
             Self::Plain(w) => w,
             Self::Zstd(w) => w.finish()?,

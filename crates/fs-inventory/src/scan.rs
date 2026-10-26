@@ -925,7 +925,7 @@ fn build_excludes(patterns: &[String]) -> Result<Option<GlobSet>, SetupError> {
 }
 
 /// Creates the scan directory, which must not already contain files.
-fn prepare_output_dir(dir: &Path) -> Result<PathBuf, SetupError> {
+pub(crate) fn prepare_output_dir(dir: &Path) -> Result<PathBuf, SetupError> {
     match fs::read_dir(dir) {
         Ok(mut entries) => {
             if entries.next().is_some() {
@@ -1013,7 +1013,7 @@ fn root_record(root: &[u8]) -> Root {
     }
 }
 
-fn describe_compression(compression: Compression) -> String {
+pub(crate) fn describe_compression(compression: Compression) -> String {
     match compression {
         Compression::None => "none".into(),
         Compression::Zstd(level) => format!("zstd:{level}"),
@@ -1124,7 +1124,7 @@ fn finalize_manifest(
     };
 }
 
-fn iso(t: fs_inventory_core::model::Timestamp) -> String {
+pub(crate) fn iso(t: fs_inventory_core::model::Timestamp) -> String {
     let mut out = Vec::new();
     timefmt::write_iso(&mut out, t, Precision::Micros);
     String::from_utf8_lossy(&out).into_owned()
