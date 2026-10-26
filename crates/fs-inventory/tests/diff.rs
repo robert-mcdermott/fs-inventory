@@ -104,8 +104,11 @@ fn fs_diff_finds_exactly_the_changes() {
 
     fs::write(sub.join("grow"), b"data\nmore\n").unwrap();
     rustix::fs::chmod(sub.join("perm"), rustix::fs::Mode::from_raw_mode(0o600)).unwrap();
-    fs::remove_file(sub.join("replace")).unwrap();
-    fs::write(sub.join("replace"), b"data\n").unwrap();
+    // Replaced the way editors save: written beside the old file and renamed
+    // over it, so it can't get the old inode number back, as a file created
+    // just after a delete can (ext4 reuses them at once).
+    fs::write(sub.join("replace.new"), b"data\n").unwrap();
+    fs::rename(sub.join("replace.new"), sub.join("replace")).unwrap();
     fs::rename(sub.join("rename"), sub.join("renamed")).unwrap();
     fs::remove_file(sub.join("gone")).unwrap();
     fs::write(sub.join("added"), b"new\n").unwrap();
