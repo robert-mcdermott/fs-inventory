@@ -133,7 +133,7 @@ An open directory (`Backend::Dir`) must be shareable across threads, because hug
 
 ### 3.3 Long paths
 
-Paths can exceed `PATH_MAX` (4,096 bytes), and `open` then fails with `ENAMETOOLONG`. `DirOpener` retries by walking the path one component at a time with `openat`, applying the caller's flags only to the final component. Paths are stored in full regardless of length, and `name_flags` marks them with `long_path`.
+Paths can exceed `PATH_MAX` (4,096 bytes on Linux, 1,024 on macOS), and `open` then fails with `ENAMETOOLONG`. `DirOpener` retries by splitting the path at `/` into pieces shorter than `PATH_MAX` and opening each with `openat` relative to the one before, applying the caller's flags only to the final piece. An 8,000-byte path takes two or three calls on Linux, rather than one per component, which made opening every directory of a 2,000-level tree cost millions of calls. Paths are stored in full regardless of length, and `name_flags` marks them with `long_path`.
 
 ### 3.4 Generated trees
 

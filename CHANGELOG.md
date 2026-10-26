@@ -8,6 +8,10 @@ All notable changes to this project are documented in this file. The format foll
 
 - `fs_diff` and `fs_diff_summary` DuckDB macros compare two Parquet scans of the same roots: one row per added, removed, or changed entry, with the columns that changed and the rows before and after, or the counts and net size change by kind. Entries are matched by their exact path bytes; `atime` and `dev` are ignored unless `ignore := []` is given. They work on version 2 scans too.
 
+### Fixed
+
+- Directories whose paths are longer than `PATH_MAX` (4,096 bytes on Linux, 1,024 on macOS) are opened in a few calls instead of one call per path component. Opening every directory of a 2,000-level tree took millions of calls: scanning one on macOS went from 7.5 minutes to 6 seconds.
+
 ## [0.6.0] - 2026-10-26
 
 Re-export Parquet scans as CSV or JSON Lines with `convert`, record symlink targets, and look up user and group names.

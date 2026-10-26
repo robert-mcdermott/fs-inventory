@@ -121,7 +121,7 @@ A single directory can hold 10M+ entries. `getdents` is one sequential stream, b
 
 ### 3.5 Paths longer than PATH_MAX
 
-Deep trees regularly exceed the 4096-byte `PATH_MAX`. Paths are kept as growable byte buffers with no fixed-size arrays. Opening by full path fails with `ENAMETOOLONG` past the limit. In that case the worker walks down component by component with `openat` from the deepest ancestor it can open. A unit test builds a path longer than 10,000 bytes.
+Deep trees regularly exceed the 4096-byte `PATH_MAX`. Paths are kept as growable byte buffers with no fixed-size arrays. Opening by full path fails with `ENAMETOOLONG` past the limit. In that case the worker opens the path in pieces shorter than `PATH_MAX`, split at `/`, each with `openat` relative to the one before. A unit test opens a 6,000-byte path, and `tests/extreme.rs` scans a 2,000-level tree and paths over 10,000 bytes.
 
 ### 3.6 Platform backends
 
