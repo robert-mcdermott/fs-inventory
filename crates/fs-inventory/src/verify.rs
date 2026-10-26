@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::exit::Exit;
 use crate::output::parquet;
+use crate::progress::noun;
 
 /// Checks a scan directory. Exits 0 when it is complete and consistent, and
 /// 1 (listing the problems) otherwise.
@@ -172,8 +173,15 @@ pub fn check(scan_dir: &Path) -> Report {
     }
 
     report.summary = Some(format!(
-        "scan {scan_id}: {status}, {} entries in {} parts, {} errors in {} parts ({format})",
-        table_rows[0], part_counts[0], table_rows[1], part_counts[1]
+        "scan {scan_id}: {status}, {} {} in {} {}, {} {} in {} {} ({format})",
+        table_rows[0],
+        noun(table_rows[0], "entry", "entries"),
+        part_counts[0],
+        noun(part_counts[0] as u64, "part", "parts"),
+        table_rows[1],
+        noun(table_rows[1], "error", "errors"),
+        part_counts[1],
+        noun(part_counts[1] as u64, "part", "parts")
     ));
     report
 }

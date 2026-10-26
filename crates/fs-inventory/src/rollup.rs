@@ -31,6 +31,7 @@ use crate::output::parts::RollLimits;
 use crate::output::schema::{ROLLUP_AGE_COLUMNS, ROLLUP_COLUMNS, arrow_schema};
 use crate::output::{now, timefmt};
 use crate::parse::{Compression, parse_duration};
+use crate::progress::noun;
 
 /// Rows per output batch.
 const BATCH_ROWS: usize = 64 * 1024;
@@ -653,13 +654,16 @@ fn rollup(args: &RollupArgs) -> io::Result<String> {
     write_value(scan_dir, &manifest)?;
 
     let mut summary = format!(
-        "rollup: {directories} directories, {age_rows} age rows (depth <= {}); wrote rollup/ and rollup_ages/ in {}",
+        "rollup: {directories} {}, {age_rows} age {} (depth <= {}); wrote rollup/ and rollup_ages/ in {}",
+        noun(directories, "directory", "directories"),
+        noun(age_rows, "row", "rows"),
         args.age_depth,
         scan_dir.display()
     );
     if incomplete_roots > 0 {
         summary.push_str(&format!(
-            "\nnote: {incomplete_roots} directories weren't read completely, so some totals are lower bounds (see incomplete_dirs)"
+            "\nnote: {incomplete_roots} {} read completely, so some totals are lower bounds (see incomplete_dirs)",
+            noun(incomplete_roots, "directory wasn't", "directories weren't")
         ));
     }
     if manifest["status"] != "complete" {

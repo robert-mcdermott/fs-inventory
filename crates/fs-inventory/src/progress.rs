@@ -126,13 +126,16 @@ fn report(style: Style, now: &Snapshot, last: &Snapshot, stalled: &[Stalled]) {
     let line = match style {
         Style::Plain => {
             let mut line = format!(
-                "fs-inventory: {}  {} entries ({}/s)  {} dirs  {}  {} errors  {} queued",
+                "fs-inventory: {}  {} {} ({}/s)  {} {}  {}  {} {}  {} queued",
                 format_duration(now.elapsed),
                 format_count(now.entries as f64),
+                noun(now.entries, "entry", "entries"),
                 format_count(recent_rate),
                 format_count(now.dirs as f64),
+                noun(now.dirs, "dir", "dirs"),
                 format_bytes(now.bytes),
                 now.errors,
+                noun(now.errors, "error", "errors"),
                 now.queued,
             );
             if let Some(oldest) = stalled.iter().max_by_key(|s| s.seconds) {
@@ -177,13 +180,16 @@ pub fn summary(style: Style, status: &str, snapshot: &Snapshot, output: &str) {
     let line = match style {
         Style::None => return,
         Style::Plain => format!(
-            "fs-inventory: {status}: {} entries in {} ({}/s), {} dirs, {}, {} errors, {} vanished; output: {output}\n",
+            "fs-inventory: {status}: {} {} in {} ({}/s), {} {}, {}, {} {}, {} vanished; output: {output}\n",
             snapshot.entries,
+            noun(snapshot.entries, "entry", "entries"),
             format_duration(snapshot.elapsed),
             format_count(snapshot.rate()),
             snapshot.dirs,
+            noun(snapshot.dirs, "dir", "dirs"),
             format_bytes(snapshot.bytes),
             snapshot.errors,
+            noun(snapshot.errors, "error", "errors"),
             snapshot.vanished,
         ),
         Style::Json => format!(
@@ -207,6 +213,11 @@ pub fn summary(style: Style, status: &str, snapshot: &Snapshot, output: &str) {
 
 fn round3(x: f64) -> f64 {
     (x * 1000.0).round() / 1000.0
+}
+
+/// The singular or plural form of a noun for `n` things.
+pub fn noun<'a>(n: u64, one: &'a str, many: &'a str) -> &'a str {
+    if n == 1 { one } else { many }
 }
 
 /// Formats a count compactly: `950`, `12.3k`, `4.56M`, `1.20B`.
@@ -255,5 +266,7 @@ mod tests {
         assert_eq!(format_bytes(3 << 40), "3.00 TiB");
         assert_eq!(format_bytes(u64::MAX), "16.00 EiB");
         assert_eq!(format_duration(Duration::from_secs(3_725)), "1:02:05");
+        assert_eq!(noun(1, "error", "errors"), "error");
+        assert_eq!(noun(0, "error", "errors"), "errors");
     }
 }
