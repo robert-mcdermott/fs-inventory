@@ -9,7 +9,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::parts::PartInfo;
 
@@ -40,7 +40,7 @@ pub struct StalledDir {
     pub seconds: u64,
 }
 
-#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Root {
     /// The root path as text.
     pub path: String,
@@ -75,6 +75,15 @@ pub struct ErrorSummary {
     pub count: u64,
 }
 
+/// One resume of an interrupted scan.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Resume {
+    pub resumed_at: String,
+    /// When the checkpoint it continued from was taken.
+    pub checkpoint_at: String,
+    pub tool_version: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Parts {
     pub entries: Vec<PartInfo>,
@@ -95,7 +104,7 @@ pub struct Manifest {
     pub columns: Vec<&'static str>,
     pub error_columns: Vec<&'static str>,
     /// Options that shape the output.
-    pub options: BTreeMap<&'static str, serde_json::Value>,
+    pub options: BTreeMap<String, serde_json::Value>,
     pub started_at: String,
     pub finished_at: Option<String>,
     pub duration_seconds: Option<f64>,
@@ -103,6 +112,9 @@ pub struct Manifest {
     pub errors_by_kind: Vec<ErrorSummary>,
     /// Directories given up on after `--stall-timeout`.
     pub stalled: Vec<StalledDir>,
+    /// Each time the scan was resumed after being interrupted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resumes: Vec<Resume>,
     pub parts: Parts,
 }
 

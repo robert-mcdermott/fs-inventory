@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use serde::{Deserialize, Serialize};
 
 use crate::parse::{Compression, parse_compression, parse_duration, parse_size};
 
@@ -27,7 +28,7 @@ pub enum Command {
     /// Crawl one or more directory trees and write an inventory.
     Scan(ScanArgs),
     /// Continue an interrupted scan from its last checkpoint.
-    Resume(ScanDirArgs),
+    Resume(ResumeArgs),
     /// Compute totals over every directory's subtree, and age histograms.
     Rollup(RollupArgs),
     /// Re-export a Parquet scan as CSV or JSON Lines.
@@ -248,6 +249,38 @@ pub struct RollupArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct ResumeArgs {
+    /// Scan output directory.
+    #[arg(value_name = "SCAN_DIR")]
+    pub scan_dir: PathBuf,
+
+    /// Crawl threads [default: as the scan ran].
+    #[arg(short, long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=1024))]
+    pub threads: Option<u16>,
+
+    /// Most encoder and writer threads [default: as the scan ran].
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=256))]
+    pub writers: Option<u16>,
+
+    /// Interval between checkpoints (`0` disables them) [default: as the
+    /// scan ran].
+    #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
+    pub checkpoint_interval: Option<Duration>,
+
+    /// Abandon subtrees whose file system calls hang longer than this (`0`
+    /// waits forever) [default: as the scan ran].
+    #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
+    pub stall_timeout: Option<Duration>,
+
+    /// Soft memory budget [default: as the scan ran].
+    #[arg(long, value_parser = parse_size, value_name = "SIZE")]
+    pub max_memory: Option<u64>,
+
+    #[command(flatten)]
+    pub progress: ProgressOptions,
+}
+
+#[derive(Debug, Args)]
 pub struct ScanDirArgs {
     /// Scan output directory.
     #[arg(value_name = "SCAN_DIR")]
@@ -307,7 +340,8 @@ pub struct ProbeArgs {
     pub drop_caches: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Format {
     Parquet,
     Csv,
@@ -320,7 +354,8 @@ pub enum TextFormat {
     Jsonl,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum RawPaths {
     /// Only for paths whose text form differs from the original bytes.
     Auto,
@@ -328,7 +363,8 @@ pub enum RawPaths {
     Always,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TimeUnit {
     /// Microseconds (any date in +/-290,000 years).
     Us,
@@ -336,7 +372,8 @@ pub enum TimeUnit {
     Ns,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum TimeFormat {
     /// ISO-8601 UTC with fractional seconds.
     Iso,

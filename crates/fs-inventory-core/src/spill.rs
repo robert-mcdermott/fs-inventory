@@ -4,11 +4,13 @@
 //! A first-in, first-out queue of records on disk, for directories waiting
 //! to be read when the in-memory queue is over its budget.
 //!
-//! The file is unlinked as soon as it's created, so it never outlives the
-//! process, even after a crash.
+//! Without checkpoints, the file is unlinked as soon as it's created, so it
+//! never outlives the process, even after a crash. With checkpoints, it
+//! stays in the checkpoint directory, and a [`SpillMark`] records which of
+//! its records a checkpoint still needs.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -17,9 +19,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 struct Files {
     writer: BufWriter<File>,
     reader: BufReader<File>,
+    /// Bytes of records read, from the start of the file.
+    read: u64,
+    /// Bytes of records written, from the start of the file.
+    written: u64,
 }
 
-/// An unlinked spill file of length-prefixed records.
+/// The records of a spill file that were waiting at a checkpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SpillMark {
+    /// Offset of the first waiting record.
+    pub read: u64,
+    /// Offset just past the last record.
+    pub written: u64,
+    /// Records between the two.
+    pub waiting: u64,
+}
+
+/// A spill file of length-prefixed records.
 pub struct Spill {
     files: Mutex<Files>,
     /// Records written and not yet read.
@@ -43,12 +60,51 @@ impl Spill {
         let reader = File::open(&path);
         // Unlink before anything else can fail, so the file never lingers.
         fs::remove_file(&path)?;
-        Ok(Self {
+        Ok(Self::new(writer, reader?, SpillMark::default()))
+    }
+
+    /// Opens a spill file that outlives the process, at `path`. With a
+    /// mark, continues from it, discarding records written after it;
+    /// otherwise starts empty.
+    pub fn persistent(path: &Path, mark: Option<SpillMark>) -> io::Result<Self> {
+        let mark = mark.unwrap_or_default();
+        let mut writer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        writer.set_len(mark.written)?;
+        writer.seek(SeekFrom::Start(mark.written))?;
+        let mut reader = File::open(path)?;
+        reader.seek(SeekFrom::Start(mark.read))?;
+        Ok(Self::new(writer, reader, mark))
+    }
+
+    fn new(writer: File, reader: File, mark: SpillMark) -> Self {
+        Self {
             files: Mutex::new(Files {
                 writer: BufWriter::with_capacity(1 << 20, writer),
-                reader: BufReader::with_capacity(1 << 20, reader?),
+                reader: BufReader::with_capacity(1 << 20, reader),
+                read: mark.read,
+                written: mark.written,
             }),
-            waiting: AtomicU64::new(0),
+            waiting: AtomicU64::new(mark.waiting),
+        }
+    }
+
+    /// Writes every record to disk and returns the records now waiting.
+    pub fn mark(&self) -> io::Result<SpillMark> {
+        let mut files = self
+            .files
+            .lock()
+            .map_err(|_| io::Error::other("spill file poisoned"))?;
+        files.writer.flush()?;
+        files.writer.get_ref().sync_data()?;
+        Ok(SpillMark {
+            read: files.read,
+            written: files.written,
+            waiting: self.waiting.load(Ordering::Acquire),
         })
     }
 
@@ -66,6 +122,7 @@ impl Spill {
         let len = u32::try_from(record.len()).map_err(io::Error::other)?;
         files.writer.write_all(&len.to_le_bytes())?;
         files.writer.write_all(record)?;
+        files.written += 4 + u64::from(len);
         self.waiting.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
@@ -85,6 +142,7 @@ impl Spill {
         out.clear();
         out.resize(u32::from_le_bytes(len) as usize, 0);
         files.reader.read_exact(out)?;
+        files.read += 4 + out.len() as u64;
         self.waiting.fetch_sub(1, Ordering::AcqRel);
         Ok(true)
     }
@@ -188,6 +246,37 @@ mod tests {
         assert!(spill.pop(&mut out).unwrap());
         assert_eq!(out, b"late");
         assert!(!spill.pop(&mut out).unwrap());
+    }
+
+    #[test]
+    fn persistent_files_resume_from_a_mark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("spill");
+        let spill = Spill::persistent(&path, None).unwrap();
+        for i in 0..10u32 {
+            spill.push(&i.to_le_bytes()).unwrap();
+        }
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            assert!(spill.pop(&mut out).unwrap());
+        }
+        let mark = spill.mark().unwrap();
+        assert_eq!(mark.waiting, 7);
+        // Work after the mark is lost in a crash.
+        spill.push(b"after the mark").unwrap();
+        assert!(spill.pop(&mut out).unwrap());
+        drop(spill);
+
+        let spill = Spill::persistent(&path, Some(mark)).unwrap();
+        assert_eq!(spill.waiting(), 7);
+        for i in 3..10u32 {
+            assert!(spill.pop(&mut out).unwrap());
+            assert_eq!(out, i.to_le_bytes());
+        }
+        assert!(!spill.pop(&mut out).unwrap());
+        spill.push(b"new").unwrap();
+        assert!(spill.pop(&mut out).unwrap());
+        assert_eq!(out, b"new");
     }
 
     #[test]

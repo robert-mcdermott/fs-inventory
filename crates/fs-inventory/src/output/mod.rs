@@ -12,6 +12,10 @@
 //! Each sink's buffer is shared with the output, so if the walker abandons a
 //! stuck worker, [`Output::finish`] still writes the rows of every directory
 //! that worker finished, and drops only the one it was stuck in.
+//!
+//! For a checkpoint, [`Output::checkpoint`] sends every sink's rows, waits
+//! for the writers to write them, and has each writer commit its open parts,
+//! so every row delivered so far is in a committed part.
 
 pub mod arrow;
 pub mod encode;
@@ -39,7 +43,7 @@ use fs_inventory_core::walker::Sink;
 use self::arrow::{ArrowOptions, EntryBatchBuilder, ErrorBatchBuilder, entry_schema};
 use self::encode::Encoder;
 use self::parquet::{ParquetPartWriter, ParquetSettings};
-use self::parts::{PartInfo, PartWriter, RollLimits, compression_suffix};
+use self::parts::{PartInfo, PartWriter, RollLimits, compression_suffix, sync_dir};
 use self::schema::{ERROR_COLUMNS, Selection, arrow_schema};
 use crate::parse::Compression;
 
@@ -93,6 +97,21 @@ pub struct OutputConfig {
     /// Memory shared by the sinks' row buffers.
     pub sink_budget: usize,
     pub limits: RollLimits,
+    /// Resumed runs number their parts `part-rN-wNN-...`, so they never
+    /// collide with earlier runs' parts.
+    pub run: u32,
+    /// What earlier runs of a resumed scan committed.
+    pub previous: OutputState,
+}
+
+/// Every committed part, and the rows in them.
+#[derive(Debug, Clone, Default)]
+pub struct OutputState {
+    pub entry_parts: Vec<PartInfo>,
+    pub error_parts: Vec<PartInfo>,
+    /// Entry rows by kind, in [`EntryKind::ALL`] order.
+    pub kinds: [u64; EntryKind::ALL.len()],
+    pub error_rows: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +131,15 @@ struct Chunk {
     rows: u64,
 }
 
+/// A request to one writer.
+enum Control {
+    /// Commit the open parts and reply with every part committed so far.
+    Commit(Sender<io::Result<WriterParts>>),
+}
+
+/// A writer's committed entry and error parts.
+type WriterParts = (Vec<PartInfo>, Vec<PartInfo>);
+
 /// State shared by every sink and writer.
 struct Shared {
     format: Format,
@@ -126,6 +154,12 @@ struct Shared {
     failure: Mutex<Option<io::Error>>,
     /// Writers start one at a time as the backlog grows, up to `max_writers`.
     writers: Mutex<Vec<JoinHandle<WriterResult>>>,
+    /// One per writer, in the same order.
+    controls: Mutex<Vec<Sender<Control>>>,
+    /// Chunks sent and not yet written.
+    in_flight: Arc<AtomicU64>,
+    /// Sinks salvaged at a checkpoint, before the output finished.
+    salvaged: AtomicUsize,
     active_writers: AtomicUsize,
     max_writers: usize,
     /// Taken when the output finishes, so no new writer starts.
@@ -155,10 +189,17 @@ impl Shared {
         let shutdown = self.shutdown_rx.clone();
         let config = self.config.clone();
         let stop = Arc::clone(&self.stop);
+        let (control_tx, control) = crossbeam_channel::bounded(1);
+        let in_flight = Arc::clone(&self.in_flight);
         let handle = std::thread::Builder::new()
             .name(format!("fs-inventory-write-{index}"))
             .spawn(move || {
-                let input = Input { rx, shutdown };
+                let input = Input {
+                    rx,
+                    shutdown,
+                    control,
+                    in_flight,
+                };
                 match &config.destination {
                     Destination::Dir(dir) => {
                         write_parts(&input, &config, dir.clone(), index, &stop)
@@ -167,6 +208,9 @@ impl Shared {
                 }
             })?;
         writers.push(handle);
+        if let Ok(mut controls) = self.controls.lock() {
+            controls.push(control_tx);
+        }
         self.active_writers.store(writers.len(), Ordering::Relaxed);
         Ok(())
     }
@@ -231,6 +275,9 @@ impl Output {
             stop: Arc::clone(&stop),
             failure: Mutex::new(None),
             writers: Mutex::new(Vec::with_capacity(max_writers)),
+            controls: Mutex::new(Vec::with_capacity(max_writers)),
+            in_flight: Arc::new(AtomicU64::new(0)),
+            salvaged: AtomicUsize::new(0),
             active_writers: AtomicUsize::new(0),
             max_writers,
             rx: Mutex::new(Some(rx)),
@@ -286,7 +333,7 @@ impl Output {
             Ok(mut sinks) => std::mem::take(&mut *sinks),
             Err(_) => Vec::new(),
         };
-        let mut salvaged = 0;
+        let mut salvaged = self.shared.salvaged.load(Ordering::Relaxed);
         for state in sinks {
             if salvage(&state, &self.shared) {
                 salvaged += 1;
@@ -300,7 +347,10 @@ impl Output {
             Ok(mut writers) => std::mem::take(&mut *writers),
             Err(_) => Vec::new(),
         };
+        let previous = &self.shared.config.previous;
         let mut report = OutputReport {
+            entry_parts: previous.entry_parts.clone(),
+            error_parts: previous.error_parts.clone(),
             salvaged,
             ..OutputReport::default()
         };
@@ -325,11 +375,101 @@ impl Output {
         {
             report.failure.get_or_insert(e);
         }
-        for (count, kind) in report.kinds.iter_mut().zip(&self.shared.kinds) {
-            *count = kind.load(Ordering::Relaxed);
+        for ((count, kind), before) in report
+            .kinds
+            .iter_mut()
+            .zip(&self.shared.kinds)
+            .zip(previous.kinds)
+        {
+            *count = before + kind.load(Ordering::Relaxed);
         }
-        report.error_rows = self.shared.error_rows.load(Ordering::Relaxed);
+        report.error_rows = previous.error_rows + self.shared.error_rows.load(Ordering::Relaxed);
         report
+    }
+
+    /// Makes every row the sinks hold durable, for a checkpoint: sends each
+    /// sink's rows, salvaging the sinks of `abandoned` workers (by sink
+    /// index), waits until the writers have written them all, and has each
+    /// writer commit its open parts. Every other sink must be at a directory
+    /// boundary, with its worker paused. Returns every committed part.
+    pub fn checkpoint(&self, abandoned: &[usize]) -> io::Result<OutputState> {
+        let shared = &self.shared;
+        let sinks = shared
+            .sinks
+            .lock()
+            .map(|sinks| sinks.clone())
+            .map_err(|_| io::Error::other("output sinks poisoned"))?;
+        let mut kinds = [0u64; EntryKind::ALL.len()];
+        for (index, state) in sinks.iter().enumerate() {
+            if abandoned.contains(&index) {
+                if salvage(state, shared) {
+                    shared.salvaged.fetch_add(1, Ordering::Relaxed);
+                }
+                continue;
+            }
+            let Ok(mut state) = state.lock() else {
+                continue;
+            };
+            if state.closed {
+                continue;
+            }
+            state.commit_kinds();
+            state.send_entries(shared);
+            state.send_errors(shared);
+            for (total, kind) in kinds.iter_mut().zip(state.kinds) {
+                *total += kind;
+            }
+        }
+        // Writers may still be writing what was just sent.
+        while shared.in_flight.load(Ordering::Acquire) > 0 {
+            let stopped = shared
+                .writers
+                .lock()
+                .is_ok_and(|w| w.iter().any(JoinHandle::is_finished));
+            if stopped {
+                return Err(io::Error::other("an output writer stopped"));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let previous = &shared.config.previous;
+        let mut state = OutputState {
+            entry_parts: previous.entry_parts.clone(),
+            error_parts: previous.error_parts.clone(),
+            kinds,
+            error_rows: previous.error_rows + shared.error_rows.load(Ordering::Relaxed),
+        };
+        for ((total, kind), before) in state
+            .kinds
+            .iter_mut()
+            .zip(&shared.kinds)
+            .zip(previous.kinds)
+        {
+            *total += before + kind.load(Ordering::Relaxed);
+        }
+        let controls = shared
+            .controls
+            .lock()
+            .map(|c| c.clone())
+            .map_err(|_| io::Error::other("output writers poisoned"))?;
+        for control in controls {
+            let (reply, replies) = crossbeam_channel::bounded(1);
+            let stopped = || io::Error::other("an output writer stopped");
+            control
+                .send(Control::Commit(reply))
+                .map_err(|_| stopped())?;
+            let (entries, errors) = replies.recv().map_err(|_| stopped())??;
+            state.entry_parts.extend(entries);
+            state.error_parts.extend(errors);
+        }
+        if let Destination::Dir(dir) = &shared.config.destination {
+            for table in ["entries", "errors"] {
+                let table = dir.join(table);
+                if table.exists() {
+                    sync_dir(&table)?;
+                }
+            }
+        }
+        Ok(state)
     }
 }
 
@@ -377,26 +517,53 @@ fn salvage(state: &Mutex<SinkState>, shared: &Shared) -> bool {
     true
 }
 
-/// Writer input: the chunk channel, and the shutdown signal.
+/// Writer input: the chunk channel, this writer's requests, and the
+/// shutdown signal.
 struct Input {
     rx: Receiver<Chunk>,
     shutdown: Receiver<()>,
+    control: Receiver<Control>,
+    /// Chunks sent and not yet written; decremented by [`Self::done`].
+    in_flight: Arc<AtomicU64>,
+}
+
+enum Event {
+    Chunk(Chunk),
+    Control(Control),
 }
 
 impl Input {
-    /// The next chunk, or `None` once the channel is empty after shutdown
-    /// (or every sender is gone).
-    fn next(&self) -> Option<Chunk> {
+    /// The next chunk or request, or `None` once the channel is empty after
+    /// shutdown (or every sender is gone).
+    fn next(&self) -> Option<Event> {
         crossbeam_channel::select! {
-            recv(self.rx) -> chunk => chunk.ok(),
-            recv(self.shutdown) -> _ => self.rx.try_recv().ok(),
+            recv(self.rx) -> chunk => chunk.ok().map(Event::Chunk),
+            recv(self.control) -> control => match control {
+                Ok(control) => Some(Event::Control(control)),
+                // The output outlives its writers, so this doesn't happen;
+                // carry on with chunks.
+                Err(_) => self.rx.recv().ok().map(Event::Chunk),
+            },
+            recv(self.shutdown) -> _ => self.rx.try_recv().ok().map(Event::Chunk),
         }
     }
 
+    /// A chunk has been written (or discarded).
+    fn done(&self) {
+        self.in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
+
     /// Discards everything until shutdown, so sinks never block on a full
-    /// channel after a writer fails.
+    /// channel after a writer fails, and refuses commits.
     fn drain(&self) {
-        while self.next().is_some() {}
+        while let Some(event) = self.next() {
+            match event {
+                Event::Chunk(_) => self.done(),
+                Event::Control(Control::Commit(reply)) => {
+                    let _ = reply.send(Err(io::Error::other("output failed earlier")));
+                }
+            }
+        }
     }
 }
 
@@ -424,6 +591,13 @@ impl TableWriter {
             Self::Parquet(w) => w.finish(),
         }
     }
+
+    fn checkpoint(&mut self) -> io::Result<Vec<PartInfo>> {
+        match self {
+            Self::Text(w) => w.checkpoint(),
+            Self::Parquet(w) => w.checkpoint(),
+        }
+    }
 }
 
 fn table_writers(
@@ -431,7 +605,10 @@ fn table_writers(
     dir: &std::path::Path,
     index: usize,
 ) -> io::Result<(TableWriter, TableWriter)> {
-    let prefix = format!("part-w{index:02}");
+    let prefix = match config.run {
+        0 => format!("part-w{index:02}"),
+        run => format!("part-r{run}-w{index:02}"),
+    };
     Ok(match &config.format {
         Format::Text(encoder) => {
             let suffix = compression_suffix(config.compression);
@@ -491,12 +668,30 @@ fn write_parts(
     };
 
     let mut failure = None;
-    while let Some(chunk) = input.next() {
-        let writer = match chunk.table {
-            Table::Entries => &mut entries,
-            Table::Errors => &mut errors,
+    while let Some(event) = input.next() {
+        let result = match event {
+            Event::Chunk(chunk) => {
+                let writer = match chunk.table {
+                    Table::Entries => &mut entries,
+                    Table::Errors => &mut errors,
+                };
+                let result = writer.write(&chunk);
+                input.done();
+                result
+            }
+            Event::Control(Control::Commit(reply)) => {
+                let parts = entries
+                    .checkpoint()
+                    .and_then(|e| errors.checkpoint().map(|r| (e, r)));
+                let reply_with = match &parts {
+                    Ok(parts) => Ok(parts.clone()),
+                    Err(e) => Err(io::Error::new(e.kind(), e.to_string())),
+                };
+                let _ = reply.send(reply_with);
+                parts.map(|_| ())
+            }
         };
-        if let Err(e) = writer.write(&chunk) {
+        if let Err(e) = result {
             failure = Some(e);
             stop.store(true, Ordering::Relaxed);
             input.drain();
@@ -562,7 +757,16 @@ fn write_stdout(input: &Input, config: &OutputConfig, stop: &AtomicBool) -> Writ
             .writer()
             .write_all(&encoder.header(&encoder.entry_columns()))?;
         let stderr = io::stderr();
-        while let Some(chunk) = input.next() {
+        while let Some(event) = input.next() {
+            let chunk = match event {
+                Event::Chunk(chunk) => chunk,
+                // Streams take no checkpoints; there are no parts.
+                Event::Control(Control::Commit(reply)) => {
+                    let _ = reply.send(Ok((Vec::new(), Vec::new())));
+                    continue;
+                }
+            };
+            input.done();
             let Payload::Text(bytes) = &chunk.payload else {
                 return Err(io::Error::other("stdout output must be CSV or JSON Lines"));
             };
@@ -686,6 +890,7 @@ impl SinkState {
             // means the existing writers keep going alone.
             let _ = shared.add_writer();
         }
+        shared.in_flight.fetch_add(1, Ordering::AcqRel);
         if tx
             .send(Chunk {
                 table,
@@ -695,6 +900,7 @@ impl SinkState {
             .is_err()
         {
             // Every writer has stopped; the failure is reported by `finish`.
+            shared.in_flight.fetch_sub(1, Ordering::AcqRel);
             shared.stop.store(true, Ordering::Relaxed);
         }
     }
@@ -854,6 +1060,8 @@ mod tests {
                 max_bytes: u64::MAX,
                 max_rows: None,
             },
+            run: 0,
+            previous: OutputState::default(),
         }
     }
 
@@ -912,5 +1120,104 @@ mod tests {
         // Rows the stuck worker writes later are dropped.
         row(&mut stuck, b"/d/too-late");
         stuck.end_dir();
+    }
+
+    fn paths_in(dir: &std::path::Path, parts: &[PartInfo]) -> Vec<String> {
+        let mut paths = Vec::new();
+        for part in parts {
+            let text = std::fs::read_to_string(dir.join(&part.file)).unwrap();
+            for line in text.lines() {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                paths.push(value["path"].as_str().unwrap().to_string());
+            }
+        }
+        paths.sort();
+        paths
+    }
+
+    #[test]
+    fn checkpoints_commit_every_delivered_row() {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = Output::start(config(tmp.path()), Arc::new(AtomicBool::new(false))).unwrap();
+        let mut first = output.sink();
+        let mut second = output.sink();
+        let mut stuck = output.sink();
+        row(&mut first, b"/d/a");
+        first.end_dir();
+        row(&mut second, b"/d/b");
+        second.end_dir();
+        row(&mut stuck, b"/d/done");
+        stuck.end_dir();
+        row(&mut stuck, b"/d/half-read");
+
+        // The third sink's worker was abandoned mid-directory.
+        let state = output.checkpoint(&[2]).unwrap();
+        assert_eq!(state.kinds.iter().sum::<u64>(), 3);
+        // Committed and complete on disk, with nothing left in progress.
+        assert_eq!(
+            paths_in(tmp.path(), &state.entry_parts),
+            ["/d/a", "/d/b", "/d/done"]
+        );
+        let leftovers = std::fs::read_dir(tmp.path().join("entries"))
+            .unwrap()
+            .filter(|e| {
+                e.as_ref()
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .is_some_and(|x| x == "tmp")
+            })
+            .count();
+        assert_eq!(leftovers, 0);
+
+        // Later rows go to new parts.
+        row(&mut first, b"/d/c");
+        first.end_dir();
+        first.finish();
+        second.finish();
+        let report = output.finish();
+        assert!(report.failure.is_none());
+        assert_eq!(report.salvaged, 1);
+        assert_eq!(
+            paths_in(tmp.path(), &report.entry_parts),
+            ["/d/a", "/d/b", "/d/c", "/d/done"]
+        );
+        assert!(report.entry_parts.len() > state.entry_parts.len());
+        assert_eq!(report.kinds.iter().sum::<u64>(), 4);
+    }
+
+    #[test]
+    fn resumed_runs_keep_earlier_parts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let earlier = PartInfo {
+            file: "entries/part-w00-000000.jsonl".into(),
+            rows: 7,
+            bytes: 100,
+        };
+        let mut kinds = [0; EntryKind::ALL.len()];
+        kinds[0] = 7;
+        let config = OutputConfig {
+            run: 2,
+            previous: OutputState {
+                entry_parts: vec![earlier.clone()],
+                error_parts: Vec::new(),
+                kinds,
+                error_rows: 1,
+            },
+            ..config(tmp.path())
+        };
+        let output = Output::start(config, Arc::new(AtomicBool::new(false))).unwrap();
+        let mut sink = output.sink();
+        row(&mut sink, b"/d/new");
+        sink.end_dir();
+        sink.finish();
+        let report = output.finish();
+        assert_eq!(report.entry_parts[0], earlier);
+        assert_eq!(
+            report.entry_parts[1].file,
+            "entries/part-r2-w00-000000.jsonl"
+        );
+        assert_eq!(report.kinds.iter().sum::<u64>(), 8);
+        assert_eq!(report.error_rows, 1);
     }
 }

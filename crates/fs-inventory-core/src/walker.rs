@@ -18,15 +18,25 @@
 //! [`WalkOptions::stall_timeout`] it abandons them: their directory gets a
 //! `stall` row and error, the other workers finish everything else, and the
 //! walk returns without waiting for the stuck thread.
+//!
+//! With a [`Checkpointer`], the walk takes checkpoints: every
+//! [`WalkOptions::checkpoint_interval`], workers pause as they finish their
+//! current directory, so every row delivered to a sink belongs to a finished
+//! directory. The checkpointer makes those rows durable and stores a
+//! [`WalkState`]: the directories still to read and the totals so far.
+//! [`walk_from`] continues a walk from such a state, so a crashed scan loses
+//! at most one interval of work and no directory is read twice.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::os::unix::ffi::OsStrExt as _;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -36,7 +46,7 @@ use globset::GlobSet;
 
 use crate::backend::{Backend, NameBatch};
 use crate::model::{DirTotals, Entry, EntryKind, ErrorInfo, ErrorRecord, Op, Stat, Timestamp};
-use crate::spill::{Decode, Encode, Spill};
+use crate::spill::{Decode, Encode, Spill, SpillMark};
 
 /// Entries a worker reads from one directory before sharing the rest.
 pub const SHARE_AFTER: usize = 10_000;
@@ -47,6 +57,10 @@ pub const SNAPSHOT_DIRS: [&[u8]; 4] = [b".snapshot", b"~snapshot", b".snapshots"
 
 /// How often the watchdog checks the workers and advances the walk's clock.
 const WATCHDOG_TICK: Duration = Duration::from_millis(250);
+
+/// How often the watchdog checks whether every worker has paused for a
+/// checkpoint, and paused workers look for huge-directory batches.
+const PAUSE_TICK: Duration = Duration::from_millis(2);
 
 /// What to traverse.
 #[derive(Debug, Clone)]
@@ -79,7 +93,18 @@ pub struct WalkOptions {
     /// spill file instead, read back once memory drains.
     pub queue_budget: usize,
     /// Where the spill file goes [default: the system temporary directory].
+    /// Ignored with [`Self::state_dir`].
     pub spill_dir: Option<PathBuf>,
+    /// Take a checkpoint this often. Needs a [`Checkpointer`] and
+    /// [`Self::state_dir`].
+    pub checkpoint_interval: Option<Duration>,
+    /// How long a checkpoint waits for a worker that has stopped making
+    /// progress before it gives up and tries again next interval.
+    pub checkpoint_patience: Duration,
+    /// Where state that checkpoints refer to lives: the spill file and, with
+    /// [`Self::detect_cycles`], the record of directories entered. Unlike the
+    /// unlinked spill file used without it, these outlive the process.
+    pub state_dir: Option<PathBuf>,
 }
 
 impl Default for WalkOptions {
@@ -96,6 +121,9 @@ impl Default for WalkOptions {
             stall_timeout: None,
             queue_budget: 1 << 30,
             spill_dir: None,
+            checkpoint_interval: None,
+            checkpoint_patience: Duration::from_secs(30),
+            state_dir: None,
         }
     }
 }
@@ -113,6 +141,201 @@ pub trait Sink: Send {
     /// The worker is stopping; no more rows follow. Not called for a worker
     /// the watchdog abandoned.
     fn finish(&mut self);
+}
+
+/// Takes checkpoints: called while every worker is paused at a directory
+/// boundary.
+pub trait Checkpointer {
+    /// Make every row delivered to the sinks so far durable, then store
+    /// `state` so a walk can later continue from it with [`walk_from`].
+    ///
+    /// The sinks of [`WalkState::abandoned_workers`] end with rows of the
+    /// directory the watchdog gave up on; keep only their rows up to the
+    /// last directory boundary.
+    fn checkpoint(&mut self, state: &WalkState) -> io::Result<()>;
+
+    /// A checkpoint was skipped because a worker stopped making progress
+    /// for [`WalkOptions::checkpoint_patience`].
+    fn skipped(&mut self) {}
+}
+
+/// Where a walk starts.
+pub enum Start<'a> {
+    /// At these roots.
+    Roots(&'a [Vec<u8>]),
+    /// Where a checkpoint left off.
+    Resume(WalkState),
+}
+
+/// A walk at a checkpoint: the directories still to read, the directory ID
+/// counter, and the totals so far.
+#[derive(Debug, Clone, Default)]
+pub struct WalkState {
+    next_id: u64,
+    totals: CounterValues,
+    spill: Option<SpillMark>,
+    /// Directories in the visited log.
+    visited: Option<u64>,
+    errors: Vec<ErrorCount>,
+    abandoned: Vec<Stalled>,
+    /// Queued directories, each an encoded [`DirTask`].
+    tasks: Vec<Vec<u8>>,
+    abandoned_workers: Vec<usize>,
+}
+
+impl WalkState {
+    const VERSION: u32 = 1;
+
+    /// Entry rows written before the checkpoint.
+    pub fn entries(&self) -> u64 {
+        self.totals.entries
+    }
+
+    /// Directories still to read.
+    pub fn pending(&self) -> u64 {
+        self.tasks.len() as u64 + self.spill.map_or(0, |s| s.waiting)
+    }
+
+    /// Workers whose directory the watchdog gave up on, by sink index.
+    pub fn abandoned_workers(&self) -> &[usize] {
+        &self.abandoned_workers
+    }
+
+    /// The state as bytes, for [`Self::decode`].
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut e = Encode(&mut out);
+        let t = &self.totals;
+        e.u32(Self::VERSION).u64(self.next_id);
+        for value in [
+            t.entries, t.dirs, t.bytes, t.errors, t.vanished, t.revisits, t.spilled,
+        ] {
+            e.u64(value);
+        }
+        let spill = self.spill.unwrap_or_default();
+        e.u32(u32::from(self.spill.is_some()))
+            .u64(spill.read)
+            .u64(spill.written)
+            .u64(spill.waiting);
+        e.u32(u32::from(self.visited.is_some()))
+            .u64(self.visited.unwrap_or_default());
+        e.u64(self.errors.len() as u64);
+        for error in &self.errors {
+            e.bytes(error.op.as_str().as_bytes())
+                .u32(u32::from(error.errno.is_some()))
+                .i64(i64::from(error.errno.unwrap_or_default()))
+                .u64(error.count);
+        }
+        e.u64(self.abandoned.len() as u64);
+        for stalled in &self.abandoned {
+            e.bytes(&stalled.path).u64(stalled.seconds);
+        }
+        e.u64(self.tasks.len() as u64);
+        for task in &self.tasks {
+            e.bytes(task);
+        }
+        out
+    }
+
+    /// Reads a state written by [`Self::encode`].
+    pub fn decode(bytes: &[u8]) -> io::Result<Self> {
+        let invalid = |what: &str| io::Error::new(io::ErrorKind::InvalidData, what.to_string());
+        let mut d = Decode(bytes);
+        if d.u32()? != Self::VERSION {
+            return Err(invalid("unknown checkpoint version"));
+        }
+        let next_id = d.u64()?;
+        let totals = CounterValues {
+            entries: d.u64()?,
+            dirs: d.u64()?,
+            bytes: d.u64()?,
+            errors: d.u64()?,
+            vanished: d.u64()?,
+            revisits: d.u64()?,
+            spilled: d.u64()?,
+        };
+        let has_spill = d.u32()? != 0;
+        let spill = SpillMark {
+            read: d.u64()?,
+            written: d.u64()?,
+            waiting: d.u64()?,
+        };
+        let has_visited = d.u32()? != 0;
+        let visited = d.u64()?;
+        let count = |d: &mut Decode<'_>| usize::try_from(d.u64()?).map_err(io::Error::other);
+        let mut errors = Vec::new();
+        for _ in 0..count(&mut d)? {
+            let name = String::from_utf8(d.bytes()?).map_err(|_| invalid("bad operation"))?;
+            let op = Op::from_name(&name).ok_or_else(|| invalid("unknown operation"))?;
+            let has_errno = d.u32()? != 0;
+            let errno = i32::try_from(d.i64()?).map_err(io::Error::other)?;
+            errors.push(ErrorCount {
+                op,
+                errno: has_errno.then_some(errno),
+                count: d.u64()?,
+            });
+        }
+        let mut abandoned = Vec::new();
+        for _ in 0..count(&mut d)? {
+            abandoned.push(Stalled {
+                path: d.bytes()?,
+                seconds: d.u64()?,
+                abandoned: true,
+            });
+        }
+        let mut tasks = Vec::new();
+        for _ in 0..count(&mut d)? {
+            let task = d.bytes()?;
+            DirTask::decode(&task)?;
+            tasks.push(task);
+        }
+        Ok(Self {
+            next_id,
+            totals,
+            spill: has_spill.then_some(spill),
+            visited: has_visited.then_some(visited),
+            errors,
+            abandoned,
+            tasks,
+            abandoned_workers: Vec::new(),
+        })
+    }
+}
+
+/// A snapshot of [`Counters`].
+#[derive(Debug, Clone, Copy, Default)]
+struct CounterValues {
+    entries: u64,
+    dirs: u64,
+    bytes: u64,
+    errors: u64,
+    vanished: u64,
+    revisits: u64,
+    spilled: u64,
+}
+
+impl CounterValues {
+    fn load(c: &Counters) -> Self {
+        Self {
+            entries: c.entries.load(Ordering::Relaxed),
+            dirs: c.dirs.load(Ordering::Relaxed),
+            bytes: c.bytes.load(Ordering::Relaxed),
+            errors: c.errors.load(Ordering::Relaxed),
+            vanished: c.vanished.load(Ordering::Relaxed),
+            revisits: c.revisits.load(Ordering::Relaxed),
+            spilled: c.spilled.load(Ordering::Relaxed),
+        }
+    }
+
+    fn add_to(self, c: &Counters) {
+        c.entries.fetch_add(self.entries, Ordering::Relaxed);
+        c.dirs.fetch_add(self.dirs, Ordering::Relaxed);
+        c.bytes.fetch_add(self.bytes, Ordering::Relaxed);
+        c.errors.fetch_add(self.errors, Ordering::Relaxed);
+        c.vanished.fetch_add(self.vanished, Ordering::Relaxed);
+        c.revisits.fetch_add(self.revisits, Ordering::Relaxed);
+        c.spilled.fetch_add(self.spilled, Ordering::Relaxed);
+    }
 }
 
 /// A worker that stopped making progress.
@@ -171,8 +394,12 @@ pub struct WalkResult {
     /// Errors grouped by operation and errno, most frequent first.
     pub errors: Vec<ErrorCount>,
     /// Directories whose workers were abandoned, with how long they had
-    /// been stuck.
+    /// been stuck, including those from before a resume.
     pub abandoned: Vec<Stalled>,
+    /// For a walk with a [`WalkOptions::state_dir`] that stopped early, the
+    /// state to continue from, once every row delivered to the sinks is
+    /// durable.
+    pub state: Option<WalkState>,
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +626,39 @@ struct WalkShared<B: Backend> {
     /// Approximate memory held by queued directories.
     queued_bytes: AtomicI64,
     spill: Option<Spill>,
+    pause: Pause,
+    /// Errors counted by workers before they paused, merged into the result.
+    paused_errors: Mutex<ErrorTally>,
+}
+
+/// Pauses workers at directory boundaries for a checkpoint.
+#[derive(Default)]
+struct Pause {
+    requested: AtomicBool,
+    /// Workers paused.
+    paused: Mutex<usize>,
+    resumed: Condvar,
+}
+
+impl Pause {
+    fn requested(&self) -> bool {
+        self.requested.load(Ordering::Acquire)
+    }
+
+    fn request(&self) {
+        self.requested.store(true, Ordering::Release);
+    }
+
+    fn resume(&self) {
+        let _paused = self.paused.lock();
+        self.requested.store(false, Ordering::Release);
+        self.resumed.notify_all();
+    }
+
+    /// Whether at least `live` workers are paused.
+    fn all_paused(&self, live: usize) -> bool {
+        self.paused.lock().is_ok_and(|paused| *paused >= live)
+    }
 }
 
 impl<B: Backend> WalkShared<B> {
@@ -445,14 +705,119 @@ fn parent_of(path: &[u8], name_start: usize) -> &[u8] {
 ///
 /// Roots must be absolute paths without trailing slashes. The walk stops
 /// early, leaving queued directories unread, once `stop` becomes true; each
-/// worker first finishes the directory it is reading.
+/// worker first finishes the directory it is reading. This walk takes no
+/// checkpoints; [`WalkOptions::checkpoint_interval`] and
+/// [`WalkOptions::state_dir`] are ignored.
 pub fn walk<B, S>(
     roots: &[Vec<u8>],
+    mut options: WalkOptions,
+    backend: Arc<B>,
+    make_sink: impl FnMut(usize) -> S,
+    counters: Arc<Counters>,
+    stop: Arc<AtomicBool>,
+) -> WalkResult
+where
+    B: Backend + 'static,
+    S: Sink + 'static,
+{
+    options.checkpoint_interval = None;
+    options.state_dir = None;
+    let spill_dir = options.spill_dir.clone().unwrap_or_else(std::env::temp_dir);
+    // Without a spill file (an unwritable directory), queued directories
+    // simply stay in memory.
+    let state = InitialState {
+        spill: Spill::create(&spill_dir).ok(),
+        visited: options.detect_cycles.then(Visited::new),
+    };
+    run(
+        Start::Roots(roots),
+        state,
+        options,
+        backend,
+        make_sink,
+        counters,
+        stop,
+        None,
+    )
+}
+
+/// Like [`walk`], but can start where a checkpoint left off and takes
+/// checkpoints with `checkpointer` every [`WalkOptions::checkpoint_interval`].
+///
+/// Checkpoints need [`WalkOptions::state_dir`], which holds the files they
+/// refer to. Fails only if those files can't be opened. Resuming needs the
+/// same options and roots as the walk that took the checkpoint.
+pub fn walk_from<B, S>(
+    start: Start<'_>,
+    options: WalkOptions,
+    backend: Arc<B>,
+    make_sink: impl FnMut(usize) -> S,
+    counters: Arc<Counters>,
+    stop: Arc<AtomicBool>,
+    checkpointer: Option<&mut dyn Checkpointer>,
+) -> io::Result<WalkResult>
+where
+    B: Backend + 'static,
+    S: Sink + 'static,
+{
+    let resume = match &start {
+        Start::Resume(state) => Some(state),
+        Start::Roots(_) => None,
+    };
+    let state = match &options.state_dir {
+        Some(dir) => InitialState {
+            spill: Some(Spill::persistent(
+                &dir.join("spill"),
+                resume.and_then(|r| r.spill),
+            )?),
+            visited: if options.detect_cycles {
+                Some(Visited::open(
+                    &dir.join("visited"),
+                    resume.and_then(|r| r.visited),
+                )?)
+            } else {
+                None
+            },
+        },
+        None if resume.is_some() => {
+            return Err(io::Error::other(
+                "resuming a walk needs its state directory",
+            ));
+        }
+        None => InitialState {
+            spill: Spill::create(&options.spill_dir.clone().unwrap_or_else(std::env::temp_dir))
+                .ok(),
+            visited: options.detect_cycles.then(Visited::new),
+        },
+    };
+    Ok(run(
+        start,
+        state,
+        options,
+        backend,
+        make_sink,
+        counters,
+        stop,
+        checkpointer,
+    ))
+}
+
+/// The files a walk starts with.
+struct InitialState {
+    spill: Option<Spill>,
+    visited: Option<Visited>,
+}
+
+#[allow(clippy::too_many_arguments, reason = "the parts of a walk")]
+fn run<B, S>(
+    start: Start<'_>,
+    initial: InitialState,
     options: WalkOptions,
     backend: Arc<B>,
     mut make_sink: impl FnMut(usize) -> S,
     counters: Arc<Counters>,
     stop: Arc<AtomicBool>,
+    mut checkpointer: Option<&mut dyn Checkpointer>,
 ) -> WalkResult
 where
     B: Backend + 'static,
@@ -462,13 +827,12 @@ where
     let mut sinks: Vec<S> = (0..threads).map(&mut make_sink).collect();
     let mut main_sink = make_sink(threads);
     let deques: Vec<Worker<DirTask>> = (0..threads).map(|_| Worker::new_lifo()).collect();
-    // Without a spill file (an unwritable directory), queued directories
-    // simply stay in memory.
-    let spill_dir = options.spill_dir.clone().unwrap_or_else(std::env::temp_dir);
-    let spill = Spill::create(&spill_dir).ok();
+    let interval = options
+        .checkpoint_interval
+        .filter(|_| checkpointer.is_some() && options.state_dir.is_some());
     let shared = Arc::new(WalkShared {
         backend,
-        visited: options.detect_cycles.then(Visited::new),
+        visited: initial.visited,
         options,
         counters,
         stop,
@@ -481,13 +845,53 @@ where
         clock: CachePadded::new(AtomicU64::new(0)),
         abandoned_tasks: AtomicU64::new(0),
         queued_bytes: AtomicI64::new(0),
-        spill,
+        spill: initial.spill,
+        pause: Pause::default(),
+        paused_errors: Mutex::default(),
     });
 
     let mut main_tally = Tally::default();
-    add_roots(&shared, roots, &mut main_sink, &mut main_tally);
-    main_sink.end_dir();
-    main_tally.flush(&shared.counters);
+    let mut errors = ErrorTally::new();
+    let mut abandoned = Vec::new();
+    match start {
+        Start::Roots(roots) => {
+            add_roots(&shared, roots, &mut main_sink, &mut main_tally);
+            main_sink.end_dir();
+            main_tally.flush(&shared.counters);
+            // The first checkpoint lets a scan killed before the next one
+            // start over from the roots.
+            if let Some(checkpointer) = checkpointer.as_deref_mut()
+                && interval.is_some()
+            {
+                take_checkpoint(&shared, checkpointer, &errors, &main_tally, &abandoned);
+            }
+        }
+        Start::Resume(state) => {
+            shared.next_id.store(state.next_id, Ordering::Relaxed);
+            state.totals.add_to(&shared.counters);
+            // Directories given up on before stay pending, as they were, so
+            // the walk still reports itself incomplete.
+            let given_up = state.abandoned.len() as u64;
+            shared
+                .counters
+                .pending
+                .store(state.pending() + given_up, Ordering::Relaxed);
+            shared.abandoned_tasks.store(given_up, Ordering::Relaxed);
+            for task in &state.tasks {
+                // Every task was checked when the state was decoded.
+                if let Ok(task) = DirTask::decode(task) {
+                    shared
+                        .queued_bytes
+                        .fetch_add(task.memory(), Ordering::Relaxed);
+                    shared.injector.push(task);
+                }
+            }
+            for e in state.errors {
+                *errors.entry((e.op, e.errno)).or_default() += e.count;
+            }
+            abandoned = state.abandoned;
+        }
+    }
 
     // Each worker signals when it exits, so the watchdog notices at once.
     let (exited, exits) = std::sync::mpsc::channel::<()>();
@@ -516,9 +920,10 @@ where
         handles.push(handle);
     }
 
-    // Watch the workers until each has finished or been abandoned.
-    let mut errors = std::mem::take(&mut main_tally.errors);
-    let mut abandoned = Vec::new();
+    // Watch the workers until each has finished or been abandoned, and take
+    // checkpoints along the way.
+    let mut next_checkpoint = interval.map(|i| Instant::now() + i);
+    let mut pausing = false;
     loop {
         for handle in &mut handles {
             if handle.as_ref().is_some_and(JoinHandle::is_finished)
@@ -529,29 +934,78 @@ where
                 }
             }
         }
-        let running = handles
+        let live = handles
             .iter()
             .enumerate()
-            .any(|(i, h)| h.is_some() && !shared.statuses[i].abandoned());
-        if !running {
+            .filter(|(i, h)| h.is_some() && !shared.statuses[*i].abandoned())
+            .count();
+        if live == 0 {
             break;
         }
-        let _ = exits.recv_timeout(WATCHDOG_TICK);
+        let wait = match next_checkpoint {
+            _ if pausing => PAUSE_TICK,
+            Some(at) => at
+                .saturating_duration_since(Instant::now())
+                .clamp(PAUSE_TICK, WATCHDOG_TICK),
+            None => WATCHDOG_TICK,
+        };
+        let _ = exits.recv_timeout(wait);
         watchdog(&shared, &mut main_sink, &mut main_tally, &mut abandoned);
         main_tally.flush(&shared.counters);
+
+        let (Some(checkpointer), Some(interval)) = (checkpointer.as_deref_mut(), interval) else {
+            continue;
+        };
+        if shared.stop.load(Ordering::Relaxed) {
+            if pausing {
+                shared.pause.resume();
+                pausing = false;
+            }
+            continue;
+        }
+        if !pausing {
+            if next_checkpoint.is_some_and(|at| Instant::now() >= at) {
+                shared.pause.request();
+                pausing = true;
+            }
+            continue;
+        }
+        let live = handles
+            .iter()
+            .enumerate()
+            .filter(|(i, h)| {
+                h.as_ref().is_some_and(|h| !h.is_finished()) && !shared.statuses[*i].abandoned()
+            })
+            .count();
+        if shared.pause.all_paused(live) {
+            take_checkpoint(&shared, checkpointer, &errors, &main_tally, &abandoned);
+        } else if stuck(&shared) {
+            checkpointer.skipped();
+        } else {
+            continue;
+        }
+        shared.pause.resume();
+        pausing = false;
+        next_checkpoint = Some(Instant::now() + interval);
     }
     // Abandoned workers' threads are left running, detached; they write
     // nothing more.
     drop(handles);
     main_sink.finish();
     main_tally.flush(&shared.counters);
-    for (key, count) in std::mem::take(&mut main_tally.errors) {
-        *errors.entry(key).or_default() += count;
+    merge_errors(&mut errors, std::mem::take(&mut main_tally.errors));
+    if let Ok(mut paused) = shared.paused_errors.lock() {
+        merge_errors(&mut errors, std::mem::take(&mut *paused));
     }
     if let Ok(mut stalled) = shared.counters.stalled.lock() {
         stalled.clear();
     }
 
+    // What a resumed walk needs, if this one stopped early. Workers left
+    // their queued directories in the injector as they exited.
+    let state = (shared.options.state_dir.is_some() && !shared.finished())
+        .then(|| snapshot(&shared, &errors, &abandoned).ok())
+        .flatten();
     let mut errors: Vec<ErrorCount> = errors
         .into_iter()
         .map(|((op, errno), count)| ErrorCount { op, errno, count })
@@ -561,7 +1015,90 @@ where
         complete: shared.counters.pending.load(Ordering::Acquire) == 0,
         errors,
         abandoned,
+        state,
     }
+}
+
+fn merge_errors(into: &mut ErrorTally, from: ErrorTally) {
+    for (key, count) in from {
+        *into.entry(key).or_default() += count;
+    }
+}
+
+/// Whether a busy worker has made no progress for the checkpoint patience.
+fn stuck<B: Backend>(shared: &WalkShared<B>) -> bool {
+    let patience =
+        u64::try_from(shared.options.checkpoint_patience.as_millis()).unwrap_or(u64::MAX);
+    let now = shared.now();
+    shared.statuses.iter().any(|status| {
+        let last = status.progress.load(Ordering::Acquire);
+        last != 0 && last != ABANDONED && now.saturating_sub(last) >= patience
+    })
+}
+
+/// Snapshots the walk and hands it to the checkpointer. Every worker must
+/// be paused or not started.
+fn take_checkpoint<B: Backend>(
+    shared: &WalkShared<B>,
+    checkpointer: &mut dyn Checkpointer,
+    errors: &ErrorTally,
+    main_tally: &Tally,
+    abandoned: &[Stalled],
+) {
+    let mut all = errors.clone();
+    merge_errors(&mut all, main_tally.errors.clone());
+    if let Ok(paused) = shared.paused_errors.lock() {
+        merge_errors(&mut all, paused.clone());
+    }
+    // A checkpoint that fails leaves the previous one in place; the
+    // checkpointer reports it.
+    if let Ok(state) = snapshot(shared, &all, abandoned) {
+        let _ = checkpointer.checkpoint(&state);
+    }
+}
+
+/// The walk's state, from the shared queue: workers must have moved their
+/// own queued directories there.
+fn snapshot<B: Backend>(
+    shared: &WalkShared<B>,
+    errors: &ErrorTally,
+    abandoned: &[Stalled],
+) -> io::Result<WalkState> {
+    let mut queued = Vec::new();
+    loop {
+        match shared.injector.steal() {
+            Steal::Success(task) => queued.push(task),
+            Steal::Empty => break,
+            Steal::Retry => {}
+        }
+    }
+    let mut tasks = Vec::with_capacity(queued.len());
+    for task in queued {
+        let mut record = Vec::new();
+        task.encode(&mut record);
+        tasks.push(record);
+        shared.injector.push(task);
+    }
+    let mut errors: Vec<ErrorCount> = errors
+        .iter()
+        .map(|(&(op, errno), &count)| ErrorCount { op, errno, count })
+        .collect();
+    errors.sort_by_key(|e| (e.op, e.errno));
+    Ok(WalkState {
+        next_id: shared.next_id.load(Ordering::Relaxed),
+        totals: CounterValues::load(&shared.counters),
+        spill: shared.spill.as_ref().map(Spill::mark).transpose()?,
+        visited: match &shared.visited {
+            Some(visited) => visited.persist()?,
+            None => None,
+        },
+        errors,
+        abandoned: abandoned.to_vec(),
+        tasks,
+        abandoned_workers: (0..shared.statuses.len())
+            .filter(|&i| shared.statuses[i].abandoned())
+            .collect(),
+    })
 }
 
 /// Sends a signal when dropped, as a worker thread exits (even by panic).
@@ -766,29 +1303,106 @@ impl Tally {
 }
 
 /// Directories already entered, by `(dev, ino)`, sharded to keep lock
-/// contention low.
+/// contention low. With a log, checkpoints append the directories entered
+/// since the last one, so a resumed walk knows them all.
 struct Visited {
-    shards: Vec<Mutex<HashSet<(u64, u64)>>>,
+    shards: Vec<Mutex<VisitedShard>>,
+    log: Option<Mutex<VisitedLog>>,
+}
+
+#[derive(Default)]
+struct VisitedShard {
+    set: HashSet<(u64, u64)>,
+    /// Entered since the last checkpoint.
+    fresh: Vec<(u64, u64)>,
+}
+
+struct VisitedLog {
+    file: File,
+    /// Directories in the file.
+    count: u64,
 }
 
 impl Visited {
     const SHARDS: usize = 64;
+    const RECORD: u64 = 16;
 
     fn new() -> Self {
         Self {
             shards: (0..Self::SHARDS).map(|_| Mutex::default()).collect(),
+            log: None,
         }
+    }
+
+    /// Opens the log at `path`, keeping its first `count` directories and
+    /// discarding any written after that checkpoint.
+    fn open(path: &Path, count: Option<u64>) -> io::Result<Self> {
+        let count = count.unwrap_or(0);
+        let mut file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        file.set_len(count * Self::RECORD)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        file.seek(SeekFrom::End(0))?;
+        let mut visited = Self::new();
+        let (words, _) = bytes.as_chunks::<8>();
+        let (records, _) = words.as_chunks::<2>();
+        for [dev, ino] in records {
+            let key = (u64::from_le_bytes(*dev), u64::from_le_bytes(*ino));
+            if let Ok(mut shard) = visited.shards[Self::shard(key)].lock() {
+                shard.set.insert(key);
+            }
+        }
+        visited.log = Some(Mutex::new(VisitedLog { file, count }));
+        Ok(visited)
+    }
+
+    fn shard(key: (u64, u64)) -> usize {
+        (key.1 ^ key.0.rotate_left(17)) as usize % Self::SHARDS
     }
 
     /// Records a directory. Returns `false` if it was already recorded.
     fn insert(&self, key: (u64, u64)) -> bool {
-        let shard = (key.1 ^ key.0.rotate_left(17)) as usize % Self::SHARDS;
-        match self.shards[shard].lock() {
-            Ok(mut set) => set.insert(key),
+        match self.shards[Self::shard(key)].lock() {
+            Ok(mut shard) => {
+                let new = shard.set.insert(key);
+                if new && self.log.is_some() {
+                    shard.fresh.push(key);
+                }
+                new
+            }
             // A poisoned shard can only come from a panic mid-insert; treat
             // the directory as new rather than skip it.
             Err(_) => true,
         }
+    }
+
+    /// Appends the directories entered since the last call to the log, and
+    /// returns how many it holds. Call only while workers are paused.
+    fn persist(&self) -> io::Result<Option<u64>> {
+        let Some(log) = &self.log else {
+            return Ok(None);
+        };
+        let mut log = log
+            .lock()
+            .map_err(|_| io::Error::other("visited log poisoned"))?;
+        let mut bytes = Vec::new();
+        for shard in &self.shards {
+            if let Ok(mut shard) = shard.lock() {
+                for (dev, ino) in shard.fresh.drain(..) {
+                    bytes.extend_from_slice(&dev.to_le_bytes());
+                    bytes.extend_from_slice(&ino.to_le_bytes());
+                }
+            }
+        }
+        log.file.write_all(&bytes)?;
+        log.file.sync_data()?;
+        log.count += bytes.len() as u64 / Self::RECORD;
+        Ok(Some(log.count))
     }
 }
 
@@ -829,6 +1443,10 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
                 // by the output, so write nothing more.
                 return std::mem::take(&mut self.tally.errors);
             }
+            if self.shared.pause.requested() {
+                self.pause();
+                continue;
+            }
             // Own subtree first, then help with huge directories, then steal.
             if let Some(task) = self.deque.pop() {
                 backoff.reset();
@@ -863,9 +1481,59 @@ impl<B: Backend, S: Sink> WorkerState<B, S> {
         if self.status().abandoned() {
             return std::mem::take(&mut self.tally.errors);
         }
+        // A stopped walk leaves directories queued; keep them where the
+        // final state can see them.
+        self.surrender();
         self.sink.finish();
-        self.tally.flush(&self.shared.counters);
         std::mem::take(&mut self.tally.errors)
+    }
+
+    /// Waits at a directory boundary until the checkpoint is taken, helping
+    /// with huge directories meanwhile so they finish and the pause ends.
+    fn pause(&mut self) {
+        let shared = Arc::clone(&self.shared);
+        let pause = &shared.pause;
+        self.surrender();
+        let Ok(mut paused) = pause.paused.lock() else {
+            return;
+        };
+        *paused += 1;
+        while pause.requested() && !shared.stop.load(Ordering::Relaxed) {
+            if shared.chunks.is_empty() {
+                paused = match pause.resumed.wait_timeout(paused, PAUSE_TICK) {
+                    Ok((paused, _)) => paused,
+                    Err(_) => return,
+                };
+                continue;
+            }
+            // Busy while helping: the checkpoint waits for the batch.
+            *paused -= 1;
+            drop(paused);
+            if let Some(chunk) = self.steal_chunk() {
+                self.run_chunk(chunk);
+            }
+            self.surrender();
+            paused = match pause.paused.lock() {
+                Ok(paused) => paused,
+                Err(_) => return,
+            };
+            *paused += 1;
+        }
+        *paused -= 1;
+    }
+
+    /// Moves this worker's queued directories to the shared queue, and its
+    /// counts to the shared totals, where a checkpoint can see them.
+    fn surrender(&mut self) {
+        while let Some(task) = self.deque.pop() {
+            self.shared.injector.push(task);
+        }
+        self.tally.flush(&self.shared.counters);
+        if !self.tally.errors.is_empty()
+            && let Ok(mut paused) = self.shared.paused_errors.lock()
+        {
+            merge_errors(&mut paused, std::mem::take(&mut self.tally.errors));
+        }
     }
 
     fn record_internal_error(&mut self, path: &[u8]) {

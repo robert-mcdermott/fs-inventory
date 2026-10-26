@@ -3,12 +3,16 @@
 
 //! `fs-inventory` command-line tool.
 
+mod checkpoint;
 mod cli;
+#[cfg(debug_assertions)]
+mod debug;
 mod exit;
 mod output;
 mod parse;
 mod probe;
 mod progress;
+mod resume;
 mod rollup;
 mod scan;
 mod verify;
@@ -56,7 +60,7 @@ fn run(command: &Command) -> Exit {
         Command::Schema(args) => return schema(args.format),
         Command::Rollup(args) => return rollup::run(args),
         Command::Probe(args) => return probe::run(args),
-        Command::Resume(_) => ("resume", "M4"),
+        Command::Resume(args) => return resume::run(args),
         Command::Convert(_) => ("convert", "M5"),
     };
     eprintln!("fs-inventory: `{name}` is not implemented yet (planned for milestone {milestone})");

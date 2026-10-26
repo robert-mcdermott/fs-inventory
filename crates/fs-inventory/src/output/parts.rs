@@ -10,12 +10,12 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use flate2::write::GzEncoder;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::parse::Compression;
 
 /// A committed part file.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartInfo {
     /// Path relative to the scan directory, such as `entries/part-w00-000000.csv`.
     pub file: String,
@@ -187,6 +187,13 @@ impl PartWriter {
     pub fn finish(mut self) -> io::Result<Vec<PartInfo>> {
         self.commit()?;
         Ok(self.committed)
+    }
+
+    /// Commits the open part, if any, and returns every part committed so
+    /// far. The next write starts a new part.
+    pub fn checkpoint(&mut self) -> io::Result<Vec<PartInfo>> {
+        self.commit()?;
+        Ok(self.committed.clone())
     }
 
     fn start_part(&mut self) -> io::Result<OpenPart> {

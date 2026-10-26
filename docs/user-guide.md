@@ -1,6 +1,6 @@
 # fs-inventory user guide
 
-This guide covers fs-inventory 0.3.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
+This guide covers fs-inventory 0.4.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
 
 Related documents:
 
@@ -56,7 +56,7 @@ fs-inventory --version
 ```
 
 ```
-fs-inventory 0.3.0
+fs-inventory 0.4.0
 ```
 
 ---
@@ -130,6 +130,8 @@ The `1 error` above is a directory the scanning user wasn't allowed to read. It'
 
 **Failures don't stop a scan.** An unreadable directory gets a row with `error` set and a row in the `errors` table, and the scan continues. Entries deleted while the scan runs are counted as *vanished*, not as errors.
 
+**Long scans can be resumed.** Every 10 minutes, a scan takes a checkpoint: a record of everything written so far and every directory still to read, in `checkpoint/` inside the output directory. If the scan is interrupted or killed, or its machine goes down, `fs-inventory resume` continues from the last checkpoint. The finished scan is the same as one that was never interrupted.
+
 **Check the status before trusting a scan.** `manifest.json` has a `status`: `complete`, `interrupted`, `incomplete`, `failed`, or `running` (still in progress, or the process was killed). Treat a scan as finished only when the status is `complete`, or when `fs-inventory verify` exits with code 0.
 
 ---
@@ -174,9 +176,10 @@ fs-inventory scan /nfs/projects \
 ```
 
 - **`--threads 128`:** network file systems usually do best between 64 and 256. The default is 32.
-- **`--stall-timeout 10m`:** if a crawl thread is stuck for 10 minutes in one call (a hung NFS server, for example), the scan gives up on that directory, finishes everything else, and ends with status `incomplete` and exit code 3 instead of hanging forever ([4.12](#412-interrupted-and-stalled-scans)).
+- **`--stall-timeout 10m`:** if a crawl thread is stuck for 10 minutes in one call (a hung NFS server, for example), the scan gives up on that directory, finishes everything else, and ends with status `incomplete` and exit code 3 instead of hanging forever ([4.12](#412-interrupted-crashed-and-stalled-scans)).
 - **`--progress json`:** writes one JSON progress line per interval to stderr, ready for log collection ([progress output](#progress-output)).
 - **Write the output to local or scratch storage,** not to the file system being scanned, so writes don't compete with the crawl.
+- **Checkpoints are on by default.** If the scan is killed or the machine goes down, `fs-inventory resume /scratch/inventory/projects-2026-10-25` continues it, losing at most the last 10 minutes of work ([4.12](#412-interrupted-crashed-and-stalled-scans)).
 
 Two more options are worth knowing on network file systems:
 
@@ -282,6 +285,8 @@ fs-inventory verify "$dir" || exit 1
 fs-inventory rollup "$dir" || exit 1
 echo "$dir is ready to load"
 ```
+
+If a scan is interrupted, such as by a reboot (exit code 3, or a manifest left at status `running`), `fs-inventory resume "$dir"` finishes it.
 
 ```
 # m h dom mon dow  command
@@ -399,11 +404,33 @@ fs-inventory scan /data/projects -o /scratch/inventory/projects-csv -f csv --com
 
 Text output is several times larger than Parquet and slower to query. Parquet with zstd takes about 25 bytes per entry; a billion-entry scan is about 25 GB.
 
-### 4.12 Interrupted and stalled scans
+### 4.12 Interrupted, crashed, and stalled scans
 
-**Ctrl-C (SIGINT) or SIGTERM** stops a scan gracefully. The threads finish the directories they're reading, the part files are completed, and the manifest is written with status `interrupted`. The exit code is 3. A second signal exits at once, with code 130, and leaves the manifest at status `running`.
+**Every scan into a directory takes checkpoints,** every 10 minutes by default (`--checkpoint-interval`). A checkpoint pauses the crawl for a moment, makes every row written so far durable, and records the directories still to read, in `checkpoint/` inside the scan directory. That directory is removed when the scan finishes.
 
-An interrupted scan's part files are valid, and its rows are correct, but it's missing every directory that hadn't been read yet. Run the scan again into a new directory. (Resuming an interrupted scan is planned; see [10](#10-not-yet-available).)
+**Ctrl-C (SIGINT) or SIGTERM** stops a scan gracefully. The threads finish the directories they're reading, the part files are completed, a final checkpoint is written, and the manifest gets status `interrupted`. The exit code is 3. A second signal exits at once, with code 130, leaving the manifest at status `running` and the last periodic checkpoint in place.
+
+**To continue a scan** that was interrupted or killed, ran out of memory, or was on a machine that went down, run `resume` on its directory:
+
+```bash
+fs-inventory resume /scratch/inventory/projects-2026-10-25
+```
+
+For the demo scan, stopped partway with SIGTERM:
+
+```
+fs-inventory: resuming scan 01a175ef-2926-79c2-a1b3-79c9be43dd89 from its checkpoint of 2026-10-26T01:59:32.285064Z: 156 entries written, 4 directories left
+fs-inventory: complete: 285 entries in 0:00:00 (14.5k/s), 35 dirs, 44.02 GiB, 1 error, 0 vanished; output: /scratch/inventory/projects-2026-10-25
+```
+
+- **After Ctrl-C,** the final checkpoint is exact, so nothing is read twice.
+- **After a crash or `kill -9`,** the scan continues from the last checkpoint. Part files written after it are deleted and the directories they covered are read again, so at most one checkpoint interval of work is redone, and no row appears twice.
+- **The finished scan is the same as an uninterrupted one:** the same rows, checked the same way by `verify`. The manifest's `resumes` list records each resume.
+- **Resume as often as needed.** A resumed scan takes checkpoints too.
+- **Resume uses the original settings** for everything that shapes the output. It can change how the scan runs: `--threads`, `--writers`, `--max-memory`, `--stall-timeout`, `--checkpoint-interval`, and the progress options ([5.6](#56-resume)).
+- **Resume on the same host,** without remounting the scanned file systems in between. Device numbers (`dev`) can change when a file system is remounted, which would make rows before and after the resume disagree, and `--detect-cycles` relies on them.
+
+Without checkpoints (`--checkpoint-interval 0`, or a scan streamed with `-o -`), an interrupted scan's part files are valid but it's missing every directory not yet read, and it can only be run again from the start.
 
 **A hung file system call,** such as a stat on a hard-mounted NFS export whose server is down, blocks its thread indefinitely. fs-inventory watches every crawl thread:
 
@@ -415,6 +442,8 @@ An interrupted scan's part files are valid, and its rows are correct, but it's m
 
 - With `--stall-timeout`, once a thread has made no progress for that long, the scan gives up on its directory. That directory gets a row with `error` set to `stall: ...` and an `errors` row; the other threads finish the rest of the tree. The scan ends with status `incomplete` and exit code 3, and the manifest's `stalled` list names each directory given up on.
 - Without `--stall-timeout`, the scan waits for the call to return, however long that takes.
+- While a thread is stalled, checkpoints can't complete: after waiting 30 seconds, the scan skips the checkpoint and says so on stderr. Once `--stall-timeout` gives up on the stuck directory, checkpoints continue.
+- `resume` doesn't retry directories given up on after `--stall-timeout`.
 
 The rows of every directory the stuck thread finished before it got stuck are still written. One limitation: if the thread was partway through a directory with tens of thousands of entries, some of that directory's rows may already have been written before it got stuck.
 
@@ -435,6 +464,7 @@ fs-inventory verify   SCAN_DIR           Check that a scan is complete and consi
 fs-inventory rollup   SCAN_DIR           Add subtree totals and age histograms to a scan
 fs-inventory schema                      Print the inventory schema
 fs-inventory probe    PATH               Time crawls at several thread counts
+fs-inventory resume   SCAN_DIR           Continue an interrupted scan from its checkpoint
 ```
 
 `fs-inventory COMMAND --help` lists every option. Sizes accept `K`, `M`, `G`, `T` (or `KiB`, `MiB`, `GiB`, `TiB`) for powers of 1024 and `KB`, `MB`, `GB`, `TB` for powers of 1000, such as `512MiB`. Durations accept forms such as `30s`, `10m`, `1h 30m`, `7d`, and `1y`.
@@ -492,7 +522,8 @@ Roots are made absolute (relative paths are taken from the current directory) an
 
 | Option | Default | Effect |
 |---|---|---|
-| `--stall-timeout DURATION` | none | Give up on directories whose thread has made no progress for this long; see [4.12](#412-interrupted-and-stalled-scans) |
+| `--checkpoint-interval DURATION` | `10m` | Take a checkpoint this often, so the scan can be resumed (`0` disables checkpoints); see [4.12](#412-interrupted-crashed-and-stalled-scans). Scans streamed with `-o -` take none. |
+| `--stall-timeout DURATION` | none | Give up on directories whose thread has made no progress for this long; see [4.12](#412-interrupted-crashed-and-stalled-scans) |
 | `--max-memory SIZE` | queue up to 1 GiB | Soft memory budget; see [8.3](#83-memory) |
 
 **Progress**
@@ -568,17 +599,49 @@ Suggested: --threads 2
 - **Caching skews later runs.** Each run after the first finds metadata the earlier runs left in the kernel's cache, so it looks faster than a real scan would be. On Linux, run as root with `--drop-caches` to clear the caches before every run.
 - **Small trees give misleading results.** When a run reads the whole tree before its time is up, it says so; probe a tree large enough to keep every run busy for the full duration.
 
+### 5.6 resume
+
+```
+fs-inventory resume [OPTIONS] SCAN_DIR
+```
+
+Continues a scan from its last checkpoint; see [4.12](#412-interrupted-crashed-and-stalled-scans). Everything that shapes the output comes from the original scan. These options change how it runs; each defaults to how the scan ran:
+
+| Option | Effect |
+|---|---|
+| `-t, --threads N` | Crawl threads |
+| `--writers N` | Most encoder and writer threads |
+| `--checkpoint-interval DURATION` | Interval between checkpoints (`0` disables them) |
+| `--stall-timeout DURATION` | Give up on stalled directories after this long (`0` waits forever) |
+| `--max-memory SIZE` | Soft memory budget |
+| `--progress`, `--progress-interval` | As for `scan` (these don't carry over) |
+
+`resume` exits like `scan` ([exit codes](#exit-codes)). A scan that's already complete, or finished except for stalled directories, has nothing to resume: `resume` says so and exits with code 0. It exits with code 2 if the scan has no checkpoint (it was run with `--checkpoint-interval 0`), or if another fs-inventory process is still writing the scan.
+
 ---
 
 ## 6. Output reference
 
 ### Part files
 
-- **Naming:** each table directory holds parts named `part-wNN-NNNNNN.EXT`, where `wNN` is the writer thread and the second number counts that writer's parts. Rollup parts are `part-NNNNNN.parquet`.
+- **Naming:** each table directory holds parts named `part-wNN-NNNNNN.EXT`, where `wNN` is the writer thread and the second number counts that writer's parts. Parts written after a resume are `part-rN-wNN-NNNNNN.EXT`, where `rN` counts the resumes. Rollup parts are `part-NNNNNN.parquet`.
 - **Extensions:** `.parquet`; `.csv` or `.jsonl`, plus `.zst` or `.gz` when compressed.
 - **Rolling:** a part is closed and a new one started at `--part-max-bytes` (1 GiB by default) or `--part-max-rows`.
 - **Atomic commits:** a part is written as `NAME.tmp`, flushed to disk, and only then renamed. A part without `.tmp` is always complete, and after a crash only `.tmp` files are left to clean up.
-- **One file per table for small scans:** writer threads start only as output backs up.
+- **One file per table for small scans:** writer threads start only as output backs up. Each checkpoint also commits the open parts, so a scan running for hours has more, smaller parts.
+
+### The checkpoint directory
+
+While a scan runs, and after it's interrupted, its directory also holds `checkpoint/`:
+
+| File | Contents |
+|---|---|
+| `state` | The latest checkpoint: the scan's settings, every committed part, and the directories still to read |
+| `spill` | Directories waiting to be read that didn't fit in memory ([8.3](#83-memory)) |
+| `visited` | With `--detect-cycles`, the directories entered so far |
+| `lock` | Locked by the process writing the scan, so two can't write one scan at once |
+
+It's removed when the scan finishes. A scan that still has it isn't finished; check the manifest's `status`.
 
 ### Formats
 
@@ -675,7 +738,7 @@ Entries deleted between being listed and being read are counted as *vanished* in
   "started_at": "2026-10-26T00:11:32.698582Z",
   "status": "complete",
   "tool": "fs-inventory",
-  "tool_version": "0.3.0",
+  "tool_version": "0.4.0",
   "totals": {
     "by_kind": { "dir": 36, "file": 248, "symlink": 1 },
     "bytes": 47262948364,
@@ -703,13 +766,14 @@ Entries deleted between being listed and being read are counted as *vanished* in
 | `errors_by_kind` | Error counts by operation and error number |
 | `stalled` | Directories given up on with `--stall-timeout` |
 | `rollup` | Added by `rollup`: buckets, depth, reference time, and its part files |
+| `resumes` | Each resume: when it started, when the checkpoint it continued from was taken, and the fs-inventory version. Absent if the scan was never resumed. |
 
 | Status | Meaning | Exit code |
 |---|---|---|
-| `running` | The scan is in progress, or the process was killed before it could finish | — |
+| `running` | The scan is in progress, or the process was killed before it could finish; `resume` continues it from the last checkpoint | — |
 | `complete` | Every directory was read (some may have failed; see `errors`) | 0 or 1 |
-| `interrupted` | Stopped by a signal or a closed stdout; directories not yet read are missing | 3 |
-| `incomplete` | Finished, but gave up on stalled directories (`--stall-timeout`) | 3 |
+| `interrupted` | Stopped by a signal or a closed stdout; directories not yet read are missing, and `resume` continues it | 3 |
+| `incomplete` | Finished, but gave up on stalled directories (`--stall-timeout`); `resume` doesn't retry them | 3 |
 | `failed` | Output couldn't be written, such as a full disk | 4 |
 
 ### Progress output
@@ -738,9 +802,9 @@ With `--progress json`, the summary is an object with `"event": "done"`, the sta
 
 ### Exit codes
 
-| Code | `scan` | `verify` | Other commands |
+| Code | `scan` and `resume` | `verify` | Other commands |
 |---|---|---|---|
-| 0 | Complete with no errors | The scan is good | Success |
+| 0 | Complete with no errors (or, for `resume`, nothing to resume) | The scan is good | Success |
 | 1 | Complete, but some entries couldn't be read (see `errors`) | Problems found | — |
 | 2 | Invalid arguments or configuration | Invalid arguments | Invalid arguments |
 | 3 | Interrupted, or gave up on stalled directories | — | — |
@@ -1229,12 +1293,16 @@ A single huge directory doesn't hold the crawl back. After the first 10,000 entr
 
 Memory is bounded by default:
 
-- **Directories waiting to be read:** up to 1 GiB in memory. Beyond that, they wait in a spill file created next to the output. The file is deleted from the directory as soon as it's created, so it never lingers, even after a crash, but it uses disk space while the scan runs. The manifest's `totals.spilled` counts directories that waited there.
+- **Directories waiting to be read:** up to 1 GiB in memory. Beyond that, they wait in a spill file on disk, read back once memory drains. With checkpoints (the default), it's `checkpoint/spill` in the scan directory, removed when the scan finishes; otherwise it's created next to the output and deleted from the directory at once, so it never lingers. Either way, it uses disk space while the scan runs. The manifest's `totals.spilled` counts directories that waited there.
 - **Output buffers:** 64 MiB shared by all crawl threads, plus up to 128 MiB per Parquet row group being built.
 
 `--max-memory SIZE` sets one soft budget for all of it: half for waiting directories, an eighth for the crawl threads' buffers (at most 64 MiB), and a quarter for Parquet row groups. `--detect-cycles` adds about 50 bytes per directory, and `rollup --age-depth` about 0.5 KB per directory within that depth.
 
-### 8.4 Output
+### 8.4 Checkpoints
+
+Each checkpoint pauses the crawl while every thread finishes the directory it's reading (helping with very large directories meanwhile), and every open part file is committed and synced to disk. That's typically under a second, and longer while a very large directory is finished. At the default interval of 10 minutes, the cost is well under 1%; much shorter intervals slow a scan noticeably. Each checkpoint writes the directories waiting in memory to `checkpoint/state`, compressed: a few megabytes on most trees, more on very broad ones.
+
+### 8.5 Output
 
 - **Parquet with zstd level 3** is the best balance of size and speed. Raise the level (`--compression zstd:9`) for smaller files at the cost of more CPU.
 - **Writers** are added automatically, up to `--writers`, only when output backs up.
@@ -1256,21 +1324,26 @@ Memory is bounded by default:
 
 **`verify` says `schema version is 1`**: the scan was written by a build before schema version 2 (which made integer columns signed). Scan again with this release.
 
-**`scan status is running`**: the scan is still going, or the process was killed (`kill -9`, out of memory, power loss). In the second case, part files without `.tmp` are complete, but the scan isn't. Scan again into a new directory.
+**`scan status is running`**: the scan is still going, or the process was killed (`kill -9`, out of memory, power loss). In the second case, run `fs-inventory resume` on it ([4.12](#412-interrupted-crashed-and-stalled-scans)).
 
-**The scan stops making progress**: look for `stalled` in the progress output. A hung NFS server blocks its thread until the server returns. Use `--stall-timeout` so the scan gives up on that directory and finishes ([4.12](#412-interrupted-and-stalled-scans)).
+**`... is still being written by another fs-inventory process`** from `resume` or `scan`: a scan or resume is still running on that directory. Let it finish, or stop it first.
 
-**`--resolve-ids is not implemented yet`** (or `--symlink-targets`, `--guess-encoding`, `--checkpoint-interval`): these options are planned; see below.
+**`... has no checkpoint to resume from`**: the scan was run with `--checkpoint-interval 0`. Scan again into a new directory.
+
+**`skipped a checkpoint: a crawl thread has made no progress`**: a thread is stuck, typically on a hung NFS server. See [4.12](#412-interrupted-crashed-and-stalled-scans).
+
+**The scan stops making progress**: look for `stalled` in the progress output. A hung NFS server blocks its thread until the server returns. Use `--stall-timeout` so the scan gives up on that directory and finishes ([4.12](#412-interrupted-crashed-and-stalled-scans)).
+
+**`--resolve-ids is not implemented yet`** (or `--symlink-targets`, `--guess-encoding`): these options are planned; see below.
 
 ---
 
 ## 10. Not yet available
 
-These appear in `--help` but aren't implemented in 0.3.0. Using them prints `not implemented yet` and exits with code 4 (commands) or 2 (options).
+These appear in `--help` but aren't implemented in 0.4.0. Using them prints `not implemented yet` and exits with code 4 (commands) or 2 (options).
 
 | Feature | What it will do | Planned |
 |---|---|---|
-| `fs-inventory resume`, `--checkpoint-interval` | Continue an interrupted scan from its last checkpoint | 0.4.0 (milestone M4) |
 | `fs-inventory convert` | Re-export a Parquet scan as CSV or JSON Lines | Milestone M5 |
 | `--symlink-targets` | Record where each symlink points | Milestone M5 |
 | `--resolve-ids` | Add user and group name columns | Milestone M5 |

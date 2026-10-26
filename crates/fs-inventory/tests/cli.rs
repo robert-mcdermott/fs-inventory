@@ -50,7 +50,7 @@ fn usage_errors_exit_2() {
 
 #[test]
 fn unimplemented_commands_exit_4() {
-    let out = fs_inventory(&["resume", "/scans/x"]);
+    let out = fs_inventory(&["convert", "/scans/x", "--to", "csv", "-o", "-"]);
     assert_eq!(out.status.code(), Some(4));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("not implemented yet"), "{stderr}");

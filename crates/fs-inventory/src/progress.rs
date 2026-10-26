@@ -33,6 +33,8 @@ pub struct Snapshot {
     pub revisits: u64,
     pub spilled: u64,
     pub queued: u64,
+    /// Entries written before this run, by an interrupted scan it resumes.
+    pub base_entries: u64,
 }
 
 impl Snapshot {
@@ -47,13 +49,15 @@ impl Snapshot {
             revisits: counters.revisits.load(Ordering::Relaxed),
             spilled: counters.spilled.load(Ordering::Relaxed),
             queued: counters.pending.load(Ordering::Relaxed),
+            base_entries: 0,
         }
     }
 
+    /// Entries per second in this run.
     fn rate(&self) -> f64 {
         let secs = self.elapsed.as_secs_f64();
         if secs > 0.0 {
-            self.entries as f64 / secs
+            self.entries.saturating_sub(self.base_entries) as f64 / secs
         } else {
             0.0
         }
@@ -67,12 +71,14 @@ pub struct Reporter {
 }
 
 impl Reporter {
-    /// Starts reporting every `interval`. With [`Style::None`], reports nothing.
+    /// Starts reporting every `interval`, from `base_entries` entries written
+    /// before this run. With [`Style::None`], reports nothing.
     pub fn start(
         style: Style,
         interval: Duration,
         counters: Arc<Counters>,
         started: Instant,
+        base_entries: u64,
     ) -> Self {
         if style == Style::None {
             return Self {
@@ -84,7 +90,10 @@ impl Reporter {
         let handle = std::thread::Builder::new()
             .name("fs-inventory-progress".into())
             .spawn(move || {
-                let mut last = Snapshot::default();
+                let mut last = Snapshot {
+                    entries: base_entries,
+                    ..Snapshot::default()
+                };
                 loop {
                     match rx.recv_timeout(interval) {
                         Err(RecvTimeoutError::Timeout) => {}

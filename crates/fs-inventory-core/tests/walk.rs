@@ -18,7 +18,9 @@ use std::time::Duration;
 
 use fs_inventory_core::backend::{Backend, BackendOptions, NameBatch, NativeBackend};
 use fs_inventory_core::model::{DirTotals, Entry, ErrorRecord, Op, Stat};
-use fs_inventory_core::walker::{Counters, Sink, WalkOptions, WalkResult, walk};
+use fs_inventory_core::walker::{
+    Checkpointer, Counters, Sink, Start, WalkOptions, WalkResult, WalkState, walk, walk_from,
+};
 
 /// An owned copy of one entry row.
 #[derive(Debug, Clone)]
@@ -863,4 +865,381 @@ fn spilled_directories_are_all_read() {
     );
     // The spill file was unlinked from the start.
     assert_eq!(fs::read_dir(&spill_dir).unwrap().count(), 0);
+}
+
+/// Sleeps before every `stat`, so a walk lasts long enough for many
+/// checkpoints; hangs like [`HangingBackend`] on names starting with `hang`.
+struct SlowBackend {
+    inner: NativeBackend,
+    delay: Duration,
+    released: Arc<(Mutex<bool>, std::sync::Condvar)>,
+}
+
+impl SlowBackend {
+    fn new(delay: Duration) -> Self {
+        Self {
+            inner: NativeBackend::new(BackendOptions::default()),
+            delay,
+            released: Arc::new((Mutex::new(false), std::sync::Condvar::new())),
+        }
+    }
+}
+
+impl Backend for SlowBackend {
+    type Dir = <NativeBackend as Backend>::Dir;
+    type Scratch = <NativeBackend as Backend>::Scratch;
+
+    fn new_scratch(&self) -> Self::Scratch {
+        self.inner.new_scratch()
+    }
+
+    fn stat_root(&self, path: &[u8]) -> io::Result<Stat> {
+        self.inner.stat_root(path)
+    }
+
+    fn open_dir(&self, path: &[u8], follow: bool) -> io::Result<Self::Dir> {
+        self.inner.open_dir(path, follow)
+    }
+
+    fn dir_stat(&self, dir: &Self::Dir) -> io::Result<Stat> {
+        self.inner.dir_stat(dir)
+    }
+
+    fn read_names(
+        &self,
+        dir: &Self::Dir,
+        scratch: &mut Self::Scratch,
+        names: &mut NameBatch,
+    ) -> io::Result<bool> {
+        self.inner.read_names(dir, scratch, names)
+    }
+
+    fn stat_at(&self, dir: &Self::Dir, name: &[u8]) -> io::Result<Stat> {
+        std::thread::sleep(self.delay);
+        if name.starts_with(b"hang") {
+            let (lock, released) = &*self.released;
+            let mut done = lock.lock().unwrap();
+            while !*done {
+                done = released.wait(done).unwrap();
+            }
+        }
+        self.inner.stat_at(dir, name)
+    }
+}
+
+/// What a crash right after a checkpoint would leave: the rows committed
+/// so far, the state, and a copy of the state directory's files.
+struct Recorded {
+    rows: Vec<Row>,
+    state: Vec<u8>,
+    state_dir: tempfile::TempDir,
+    /// Not part of the encoded state: a resumed walk has no stuck threads.
+    abandoned_workers: Vec<usize>,
+}
+
+struct RecordingCheckpointer {
+    shared: Arc<Mutex<Collected>>,
+    state_dir: std::path::PathBuf,
+    checkpoints: Vec<Recorded>,
+    skipped: usize,
+}
+
+impl Checkpointer for RecordingCheckpointer {
+    fn checkpoint(&mut self, state: &WalkState) -> io::Result<()> {
+        // Workers are paused at directory boundaries, so every row they
+        // delivered is committed in `shared`, except the unfinished
+        // directory of an abandoned worker, which its sink still holds.
+        let rows = self.shared.lock().unwrap().rows.clone();
+        let copy = tempfile::tempdir().unwrap();
+        for entry in fs::read_dir(&self.state_dir).unwrap() {
+            let entry = entry.unwrap();
+            fs::copy(entry.path(), copy.path().join(entry.file_name())).unwrap();
+        }
+        self.checkpoints.push(Recorded {
+            rows,
+            state: state.encode(),
+            state_dir: copy,
+            abandoned_workers: state.abandoned_workers().to_vec(),
+        });
+        Ok(())
+    }
+
+    fn skipped(&mut self) {
+        self.skipped += 1;
+    }
+}
+
+/// Runs `walk_from` on a separate thread, with a recording checkpointer when
+/// the options ask for checkpoints, and fails the test if it hangs.
+fn run_from<B: Backend + 'static>(
+    start: Option<Vec<u8>>,
+    roots: Vec<Vec<u8>>,
+    options: WalkOptions,
+    backend: B,
+) -> (Collected, WalkResult, RecordingCheckpointer) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let shared = Arc::new(Mutex::new(Collected::default()));
+        let mut checkpointer = RecordingCheckpointer {
+            shared: Arc::clone(&shared),
+            state_dir: options.state_dir.clone().unwrap_or_default(),
+            checkpoints: Vec::new(),
+            skipped: 0,
+        };
+        let start = match &start {
+            Some(state) => Start::Resume(WalkState::decode(state).unwrap()),
+            None => Start::Roots(&roots),
+        };
+        let wants_checkpoints = options.checkpoint_interval.is_some();
+        let sink_shared = Arc::clone(&shared);
+        let result = walk_from(
+            start,
+            options,
+            Arc::new(backend),
+            move |_| CollectingSink {
+                shared: Arc::clone(&sink_shared),
+                batch: Vec::new(),
+                rows: Vec::new(),
+                errors: Vec::new(),
+            },
+            Arc::new(Counters::default()),
+            Arc::new(AtomicBool::new(false)),
+            wants_checkpoints.then_some(&mut checkpointer as &mut dyn Checkpointer),
+        )
+        .unwrap();
+        let collected = std::mem::take(&mut *shared.lock().unwrap());
+        let _ = tx.send((collected, result, checkpointer));
+    });
+    rx.recv_timeout(Duration::from_secs(120))
+        .expect("walk did not finish within 120 seconds")
+}
+
+/// Checks that `rows` hold every path under `root` exactly once, with
+/// unique directory IDs that link every row to its parent's row, and
+/// directory totals that count every child.
+fn assert_complete(rows: &[Row], root: &Path, skip: Option<&Path>) {
+    let skip = skip.map(bytes);
+    let skipped = |p: &[u8]| {
+        skip.as_ref()
+            .is_some_and(|s| p.starts_with(s) && p.len() > s.len())
+    };
+    let mut paths = BTreeMap::new();
+    for row in rows {
+        assert!(
+            paths.insert(row.path.clone(), row).is_none(),
+            "duplicate row for {:?}",
+            String::from_utf8_lossy(&row.path)
+        );
+    }
+    let expected: BTreeSet<Vec<u8>> = oracle(root).into_keys().filter(|p| !skipped(p)).collect();
+    let got: BTreeSet<Vec<u8>> = paths.keys().cloned().collect();
+    assert_eq!(got, expected);
+    let mut ids = BTreeMap::new();
+    for row in rows {
+        if let Some(id) = row.dir_id {
+            assert!(
+                ids.insert(id, row.path.clone()).is_none(),
+                "duplicate dir_id {id}"
+            );
+        }
+    }
+    for row in rows.iter().filter(|r| r.depth > 0) {
+        assert_eq!(ids.get(&row.parent_id), Some(&row.parent_path), "{row:?}");
+    }
+    for row in rows.iter().filter(|r| r.totals.is_some()) {
+        let children = rows.iter().filter(|r| r.parent_path == row.path).count();
+        assert_eq!(row.totals.unwrap().entries as usize, children, "{row:?}");
+    }
+}
+
+/// Resumes from each checkpoint, and checks that the rows committed at the
+/// checkpoint plus the resumed walk's rows are the tree.
+fn assert_checkpoints_resume<'a>(
+    checkpoints: impl IntoIterator<Item = &'a Recorded>,
+    root: &Path,
+    options: &WalkOptions,
+    skip: Option<&Path>,
+) {
+    for (i, checkpoint) in checkpoints.into_iter().enumerate() {
+        let resumed = WalkOptions {
+            state_dir: Some(checkpoint.state_dir.path().to_path_buf()),
+            checkpoint_interval: None,
+            ..options.clone()
+        };
+        let (got, result, _) = run_from(
+            Some(checkpoint.state.clone()),
+            Vec::new(),
+            resumed,
+            NativeBackend::new(BackendOptions::default()),
+        );
+        assert_eq!(result.complete, skip.is_none(), "checkpoint {i}");
+        let mut rows = checkpoint.rows.clone();
+        rows.extend(got.rows);
+        assert_complete(&rows, root, skip);
+    }
+}
+
+fn checkpointing(threads: usize, state_dir: &Path) -> WalkOptions {
+    WalkOptions {
+        checkpoint_interval: Some(Duration::from_millis(5)),
+        state_dir: Some(state_dir.to_path_buf()),
+        ..options(threads)
+    }
+}
+
+#[test]
+fn every_checkpoint_resumes_to_the_whole_tree() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("tree");
+    fs::create_dir(&root).unwrap();
+    make_tree(&root, 4, 3, 4); // 85 directories, 425 files
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let opts = checkpointing(4, &state);
+
+    let (got, result, recorder) = run_from(
+        None,
+        vec![bytes(&root)],
+        opts.clone(),
+        SlowBackend::new(Duration::from_micros(500)),
+    );
+    assert!(result.complete);
+    assert!(result.state.is_none());
+    assert_complete(&got.rows, &root, None);
+    assert!(
+        recorder.checkpoints.len() >= 5,
+        "only {} checkpoints",
+        recorder.checkpoints.len()
+    );
+    // The first checkpoint is taken before any directory is read.
+    assert!(recorder.checkpoints[0].rows.is_empty());
+    assert_checkpoints_resume(&recorder.checkpoints, &root, &opts, None);
+}
+
+#[test]
+fn checkpoints_include_spilled_and_visited_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("tree");
+    fs::create_dir(&root).unwrap();
+    make_tree(&root, 4, 3, 2);
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    // Every queued directory goes through the spill file, and every entered
+    // directory is recorded for --detect-cycles.
+    let opts = WalkOptions {
+        queue_budget: 1,
+        detect_cycles: true,
+        ..checkpointing(3, &state)
+    };
+    let (got, result, recorder) = run_from(
+        None,
+        vec![bytes(&root)],
+        opts.clone(),
+        SlowBackend::new(Duration::from_micros(500)),
+    );
+    assert!(result.complete);
+    assert_complete(&got.rows, &root, None);
+    assert!(recorder.checkpoints.len() >= 3);
+    // The spill and visited files outlive the walk, for resuming.
+    assert!(state.join("spill").exists() && state.join("visited").exists());
+    assert_checkpoints_resume(&recorder.checkpoints, &root, &opts, None);
+}
+
+#[test]
+fn checkpoints_wait_for_huge_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("tree");
+    let huge = root.join("huge");
+    fs::create_dir_all(&huge).unwrap();
+    for i in 0..12_000 {
+        fs::write(huge.join(format!("h-{i:05}")), "").unwrap();
+    }
+    make_tree(&root, 3, 2, 3);
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let opts = checkpointing(6, &state);
+    let (got, result, recorder) = run_from(
+        None,
+        vec![bytes(&root)],
+        opts.clone(),
+        SlowBackend::new(Duration::from_micros(20)),
+    );
+    assert!(result.complete);
+    assert_complete(&got.rows, &root, None);
+    assert!(recorder.checkpoints.len() >= 2);
+    // No checkpoint holds part of the huge directory: its batches are
+    // finished before the pause completes.
+    for checkpoint in &recorder.checkpoints {
+        let children = checkpoint
+            .rows
+            .iter()
+            .filter(|r| r.parent_path == bytes(&huge))
+            .count();
+        assert!(children == 0 || children == 12_000, "{children} rows");
+    }
+    assert_checkpoints_resume(&recorder.checkpoints, &root, &opts, None);
+}
+
+#[test]
+fn a_stalled_worker_skips_checkpoints() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("tree");
+    fs::create_dir(&root).unwrap();
+    make_tree(&root, 3, 2, 3);
+    fs::write(root.join("hang-here"), "").unwrap();
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let opts = WalkOptions {
+        checkpoint_patience: Duration::from_millis(100),
+        ..checkpointing(4, &state)
+    };
+    let backend = SlowBackend::new(Duration::ZERO);
+    let released = Arc::clone(&backend.released);
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(800));
+        let (lock, cvar) = &*released;
+        *lock.lock().unwrap() = true;
+        cvar.notify_all();
+    });
+    let (got, result, recorder) = run_from(None, vec![bytes(&root)], opts, backend);
+    assert!(result.complete);
+    assert_complete(&got.rows, &root, None);
+    assert!(recorder.skipped >= 1, "no checkpoint was skipped");
+}
+
+#[test]
+fn checkpoints_after_a_stall_keep_the_stall_row() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().canonicalize().unwrap().join("tree");
+    fs::create_dir(&root).unwrap();
+    make_tree(&root, 3, 2, 3);
+    let stuck = root.join("stuck");
+    fs::create_dir(&stuck).unwrap();
+    fs::write(stuck.join("hang-forever"), "").unwrap();
+    fs::write(stuck.join("after"), "").unwrap();
+    let state = tmp.path().join("state");
+    fs::create_dir(&state).unwrap();
+    let opts = WalkOptions {
+        stall_report: Duration::from_millis(100),
+        stall_timeout: Some(Duration::from_millis(300)),
+        checkpoint_patience: Duration::from_secs(60),
+        ..checkpointing(4, &state)
+    };
+    let backend = SlowBackend::new(Duration::from_millis(2));
+    let (got, result, recorder) = run_from(None, vec![bytes(&root)], opts.clone(), backend);
+    assert_eq!(result.abandoned.len(), 1);
+    assert_complete(&got.rows, &root, Some(&stuck));
+    // Checkpoints after the stall record the abandoned worker, and resuming
+    // from them neither rereads the stuck directory nor loses its row.
+    let after: Vec<&Recorded> = recorder
+        .checkpoints
+        .iter()
+        .filter(|c| !c.abandoned_workers.is_empty())
+        .collect();
+    assert!(!after.is_empty(), "no checkpoint after the stall");
+    for checkpoint in &after {
+        let stall_rows = checkpoint.rows.iter().filter(|r| r.path == bytes(&stuck));
+        assert_eq!(stall_rows.count(), 1);
+    }
+    assert_checkpoints_resume(after, &root, &opts, Some(&stuck));
 }

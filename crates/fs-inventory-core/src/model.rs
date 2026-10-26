@@ -311,6 +311,22 @@ pub enum Op {
 }
 
 impl Op {
+    /// Every operation.
+    pub const ALL: [Self; 7] = [
+        Self::Open,
+        Self::ReadDir,
+        Self::Stat,
+        Self::Verify,
+        Self::Internal,
+        Self::Revisit,
+        Self::Stall,
+    ];
+
+    /// The operation named `name` by [`Self::as_str`].
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|op| op.as_str() == name)
+    }
+
     /// The stable name used in output.
     pub const fn as_str(self) -> &'static str {
         match self {
