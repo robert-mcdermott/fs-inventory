@@ -22,19 +22,21 @@ A high-performance, crash-resilient file system inventory tool and Rust library.
 
 ## Install
 
-Requires Rust 1.88 or later. The toolchain in `rust-toolchain.toml` installs automatically through rustup.
+On Linux or macOS:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sh
+```
+
+This installs the latest release as `~/.local/bin/fs-inventory`. It checks the download's SHA-256 checksum and version, and replaces an existing copy only after both checks pass. It doesn't use `sudo` or change `PATH`. The Linux binaries are static, so they run on any distribution with kernel 3.2 or later, including RHEL 7.
+
+To build from source instead (Rust 1.88 or later):
 
 ```bash
 cargo build --release
 ```
 
-The binary is written to `target/release/fs-inventory`. For a static Linux binary that runs on any distribution, build on Linux with the musl C tools installed (`musl-tools` on Debian and Ubuntu):
-
-```bash
-cargo build --release --target x86_64-unknown-linux-musl
-```
-
-The [user guide](docs/user-guide.md#1-install) has the details.
+The [user guide](docs/user-guide.md#1-install) covers installing a pinned version, installing for every user, and building static Linux binaries.
 
 ## Quick start
 

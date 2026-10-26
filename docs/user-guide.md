@@ -25,7 +25,46 @@ Related documents:
 
 ## 1. Install
 
-fs-inventory is a single executable with no runtime dependencies. Build it from source with Rust 1.88 or later; the toolchain named in `rust-toolchain.toml` installs automatically through rustup.
+fs-inventory is a single executable with no runtime dependencies. Each release has binaries for Linux (x86_64 and ARM) and macOS (Apple silicon and Intel). The Linux binaries are static: they run on any distribution with kernel 3.2 or later, including RHEL 7.
+
+### Install a release
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sh
+```
+
+The installer downloads the binary for your system and the release's `SHA256SUMS` file. It checks the binary's SHA-256 checksum, runs it to check its version, and only then installs it as `~/.local/bin/fs-inventory`, replacing an existing copy in one step. It doesn't use `sudo` or change `PATH`. If `~/.local/bin` isn't on your `PATH`, it says so and prints the full path to run.
+
+Pass options to the installer after `sh -s --`:
+
+| Option | Environment variable | Effect |
+|---|---|---|
+| `--version VERSION` | `FS_INVENTORY_VERSION` | Install this release, such as `v0.4.0`, instead of the latest |
+| `--install-dir DIRECTORY` | `FS_INVENTORY_INSTALL_DIR` | Install here instead of `~/.local/bin` |
+
+For example, to install a pinned version for every user of a server:
+
+```bash
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v0.4.0 --install-dir /usr/local/bin
+```
+
+To install without the script, download the binary and `SHA256SUMS` from the [releases page](https://github.com/robert-mcdermott/fs-inventory/releases), check the checksum, and make the binary executable:
+
+```bash
+grep ' fs-inventory-linux-amd64$' SHA256SUMS | sha256sum --check
+```
+
+```bash
+chmod +x fs-inventory-linux-amd64
+```
+
+On macOS, use `shasum -a 256 --check` in place of `sha256sum --check`. A binary downloaded with a web browser is quarantined by macOS; remove that with `xattr -d com.apple.quarantine fs-inventory-darwin-arm64`, or use the installer, which downloads with `curl`.
+
+To uninstall, delete the binary.
+
+### Build from source
+
+Build with Rust 1.88 or later; the toolchain named in `rust-toolchain.toml` installs automatically through rustup.
 
 ```bash
 cargo build --release
@@ -33,9 +72,7 @@ cargo build --release
 
 The binary is `target/release/fs-inventory`. Copy it anywhere on your `PATH`.
 
-### A Linux binary for every distribution
-
-A normal Linux build links against the system's glibc and runs only on systems with that glibc version or newer. For servers and HPC nodes, build a static binary instead. It has no library dependencies and runs on any Linux distribution with kernel 3.2 or later, including RHEL 7. Build it on a Linux machine (or in a Linux container) with the musl C tools installed (`musl-tools` on Debian and Ubuntu):
+A normal Linux build links against the system's glibc and runs only on systems with that glibc version or newer. To build a static binary like the released ones, build on a Linux machine (or in a Linux container) with the musl C tools installed (`musl-tools` on Debian and Ubuntu):
 
 ```bash
 rustup target add x86_64-unknown-linux-musl
@@ -47,9 +84,7 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 The binary is `target/x86_64-unknown-linux-musl/release/fs-inventory`. Use `aarch64-unknown-linux-musl` for ARM servers. The static build crawls as fast as the glibc build.
 
-On kernels older than 4.11 (such as RHEL 7), fs-inventory reads metadata with `fstatat` instead of `statx`, and `btime` (creation time) is always null.
-
-Check the installation:
+### Check the installation
 
 ```bash
 fs-inventory --version
@@ -58,6 +93,8 @@ fs-inventory --version
 ```
 fs-inventory 0.4.0
 ```
+
+On kernels older than 4.11 (such as RHEL 7), fs-inventory reads metadata with `fstatat` instead of `statx`, and `btime` (creation time) is always null.
 
 ---
 
