@@ -6,6 +6,7 @@
 //! without `statx` (before 4.11).
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rustix::fd::{AsFd as _, OwnedFd};
 use rustix::fs::{AtFlags, CWD, RawDir, Statx, StatxFlags, StatxTimestamp};
@@ -21,6 +22,9 @@ pub struct NativeBackend {
     opener: DirOpener,
     /// The statx fields requested for every entry.
     mask: StatxFlags,
+    /// Set once `statx` fails with `ENOSYS`, so later stats go straight to
+    /// `fstatat` instead of failing a system call each time.
+    no_statx: AtomicBool,
 }
 
 impl NativeBackend {
@@ -48,23 +52,25 @@ impl NativeBackend {
             options,
             opener: DirOpener::new(),
             mask,
+            no_statx: AtomicBool::new(false),
         }
     }
 
     fn statx(&self, dirfd: impl rustix::fd::AsFd, path: &[u8], flags: AtFlags) -> io::Result<Stat> {
-        let mut flags = flags | AtFlags::NO_AUTOMOUNT;
-        if self.options.statx_dont_sync {
-            flags |= AtFlags::STATX_DONT_SYNC;
-        }
-        let mask = self.mask;
-        match rustix::fs::statx(dirfd.as_fd(), path, flags, mask) {
-            Ok(x) => Ok(from_statx(&x)),
-            Err(Errno::NOSYS) => {
-                let flags = flags & AtFlags::SYMLINK_NOFOLLOW;
-                Ok(from_stat(&rustix::fs::statat(dirfd, path, flags)?))
+        let flags = flags | AtFlags::NO_AUTOMOUNT;
+        if !self.no_statx.load(Ordering::Relaxed) {
+            let mut statx_flags = flags;
+            if self.options.statx_dont_sync {
+                statx_flags |= AtFlags::STATX_DONT_SYNC;
             }
-            Err(e) => Err(e.into()),
+            match rustix::fs::statx(dirfd.as_fd(), path, statx_flags, self.mask) {
+                Ok(x) => return Ok(from_statx(&x)),
+                Err(Errno::NOSYS) => self.no_statx.store(true, Ordering::Relaxed),
+                Err(e) => return Err(e.into()),
+            }
         }
+        // `fstatat` takes the same flags, except `AT_STATX_DONT_SYNC`.
+        Ok(from_stat(&rustix::fs::statat(dirfd, path, flags)?))
     }
 }
 
@@ -171,5 +177,58 @@ fn from_stat(s: &rustix::fs::Stat) -> Stat {
         mtime: Timestamp::new(s.st_mtime as i64, s.st_mtime_nsec as i64),
         ctime: Timestamp::new(s.st_ctime as i64, s.st_ctime_nsec as i64),
         btime: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    use super::*;
+
+    /// The `fstatat` fallback for kernels before 4.11 reads the same
+    /// metadata as `statx`, except birth time.
+    #[test]
+    fn fstatat_fallback_matches_statx() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("file"), b"hello").unwrap();
+        std::fs::create_dir(tmp.path().join("dir")).unwrap();
+        std::os::unix::fs::symlink("file", tmp.path().join("link")).unwrap();
+        let root = tmp.path().as_os_str().as_bytes();
+
+        let statx = NativeBackend::new(BackendOptions::default());
+        let fallback = NativeBackend::new(BackendOptions {
+            // Valid only for statx; the fallback must leave it out.
+            statx_dont_sync: true,
+            ..BackendOptions::default()
+        });
+        fallback.no_statx.store(true, Ordering::Relaxed);
+
+        let without_btime = |stat: Stat| Stat {
+            btime: None,
+            ..stat
+        };
+        assert_eq!(
+            without_btime(statx.stat_root(root).unwrap()),
+            fallback.stat_root(root).unwrap()
+        );
+        let (a, b) = (
+            statx.open_dir(root, false).unwrap(),
+            fallback.open_dir(root, false).unwrap(),
+        );
+        for name in [&b"file"[..], b"dir", b"link"] {
+            let stat = fallback.stat_at(&b, name).unwrap();
+            assert_eq!(stat.btime, None);
+            assert_eq!(
+                without_btime(statx.stat_at(&a, name).unwrap()),
+                stat,
+                "{}",
+                String::from_utf8_lossy(name)
+            );
+        }
+        assert_eq!(
+            fallback.stat_at(&b, b"missing").unwrap_err().raw_os_error(),
+            Some(Errno::NOENT.raw_os_error())
+        );
     }
 }

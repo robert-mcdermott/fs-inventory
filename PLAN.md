@@ -182,7 +182,7 @@ Main points:
 
 ### 4.5 Recursive totals (`rollup`)
 
-Each directory row carries totals for its *immediate* children. `fs-inventory rollup <scan-dir>` reads only the directory rows (about 5% of rows, 5 columns), rebuilds the tree from `dir_id`/`parent_id`, and writes the `rollup` table: one row per directory with `entries`, `files`, `dirs`, `bytes`, `alloc_bytes`, the oldest and newest times, and `incomplete_dirs` (directories in the subtree that weren't fully read, so the totals are lower bounds). Running it after the crawl means it is always correct, including after a resume. For 50M directories it needs about 2 GB of RAM.
+Each directory row carries totals for its *immediate* children. `fs-inventory rollup <scan-dir>` reads only the directory rows (about 5% of rows, 5 columns), rebuilds the tree from `dir_id`/`parent_id`, and writes the `rollup` table: one row per directory with `entries`, `files`, `dirs`, `bytes`, `alloc_bytes`, the oldest and newest times, and `incomplete_dirs` (directories in the subtree that weren't fully read, so the totals are lower bounds). Running it after the crawl means it is always correct, including after a resume. It needs about 100 bytes of memory per directory: about 5 GB for 50M directories.
 
 For file-age heat maps, it also writes **age histograms** to the `rollup_ages` table: file counts and bytes per age bucket (by default < 30 days, < 90 days, < 1 year, < 2, 3, 5, and 10 years, and older), for `mtime`, `ctime`, and `atime`, measured from the scan's start time, for directories down to `--age-depth` (default 4). To build them, `rollup` also reads a few columns of the file rows (`parent_id`, `size`, and the times), which is a fast column scan in Parquet. Buckets are configurable (`--age-buckets`), so they aren't frozen into the scan. The web app then reads a small directory × age-bucket table instead of aggregating billions of rows. Both tables are listed in the manifest and checked by `verify`; running `rollup` again replaces them.
 
@@ -194,13 +194,13 @@ For file-age heat maps, it also writes **age histograms** to the `rollup_ages` t
 
 ```
 scan-2026-10-25T0130Z/
-  manifest.json            status running → complete | interrupted | incomplete; tool + schema version,
+  manifest.json            status running → complete | interrupted | incomplete | failed; tool + schema version,
                            host, roots, options, start/end, totals by kind, errors by errno, throughput
   entries/part-w03-000017.parquet
   errors/part-w00-000002.parquet
   rollup/part-000000.parquet          (after `fs-inventory rollup`)
   rollup_ages/part-000000.parquet
-  checkpoints/ckpt-000042.bin.zst     (resume state; deleted on success unless --keep-checkpoints)
+  checkpoints/ckpt-000042.bin.zst     (M4: resume state; deleted on success unless --keep-checkpoints)
 ```
 
 Every format is sharded the same way, so a billion-entry scan becomes many part files of bounded size rather than one huge file. DuckDB reads a glob of parts as a single table (`read_parquet('scan/entries/*.parquet')`, `read_csv('scan/entries/*.csv')`, `read_json('scan/entries/*.jsonl')`), and so can ingestion jobs that load parts in parallel.
@@ -257,7 +257,7 @@ Repeated scans can sit side by side (`scans/scan_date=2026-10-25/…`), so DuckD
 | Entry deleted between `getdents` and `statx` | Counted as `vanished`. Not an error. |
 | Directory replaced between stat and open | Detected by the `(dev, ino)` check and recorded. |
 | A bug or panic while processing a directory | `catch_unwind` at the directory boundary. The directory is logged as an internal error and the worker continues. Release builds set `panic = "unwind"`. |
-| Hung NFS server (hard mount, thread stuck in D state) | A watchdog tracks each worker's current operation and start time. The progress line shows stalled paths. Other workers continue. With `--stall-timeout`, the crawl finalizes output, marks those subtrees incomplete in the manifest, and exits with code 3. |
+| Hung NFS server (hard mount, thread stuck in D state) | A watchdog tracks each worker's last progress and the directory it's working on. The progress line shows stalled paths. Other workers continue. With `--stall-timeout`, the crawl finalizes output, marks those subtrees incomplete in the manifest, and exits with code 3. |
 | File descriptor exhaustion | Raise `RLIMIT_NOFILE` to the hard limit at startup. Each worker holds at most a few fds, and queued directories hold none. |
 | Unbounded memory | Bounded channels, bounded batches, queue spill (M3), and `--max-memory` soft budget. |
 | SIGINT / SIGTERM | Graceful: stop taking new directories, finish in-flight ones, commit parts, write a checkpoint and `manifest.status = interrupted`. A second signal exits immediately. Finalized parts stay valid either way. |
@@ -323,7 +323,7 @@ fs-inventory probe   <PATH> [--threads LIST] [--duration DUR] [--drop-caches]
                                     Time crawls at several thread counts and suggest one
 ```
 
-**Progress:** a stderr line every 10 seconds by default. It shows elapsed time, entries and entries/s (1-minute average), directories done and queued, bytes seen, errors, vanished entries, active and stalled workers, and output bytes. `--progress json` writes machine-readable lines for log collection.
+**Progress:** a stderr line every 10 seconds by default. It shows elapsed time, entries and the rate since the last line, directories read, bytes seen, errors, directories queued, and stalled threads when there are any. `--progress json` writes the same values, plus vanished entries, as machine-readable lines for log collection.
 
 **Exit codes:**
 
@@ -332,7 +332,7 @@ fs-inventory probe   <PATH> [--threads LIST] [--duration DUR] [--drop-caches]
 | 0 | Complete with no errors |
 | 1 | Complete with per-entry errors (see the errors table) |
 | 2 | Usage or configuration error |
-| 3 | Interrupted or incomplete (resumable) |
+| 3 | Interrupted or incomplete (resumable once `resume` exists, M4) |
 | 4 | Fatal: output unwritable |
 
 ---
@@ -453,6 +453,7 @@ fs-inventory will feed a separate file inventory and analytics web application: 
 | 5 | Timestamp precision | Microseconds by default, `--time-unit ns` optional |
 | 6 | v1 platforms | Linux (primary) and macOS. Windows later |
 | 7 | Binary name | `fs-inventory` (optionally also install a short `fsinv` alias) |
+| 8 | Versioning | **Decided:** the tool version follows Semantic Versioning. Each milestone is released as `0.N.0` (M3 is 0.3.0), fixes in between as patch releases, and M5 as 1.0.0. The version changes only in a release commit, which is then tagged `vX.Y.Z`. The schema version is separate (§11) and changes only when the output format breaks readers. |
 
 ---
 
