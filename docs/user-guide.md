@@ -1,6 +1,6 @@
 # fs-inventory user guide
 
-This guide covers fs-inventory 0.6.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
+This guide covers fs-inventory 1.0.0: how to install it, how to run it in the situations it was built for, what it writes, and how to query the results with DuckDB. The examples scan a small demo tree at `/data/projects` on Linux. Every query was run against those scans, and the output shown is what was printed, except where an example is marked as an illustration.
 
 Related documents:
 
@@ -38,13 +38,13 @@ Pass options to the installer after `sh -s --`:
 
 | Option | Environment variable | Effect |
 |---|---|---|
-| `--version VERSION` | `FS_INVENTORY_VERSION` | Install this release, such as `v0.6.0`, instead of the latest |
+| `--version VERSION` | `FS_INVENTORY_VERSION` | Install this release, such as `v1.0.0`, instead of the latest |
 | `--install-dir DIRECTORY` | `FS_INVENTORY_INSTALL_DIR` | Install here instead of `~/.local/bin` |
 
 For example, to install a pinned version for every user of a server:
 
 ```bash
-curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v0.6.0 --install-dir /usr/local/bin
+curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/robert-mcdermott/fs-inventory/main/install.sh | sudo sh -s -- --version v1.0.0 --install-dir /usr/local/bin
 ```
 
 To install without the script, download the binary and `SHA256SUMS` from the [releases page](https://github.com/robert-mcdermott/fs-inventory/releases), check the checksum, and make the binary executable:
@@ -90,7 +90,7 @@ fs-inventory --version
 ```
 
 ```
-fs-inventory 0.6.0
+fs-inventory 1.0.0
 ```
 
 On kernels older than 4.11 (such as RHEL 7), fs-inventory reads metadata with `fstatat` instead of `statx`, and `btime` (creation time) is always null.
@@ -333,7 +333,7 @@ When loading scans into another system:
 
 - **Load only scans whose `status` is `complete`.** Accept `incomplete` too only if partial data is useful to you; the `stalled` list in the manifest says which directories are missing.
 - **Record the `scan_id`** (a UUIDv7, unique per scan) to avoid loading a scan twice. Every Parquet part carries the same ID in its metadata, so a part can't be mixed up with another scan's.
-- **Check `schema_version`.** It's 3 in this release, and changes when columns are added or change. `tool_version` records the fs-inventory version.
+- **Check `schema_version`.** It's 3 in this release, and changes when columns are added. Throughout 1.x, columns are only added, at the end of a table; none are removed or renamed. `tool_version` records the fs-inventory version.
 - **Load only what changed.** `fs_diff` in the DuckDB macros compares two scans of the same roots and returns one row per entry that was added, removed, or changed, with the row before and after. Instead of reloading every row each night, apply those changes: insert or replace the `new` row of each added or changed entry, and delete each removed one, matching entries by their exact path bytes, `coalesce(path_raw, encode(path))`:
 
   ```bash
@@ -828,7 +828,7 @@ Entries deleted between being listed and being read, including directories delet
   "started_at": "2026-10-26T00:11:32.698582Z",
   "status": "complete",
   "tool": "fs-inventory",
-  "tool_version": "0.6.0",
+  "tool_version": "1.0.0",
   "totals": {
     "by_kind": { "dir": 36, "file": 248, "symlink": 1 },
     "bytes": 47262948364,
