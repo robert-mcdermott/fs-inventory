@@ -397,14 +397,24 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 
 - **On the laptop:** unit, property, and integration tests, and small synthetic trees. Never quote laptop numbers as performance results.
 - **In a Linux container (Podman):** the Linux `statx`/`getdents64` backend, invalid-byte file names (APFS rejects them), and the torture tree.
-- **On a Linux server with large NFS mounts (later):** real performance. M1 ships a portable benchmark kit, `bench/`, with a synthetic tree generator and a runner that sweeps thread counts and compares against `find`. You copy the static binary and the kit to the server and run it there.
+- **On a Linux server with large NFS mounts (later):** real performance. M1 ships a portable benchmark kit, `bench/`, with a synthetic tree generator and a runner that sweeps thread counts and compares against `find`. You copy the static binary and the kit to the server and run it there. `bench/server.py` runs the whole server benchmark in about 15 minutes and writes a report to send back.
+- **Generated trees, anywhere:** `scan --synthetic` (hidden) scans a deterministic tree computed in memory, so scale tests need no storage. `bench/scale.py` records memory and throughput every second and can kill and resume the scan. Results on the laptop (M4, 10 cores), 2026-10-25:
+
+  | Scan | Time | Peak memory | Checks |
+  |---|---:|---:|---|
+  | 100M entries, Parquet | 42 s | 1.55 GB | Complete, exact count, `verify` |
+  | 100M, Parquet, `--max-memory 512M` | 52 s | 1.29 GB | Same |
+  | 200M, Parquet, `kill -9` at 50% and resumed | 101 s | 1.58 GB | Every entry exactly once (by inode) |
+  | 1B entries, CSV to `/dev/null` | 338 s | 238 MB | Complete, exact count |
+
+  Memory levels off within the first third of each scan and stays within 3% of that to the end. The rates (2–3 million entries per second) are fs-inventory's own CPU ceiling on this machine, not storage performance.
 
 - **Synthetic trees** of 10M and 100M entries (wide, deep, and mixed) on tmpfs and NVMe. Compare against `find`, `fd`, `du`, and `gdu`. Measure entries/s, CPU, peak memory, and output bytes per entry.
 - **Real file systems** in your environment (NFS, GPFS/Spectrum Scale, Lustre, BeeGFS): a thread-count sweep to set defaults, plus `getdents` buffer-size and `--statx-dont-sync` experiments.
 - **Targets to validate, not promises:**
   - CPU-bound with a warm cache, Parquet+zstd: ≥ 1M entries/s on a 16-core host.
   - Network file systems: throughput scales near-linearly with threads until the server saturates.
-  - Memory: under 2 GB at default settings, independent of tree size (except queue growth on very wide trees).
+  - Memory: under 2 GB at default settings, independent of tree size (except queue growth on very wide trees). Independence from tree size is confirmed up to a billion entries. But resident memory grows with crawl threads, about 20 MB each with Parquet output and 11 MB with CSV (Linux, generated trees), and `--max-memory` doesn't count it. The defaults (32 threads) stay under 2 GB, but the 64–256 threads that network file systems want may not.
 - **CI (GitHub Actions):**
   - Platforms: Linux x86_64 and aarch64 (static musl binaries) and macOS arm64.
   - Checks: `clippy -D warnings`, `rustfmt`, `cargo-deny`, tests, and a minimum-supported-Rust-version (MSRV) check.
@@ -417,8 +427,8 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 |---|---|---|
 | **M0: Skeleton** ✅ | Workspace, LICENSE, NOTICE, CI, `cargo-deny`, `clap` skeleton | CI green on Linux and macOS |
 | **M1: Core walker + CSV/JSONL** ✅ | Work-stealing scheduler, Linux statx/getdents backend, generic backend (macOS), names module, directory aggregates, errors table, excludes, `--max-depth`, mount and snapshot policy, progress, graceful signals, stdout and directory output with rolling parts and the commit protocol, manifest, benchmark kit. Directory-atomic batching from day one. | Torture tree passes in a Linux container, the oracle diff is exact, there are zero panics under fault injection, and DuckDB 2.0 loads the output |
-| **M2: Parquet** ✅ | Arrow builders, Parquet writer pool, key-value metadata, `--columns`, `sql/` macros and example queries, `verify`, `schema` (also generates `docs/schema.md`), mimalloc | Output size per entry measured on 1.24M real entries (§5.2), and DuckDB 2.0 loads Parquet, CSV, and JSON Lines scans. A 100M-entry scan has not been run yet; that happens on the Linux server. |
-| **M3: Scale** (features done) | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, `--fields`, `--detect-cycles`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat. The features are in and tested on a laptop and in a Linux container; the large scan and default tuning happen on the Linux server. |
+| **M2: Parquet** ✅ | Arrow builders, Parquet writer pool, key-value metadata, `--columns`, `sql/` macros and example queries, `verify`, `schema` (also generates `docs/schema.md`), mimalloc | Output size per entry measured on 1.24M real entries (§5.2), and DuckDB 2.0 loads Parquet, CSV, and JSON Lines scans. A 100M-entry scan of a generated tree ran on the laptop (§9.2); scans of real storage at that scale happen on the Linux server. |
+| **M3: Scale** (features done) | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, `--fields`, `--detect-cycles`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat: met with a generated billion-entry tree on the laptop (§9.2). Default tuning from real storage happens on the Linux server. |
 | **M4: Resume** ✅ | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run: tested by resuming from every checkpoint of a walk, and by `kill -9` at several points of real scans |
 | **M5: Platform and extras** | `diff` between two scans (§11), macOS `getattrlistbulk` backend (if benchmarks justify it), `--guess-encoding`, symlink targets, statx attributes, `--resolve-ids`, `convert`, release packaging (static binaries and `install.sh` ✅; .deb/.rpm, Homebrew), documentation site ✅ | Release 1.0 |
 

@@ -1335,6 +1335,8 @@ Memory is bounded by default:
 
 `--max-memory SIZE` sets one soft budget for all of it: half for waiting directories, an eighth for the crawl threads' buffers (at most 64 MiB), and a quarter for Parquet row groups. `--detect-cycles` adds about 50 bytes per directory, and `rollup --age-depth` about 0.5 KB per directory within that depth.
 
+Memory doesn't grow with the size of the tree: in scans of generated trees of up to a billion entries, it leveled off early and stayed flat to the end. It does grow with threads, which the budget doesn't count. The memory allocator keeps memory that each crawl thread has used, about 20 MB per crawl thread with Parquet output and 10 MB with CSV or JSON Lines, and each Parquet writer adds about 100 MB. Measured on Linux with two Parquet writers, a scan's peak was about 300 MB with 1 crawl thread, 750 MB with 16, 1.1 GB with 32 (the default), and 1.6 GB with 64. Where memory is limited, as in a batch job, allow for this when you choose `--threads`, and set `--writers` as well as `--max-memory`.
+
 ### 8.4 Checkpoints
 
 Each checkpoint pauses the crawl while every thread finishes the directory it's reading (helping with very large directories meanwhile), and every open part file is committed and synced to disk. That's typically under a second, and longer while a very large directory is finished. At the default interval of 10 minutes, the cost is well under 1%; much shorter intervals slow a scan noticeably. Each checkpoint writes the directories waiting in memory to `checkpoint/state`, compressed: a few megabytes on most trees, more on very broad ones.
