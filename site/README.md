@@ -26,13 +26,15 @@ Then open <http://localhost:8000>. The site goes to `_site/`, which git ignores.
 
 ## Publishing
 
-`.github/workflows/pages.yml` builds the site from a release's Markdown and deploys it to GitHub Pages whenever a release is published, so the site always describes the version `install.sh` installs. To republish between releases, such as after fixing a typo in the docs or changing a template, run the workflow by hand:
+GitHub Pages serves the `gh-pages` branch (**Settings → Pages → Deploy from a branch → `gh-pages`, `/ (root)`**). That branch holds only the built site, as a single commit, and nobody edits it by hand.
+
+`.github/workflows/pages.yml` builds the site from a release's Markdown and commits it to `gh-pages` whenever a release is published, so the site always describes the version `install.sh` installs. To republish between releases, such as after fixing a typo in the docs or changing a template, run the workflow by hand:
 
 ```bash
 gh workflow run pages.yml
 ```
 
-That publishes the latest release's docs with the current builder. Add `-f ref=main` to preview unreleased docs instead.
+That publishes the latest release's docs with the current builder. Add `-f ref=main` to publish the docs on `main` instead.
 
 ## Templates
 
