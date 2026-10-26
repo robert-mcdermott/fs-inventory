@@ -216,9 +216,12 @@ pub struct RobustnessOptions {
     #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
     pub stall_timeout: Option<Duration>,
 
-    /// Soft memory budget. Half holds directories waiting to be read (more
-    /// wait in a spill file next to the output), and the rest holds output
-    /// buffers and Parquet row groups [default: queue up to 1 GiB in memory].
+    /// Memory budget for the scan. What the crawl threads and Parquet writers
+    /// need comes first (with only as many writers as fit, unless --writers
+    /// is given); directories waiting to be read (more wait in a spill file
+    /// next to the output), row buffers, and row groups share the rest.
+    /// Freed memory goes back to the system at once, for a little more CPU
+    /// time [default: no limit; queue up to 1 GiB in memory].
     #[arg(long, value_parser = parse_size, value_name = "SIZE")]
     pub max_memory: Option<u64>,
 }
@@ -280,7 +283,7 @@ pub struct ResumeArgs {
     #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
     pub stall_timeout: Option<Duration>,
 
-    /// Soft memory budget [default: as the scan ran].
+    /// Memory budget for the scan [default: as the scan ran].
     #[arg(long, value_parser = parse_size, value_name = "SIZE")]
     pub max_memory: Option<u64>,
 

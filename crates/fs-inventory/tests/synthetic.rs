@@ -114,6 +114,43 @@ fn generated_trees_are_scanned_completely() {
 }
 
 #[test]
+fn memory_budgets_fit_writers_and_warn_when_too_small() {
+    let tmp = tempfile::tempdir().unwrap();
+    let scan = tmp.path().join("scan");
+    // A budget fits about one Parquet writer per 160 MB.
+    let out = command(&["scan", "/generated", "--synthetic", "1000", "-t", "4"])
+        .args(["--max-memory", "320M", "-o", scan.to_str().unwrap()])
+        .args(["--progress", "none"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    assert!(!text(&out).contains("need about"), "{}", text(&out));
+    assert_eq!(manifest(&scan)["options"]["writers"], 2);
+
+    // 256 threads need more than 256 MB, and the scan says so up front.
+    let out = command(&["scan", "/generated", "--synthetic", "1000", "-t", "256"])
+        .args([
+            "--max-memory",
+            "256M",
+            "-o",
+            "-",
+            "-f",
+            "csv",
+            "--progress",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("256 crawl threads need about")
+            && stderr.contains("--max-memory 256.00 MiB"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn killed_scans_of_generated_trees_resume_exactly() {
     let tmp = tempfile::tempdir().unwrap();
     let scan = tmp.path().join("scan");

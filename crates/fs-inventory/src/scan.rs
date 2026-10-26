@@ -46,6 +46,29 @@ use crate::output::{
 use crate::parse::{Compression, parse_compression};
 use crate::progress::{self, Reporter, Snapshot, Style};
 
+/// What a scan holds besides its budgeted buffers, measured on Linux with
+/// generated trees and the allocator returning freed memory at once, as it
+/// does under `--max-memory`: the process itself, and each Parquet writer's
+/// encoders.
+const BASE_MEMORY: usize = 64 << 20;
+const WRITER_MEMORY: usize = 32 << 20;
+/// The smallest in-progress row group, and queue of waiting directories.
+const MIN_ROW_GROUP: usize = 8 << 20;
+const MIN_QUEUE: usize = 16 << 20;
+/// The share of a budget planned for: peak memory varied by up to a tenth
+/// between identical scans.
+const PLANNED: f64 = 0.875;
+
+/// Memory the crawl threads hold, given each one's row buffer share:
+/// batches on their way to the writers, and what the allocator keeps.
+/// Measured with 16 to 256 threads and shares of 64 KiB to 1 MiB, it grows
+/// with the square root of the thread count, since each thread holds less
+/// when more of them share the work.
+fn thread_memory(threads: usize, share: usize) -> usize {
+    let per_root = (40 << 20) as f64 + 48.0 * share as f64;
+    (per_root * (threads as f64).sqrt()) as usize
+}
+
 /// How `--max-memory` is divided.
 struct MemoryBudgets {
     /// Directories waiting to be read; more wait in a spill file.
@@ -54,24 +77,50 @@ struct MemoryBudgets {
     sinks: usize,
     /// In-progress Parquet row groups, across all writers.
     row_groups: usize,
+    /// With a budget too small for the crawl threads and writers, about
+    /// the budget they need.
+    shortfall: Option<usize>,
 }
 
 impl MemoryBudgets {
-    /// Half for queued directories, an eighth for row buffers, and the rest
-    /// for row groups; without a limit, the defaults.
-    fn new(max_memory: Option<u64>) -> Self {
-        match max_memory.map(|m| usize::try_from(m).unwrap_or(usize::MAX)) {
-            None => Self {
+    /// Without a limit, the defaults. With one, what the threads and writers
+    /// hold regardless comes first. Of the rest, half is for queued
+    /// directories, a quarter for the crawl threads' row buffers (at what
+    /// they really cost), and a quarter for Parquet row groups.
+    fn new(max_memory: Option<u64>, threads: usize, parquet_writers: usize) -> Self {
+        let Some(m) = max_memory.map(|m| usize::try_from(m).unwrap_or(usize::MAX)) else {
+            return Self {
                 queue: 1 << 30,
                 sinks: crate::output::SINK_BUDGET_BYTES,
                 row_groups: usize::MAX,
-            },
-            Some(m) => Self {
-                queue: m / 2,
-                sinks: (m / 8).min(crate::output::SINK_BUDGET_BYTES),
-                row_groups: m / 4,
-            },
+                shortfall: None,
+            };
+        };
+        let planned = (m as f64 * PLANNED) as usize;
+        let fixed = BASE_MEMORY + parquet_writers * WRITER_MEMORY + thread_memory(threads, 0);
+        let rest = planned.saturating_sub(fixed);
+        // The row buffer share that costs a quarter of the rest.
+        let per_byte = thread_memory(threads, 1 << 20) - thread_memory(threads, 0);
+        let share = ((rest / 4) as f64 / per_byte as f64 * f64::from(1 << 20)) as usize;
+        let least = BASE_MEMORY
+            + parquet_writers * (WRITER_MEMORY + MIN_ROW_GROUP)
+            + thread_memory(threads, crate::output::MIN_FLUSH_BYTES)
+            + MIN_QUEUE;
+        Self {
+            queue: (rest / 2).max(MIN_QUEUE),
+            sinks: share
+                .saturating_mul(threads)
+                .min(crate::output::SINK_BUDGET_BYTES),
+            row_groups: rest / 4,
+            shortfall: (least > planned).then(|| (least as f64 / PLANNED) as usize),
         }
+    }
+
+    /// The most Parquet writers whose fixed memory fits in a quarter of
+    /// `max_memory`.
+    fn writers_within(max_memory: u64) -> usize {
+        let quarter = usize::try_from(max_memory / 4).unwrap_or(usize::MAX);
+        (quarter / (WRITER_MEMORY + MIN_ROW_GROUP)).max(1)
     }
 
     /// The row group limit for each of `writers` writers.
@@ -242,10 +291,18 @@ impl RunSettings {
     fn from_args(args: &ScanArgs) -> Self {
         Self {
             threads: args.traversal.threads,
-            writers: args
-                .traversal
-                .writers
-                .map_or_else(default_writers, usize::from),
+            writers: args.traversal.writers.map_or_else(
+                || {
+                    let writers = default_writers();
+                    match args.robustness.max_memory {
+                        Some(m) if args.output.format == Format::Parquet => {
+                            writers.min(MemoryBudgets::writers_within(m))
+                        }
+                        _ => writers,
+                    }
+                },
+                usize::from,
+            ),
             max_memory: args.robustness.max_memory,
             stall_timeout: args.robustness.stall_timeout,
             checkpoint_interval: match args.robustness.checkpoint_interval {
@@ -306,12 +363,35 @@ pub fn execute(
     let synthetic = settings.synthetic()?;
     let roots = settings.roots()?;
     let excludes = build_excludes(&settings.excludes)?;
-    let budgets = MemoryBudgets::new(runtime.max_memory);
     let writers = runtime.writers.max(1);
     let scan_dir = match &destination {
         Destination::Dir(dir) => Some(dir.clone()),
         Destination::Stdout => None,
     };
+    // Parquet writers hold encoders; text writers hold next to nothing.
+    let parquet_writers = match (&scan_dir, settings.format) {
+        (Some(_), Format::Parquet) => writers,
+        (None, Format::Parquet) => 1,
+        _ => 0,
+    };
+    let budgets = MemoryBudgets::new(
+        runtime.max_memory,
+        usize::from(runtime.threads),
+        parquet_writers,
+    );
+    if let (Some(max), Some(least)) = (runtime.max_memory, budgets.shortfall) {
+        let (who, fewer) = match parquet_writers {
+            0 => (String::new(), "--threads"),
+            1 => (" and 1 writer".into(), "--threads"),
+            n => (format!(" and {n} writers"), "--threads or --writers"),
+        };
+        eprintln!(
+            "fs-inventory: {} crawl threads{who} need about {}, more than --max-memory {}; fewer {fewer} need less",
+            runtime.threads,
+            progress::format_bytes(least as u64),
+            progress::format_bytes(max),
+        );
+    }
     let checkpointing = runtime.checkpoint_interval.is_some() && scan_dir.is_some();
 
     let mut skip_dirs = Vec::new();
@@ -350,6 +430,10 @@ pub fn execute(
         }
     };
 
+    if runtime.max_memory.is_some() {
+        // A memory budget trades some speed for memory.
+        crate::alloc::release_memory_promptly();
+    }
     raise_fd_limit();
     let signaled = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
@@ -1079,6 +1163,33 @@ fn new_scan_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_budgets_count_threads_and_writers() {
+        let unlimited = MemoryBudgets::new(None, 64, 8);
+        assert_eq!(unlimited.sinks, crate::output::SINK_BUDGET_BYTES);
+        assert!(unlimited.shortfall.is_none());
+
+        // Everything planned fits in the budget.
+        let budget = 2 << 30;
+        let roomy = MemoryBudgets::new(Some(budget as u64), 64, 4);
+        assert!(roomy.shortfall.is_none());
+        let planned = BASE_MEMORY
+            + 4 * WRITER_MEMORY
+            + thread_memory(64, roomy.sinks / 64)
+            + roomy.queue
+            + roomy.row_groups;
+        assert!(planned <= budget, "{planned}");
+
+        // More threads mean smaller row buffers, then a warning.
+        let more = MemoryBudgets::new(Some(budget as u64), 256, 4);
+        assert!(more.sinks / 256 < roomy.sinks / 64);
+        let tight = MemoryBudgets::new(Some(512 << 20), 256, 2);
+        assert!(tight.shortfall.is_some_and(|need| need > 512 << 20));
+
+        assert_eq!(MemoryBudgets::writers_within(512 << 20), 3);
+        assert_eq!(MemoryBudgets::writers_within(64 << 20), 1);
+    }
 
     #[test]
     fn roots_are_normalized() {

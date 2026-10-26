@@ -24,6 +24,8 @@ flate2 = "1.1"
 globset = "0.4"
 humantime = "2.3"
 itoa = "1.0"
+# The same version mimalloc uses, for its option functions.
+libmimalloc-sys = { version = "0.1.49", default-features = false, features = ["extended"] }
 mimalloc = "0.1"
 parquet = { version = "60", default-features = false, features = ["arrow", "snap", "lz4", "zstd", "flate2-rust_backend", "simdutf8"] }
 proptest = "1.12"

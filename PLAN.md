@@ -259,7 +259,7 @@ Repeated scans can sit side by side (`scans/scan_date=2026-10-25/…`), so DuckD
 | A bug or panic while processing a directory | `catch_unwind` at the directory boundary. The directory is logged as an internal error and the worker continues. Release builds set `panic = "unwind"`. |
 | Hung NFS server (hard mount, thread stuck in D state) | A watchdog tracks each worker's last progress and the directory it's working on. The progress line shows stalled paths. Other workers continue. With `--stall-timeout`, the crawl finalizes output, marks those subtrees incomplete in the manifest, and exits with code 3. |
 | File descriptor exhaustion | Raise `RLIMIT_NOFILE` to the hard limit at startup. Each worker holds at most a few fds, and queued directories hold none. |
-| Unbounded memory | Bounded channels, bounded batches, queue spill (M3), and `--max-memory` soft budget. |
+| Unbounded memory | Bounded channels, bounded batches, queue spill (M3), and a `--max-memory` budget that counts crawl threads and writers. |
 | SIGINT / SIGTERM | Graceful: stop taking new directories, finish in-flight ones, commit parts, write a checkpoint and `manifest.status = interrupted`. A second signal exits immediately. Finalized parts stay valid either way. |
 | Output disk full | Fatal for the run. Committed parts and the last checkpoint remain usable, and `resume` continues after space is freed. |
 | Corrupt timestamps, sizes, or modes | Saturate and flag. Never panic on arithmetic. |
@@ -414,7 +414,7 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 - **Targets to validate, not promises:**
   - CPU-bound with a warm cache, Parquet+zstd: ≥ 1M entries/s on a 16-core host.
   - Network file systems: throughput scales near-linearly with threads until the server saturates.
-  - Memory: under 2 GB at default settings, independent of tree size (except queue growth on very wide trees). Independence from tree size is confirmed up to a billion entries. But resident memory grows with crawl threads, about 20 MB each with Parquet output and 11 MB with CSV (Linux, generated trees), and `--max-memory` doesn't count it. The defaults (32 threads) stay under 2 GB, but the 64–256 threads that network file systems want may not.
+  - Memory: under 2 GB at default settings, independent of tree size (except queue growth on very wide trees). Independence from tree size is confirmed up to a billion entries. Memory does grow with crawl threads (allocator retention): on Linux with two Parquet writers, about 1.7 GB with 64 threads and 2.3 to 3.2 GB with 256. Defaults stay as they are for speed; `--max-memory` budgets threads and writers too, and returns freed memory at once (40 to 50% less memory for 5 to 8% more CPU time), so it holds where memory is limited.
 - **CI (GitHub Actions):**
   - Platforms: Linux x86_64 and aarch64 (static musl binaries) and macOS arm64.
   - Checks: `clippy -D warnings`, `rustfmt`, `cargo-deny`, tests, and a minimum-supported-Rust-version (MSRV) check.

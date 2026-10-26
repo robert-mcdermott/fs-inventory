@@ -221,7 +221,7 @@ fs-inventory scan /nfs/projects \
 Two more options are worth knowing on network file systems:
 
 - **`--statx-dont-sync`** (Linux) lets the client answer from its attribute cache instead of asking the server, which is faster. Sizes and times may be slightly out of date for files being written during the scan.
-- **`--max-memory 4GiB`** caps the memory used for directories waiting to be read and for output buffers. Directories beyond the cap wait in a temporary file next to the output ([8.3](#83-memory)).
+- **`--max-memory 4GiB`** keeps the scan within 4 GiB, which matters in a batch job with a memory limit. Directories beyond what fits wait in a temporary file next to the output, and the scan warns when it starts if its threads need more ([8.3](#83-memory)).
 
 Run long scans so they survive a logout: under `nohup`, `tmux`, `screen`, a systemd unit, or a batch scheduler such as Slurm.
 
@@ -561,7 +561,7 @@ Roots are made absolute (relative paths are taken from the current directory) an
 |---|---|---|
 | `--checkpoint-interval DURATION` | `10m` | Take a checkpoint this often, so the scan can be resumed (`0` disables checkpoints); see [4.12](#412-interrupted-crashed-and-stalled-scans). Scans streamed with `-o -` take none. |
 | `--stall-timeout DURATION` | none | Give up on directories whose thread has made no progress for this long; see [4.12](#412-interrupted-crashed-and-stalled-scans) |
-| `--max-memory SIZE` | queue up to 1 GiB | Soft memory budget; see [8.3](#83-memory) |
+| `--max-memory SIZE` | no limit | Memory budget for the scan; see [8.3](#83-memory) |
 
 **Progress**
 
@@ -650,7 +650,7 @@ Continues a scan from its last checkpoint; see [4.12](#412-interrupted-crashed-a
 | `--writers N` | Most encoder and writer threads |
 | `--checkpoint-interval DURATION` | Interval between checkpoints (`0` disables them) |
 | `--stall-timeout DURATION` | Give up on stalled directories after this long (`0` waits forever) |
-| `--max-memory SIZE` | Soft memory budget |
+| `--max-memory SIZE` | Memory budget for the scan |
 | `--progress`, `--progress-interval` | As for `scan` (these don't carry over) |
 
 `resume` exits like `scan` ([exit codes](#exit-codes)). A scan that's already complete, or finished except for stalled directories, has nothing to resume: `resume` says so and exits with code 0. It exits with code 2 if the scan has no checkpoint (it was run with `--checkpoint-interval 0`), or if another fs-inventory process is still writing the scan.
@@ -1333,9 +1333,16 @@ Memory is bounded by default:
 - **Directories waiting to be read:** up to 1 GiB in memory. Beyond that, they wait in a spill file on disk, read back once memory drains. With checkpoints (the default), it's `checkpoint/spill` in the scan directory, removed when the scan finishes; otherwise it's created next to the output and deleted from the directory at once, so it never lingers. Either way, it uses disk space while the scan runs. The manifest's `totals.spilled` counts directories that waited there.
 - **Output buffers:** 64 MiB shared by all crawl threads, plus up to 128 MiB per Parquet row group being built.
 
-`--max-memory SIZE` sets one soft budget for all of it: half for waiting directories, an eighth for the crawl threads' buffers (at most 64 MiB), and a quarter for Parquet row groups. `--detect-cycles` adds about 50 bytes per directory, and `rollup --age-depth` about 0.5 KB per directory within that depth.
+Memory doesn't grow with the size of the tree: in scans of generated trees of up to a billion entries, it leveled off early and stayed flat to the end. It grows with threads, more slowly than they do. Without a budget, measured on Linux with two Parquet writers, a scan's peak was about 750 MB with 16 crawl threads, 1.7 GB with 64, and 2.3 to 3.2 GB with 256. Each extra Parquet writer adds about 100 MB. That's fine on most servers, and it's the fastest way to run.
 
-Memory doesn't grow with the size of the tree: in scans of generated trees of up to a billion entries, it leveled off early and stayed flat to the end. It does grow with threads, which the budget doesn't count. The memory allocator keeps memory that each crawl thread has used, about 20 MB per crawl thread with Parquet output and 10 MB with CSV or JSON Lines, and each Parquet writer adds about 100 MB. Measured on Linux with two Parquet writers, a scan's peak was about 300 MB with 1 crawl thread, 750 MB with 16, 1.1 GB with 32 (the default), and 1.6 GB with 64. Where memory is limited, as in a batch job, allow for this when you choose `--threads`, and set `--writers` as well as `--max-memory`.
+Where memory is limited, as in a batch job, set `--max-memory SIZE`. The scan then budgets all of its memory:
+
+- **Threads and writers first.** It sets aside what the crawl threads and Parquet writers need, and without `--writers`, it uses only as many writers as fit in a quarter of the budget. Writers matter only when the CPU is the limit.
+- **Then the buffers.** Half of what's left holds waiting directories, a quarter the crawl threads' row buffers, which get smaller as threads are added, and a quarter Parquet row groups.
+- **Memory goes back to the system at once,** which takes 5 to 8% more CPU time on scans the CPU limits. Scans of network file systems mostly wait on the server instead.
+- **A budget too small for the threads** gets a warning when the scan starts, with the budget they need. Use fewer `--threads`, or a larger budget.
+
+Measured on Linux, scans with budgets of 512 MiB to 2 GiB and 16 to 256 crawl threads stayed under the budget or warned. With `--max-memory 1G`, peaks were about 650 MB with 16 threads, 800 MB with 64, and 1 GB with 256, which warned that it needed about 1.08 GiB. Very tight budgets with many threads make the row buffers small enough to cost up to 40% more CPU time. `--detect-cycles` adds about 50 bytes per directory, and `rollup --age-depth` about 0.5 KB per directory within that depth; the budget doesn't count those.
 
 ### 8.4 Checkpoints
 

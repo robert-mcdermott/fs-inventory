@@ -164,7 +164,7 @@ Sinks send rows at directory boundaries. At each `end_dir`, the sink records a m
 
 | Setting | Value |
 |---|---|
-| Sink budget for all threads together | `SINK_BUDGET_BYTES`, 64 MiB (less with `--max-memory`) |
+| Sink budget for all threads together | `SINK_BUDGET_BYTES`, 64 MiB (usually less with `--max-memory`) |
 | One thread's share | budget ÷ crawl threads, clamped to 64 KiB through 1 MiB |
 | Mid-directory send | when one directory's rows reach 4 × the share (`MAX_BUFFER_FACTOR`) |
 | Error rows | sent at a directory boundary once 256 are buffered |
@@ -278,17 +278,16 @@ Every queued directory holds memory: about the size of a `DirTask` plus its path
 - Workers read spilled directories back only when they find no other work: nothing in their own deque, no huge-directory batches, and nothing to steal.
 - If the spill file can't be written, the directory stays in memory. If it can't be read back, the lost directories are reported as an `internal` error and counted as done, so the walk still finishes.
 
-`--max-memory` sets one soft budget and divides it (`MemoryBudgets` in `scan.rs`):
+Scale tests with generated trees (section 9) show memory staying flat as the tree grows, and growing with threads. Much of it is memory the allocator keeps rather than data the scan holds: with two Parquet writers on macOS, the live heap peaked at 160 MB with one crawl thread and 270 MB with 64, while resident memory went from 400 MB to 1.8 GB. A sink's Arrow buffers are allocated on its crawl thread and freed on a writer thread, and mimalloc by default waits a second before returning freed memory to the system. Without a budget, that's left alone, because returning memory at once costs CPU time: on Linux, peak memory was about 750 MB with 16 crawl threads, 1.7 GB with 64, and 2.3 to 3.2 GB with 256 (two Parquet writers, each extra writer about 100 MB more), constant from early in the scan to the end.
 
-| Use | Share |
-|---|---|
-| Queued directories | 1/2 |
-| Sink buffers | 1/8, at most 64 MiB |
-| In-progress Parquet row groups | 1/4, divided among writers, each between 8 MiB and 128 MiB |
+`--max-memory` budgets all of it (`MemoryBudgets` in `scan.rs`):
 
-The rest is headroom for everything else. It is a soft budget: the allocator, open directory buffers, and in-flight chunks aren't counted.
+1. **Allocator:** `alloc::release_memory_promptly` sets mimalloc's purge delay to 0 and turns off eager arena commits, so freed memory goes back to the system at once. On Linux, that cut peak memory by 40 to 50%, for 5 to 8% more CPU time on scans the CPU limits.
+2. **Fixed costs first:** 64 MiB for the process, 32 MiB per Parquet writer, and the crawl threads. Their cost was measured with 16 to 256 threads and grows with the square root of the thread count, as each thread holds less when more share the work: about √threads × (40 MiB + 48 × each thread's row buffer share). Without `--writers`, the writer count is cut to what fits in a quarter of the budget (40 MiB each).
+3. **The rest,** of seven eighths of the budget (peaks varied by up to a tenth between identical scans): half for queued directories (at least 16 MiB), a quarter for row buffers, priced as in step 2, so each thread's share shrinks as threads are added (to no less than 64 KiB), and a quarter for in-progress row groups (8 to 128 MiB per writer).
+4. **A warning** at the start when the fixed costs and the smallest buffers don't fit, with the budget they need.
 
-Scale tests with generated trees (section 9) show the budgeted buffers staying within it and memory staying flat as the tree grows, but resident memory growing with threads. With two Parquet writers on macOS, the live heap peaked at 160 MB with one crawl thread and 270 MB with 64, while resident memory went from 400 MB to 1.8 GB. mimalloc keeps memory in each crawl thread's heap: a sink's Arrow buffers are allocated on the crawl thread and freed by a writer thread. That's about 20 MB per crawl thread with Parquet output and 10 MB with text, plus about 100 MB per Parquet writer. On Linux, `MIMALLOC_ARENA_EAGER_COMMIT=0 MIMALLOC_PURGE_DELAY=0` halved the peak at 64 threads (1.9 GB to 0.9 GB) at no cost in time there, but made a CPU-bound scan with 5 threads 46% slower.
+Measured on Linux, scans with budgets of 512 MiB, 1 GiB, and 2 GiB and 16, 64, and 256 crawl threads either stayed under the budget or warned with an estimate above what they used. Long scans stayed flat: 256 threads under a 2 GiB budget used 1.0 to 1.15 GB throughout 300 million entries. Shares below 256 KiB, which only tight budgets with many threads reach, cost up to 40% more CPU time; `--detect-cycles` and `rollup --age-depth` memory isn't budgeted.
 
 ### 6.4 Signals and file descriptors
 
@@ -376,7 +375,7 @@ The rollup tables are checked the same way when present. `verify` exits 0 when e
 ## 8. Performance notes
 
 - **Thread count:** on network file systems, each stat waits on a round trip, so throughput is roughly concurrency divided by latency (Little's law). With 0.5 ms metadata calls, 64 stats in flight can sustain about 128,000 per second until the server saturates. Network file systems want many more threads (64–256) than local disks. `probe` measures this on the actual storage.
-- **Allocator:** the binary uses mimalloc (`crates/fs-inventory/src/main.rs`). Crawl threads allocate row buffers constantly, and musl's allocator serialized them on a lock, so the static Linux build got slower as threads were added.
+- **Allocator:** the binary uses mimalloc (`crates/fs-inventory/src/alloc.rs`). Crawl threads allocate row buffers constantly, and musl's allocator serialized them on a lock, so the static Linux build got slower as threads were added. mimalloc's default of returning freed memory a second late is kept for speed, except under `--max-memory` (section 6.3).
 - **System calls:** on Linux, rustix makes system calls directly, so the musl and glibc builds stat files the same way. The remaining per-entry libc dependency, reading the clock, was removed (section 6.2).
 - **Parquet size:** about 25 bytes per entry with the default zstd level 3, measured on 1.24 million real entries with 126-byte average paths. A billion-entry scan is about 25 GB. Uncompressed CSV of the same data was 446 bytes per entry.
 - **Writer count:** writers do the CPU-heavy encoding. They start only when output backs up, so they cost nothing on scans the crawl limits, and `--writers` caps them.

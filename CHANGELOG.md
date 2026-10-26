@@ -13,6 +13,10 @@ All notable changes to this project are documented in this file. The format foll
 - `bench/scale.py` scans a generated tree of any size, records memory and throughput every second, can kill and resume the scan, and checks that every entry was written exactly once.
 - `bench/server.py` benchmarks a server's storage in one run of about 15 minutes, and writes a report to send back. It covers the CPU ceiling, `find`, `probe`, and time-boxed scans at several thread counts. On NFS, it also records RPCs per entry. An optional kill-and-resume test runs on a smaller tree.
 
+### Changed
+
+- `--max-memory` budgets the whole scan. It first sets aside what the crawl threads and Parquet writers need (memory grows with threads, measured at about 1.7 GB with 64 threads and 3 GB with 256 without a budget), uses only as many writers as fit unless `--writers` is given, and shrinks row buffers as threads are added. It also has the allocator return freed memory at once, which cut peak memory by 40 to 50% on Linux for 5 to 8% more CPU time. A budget too small for the threads gets a warning with the budget they need. Scans without `--max-memory` run exactly as before.
+
 ### Fixed
 
 - The benchmark scripts run on Python 3.6 and later, as RHEL 8's system Python is; `run.py` needed 3.9.

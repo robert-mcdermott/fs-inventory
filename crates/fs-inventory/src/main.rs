@@ -3,6 +3,7 @@
 
 //! `fs-inventory` command-line tool.
 
+mod alloc;
 mod checkpoint;
 mod cli;
 #[cfg(debug_assertions)]
@@ -24,13 +25,6 @@ use clap::{CommandFactory, Parser};
 
 use crate::cli::{Cli, Command};
 use crate::exit::Exit;
-
-/// mimalloc instead of the system allocator: crawl threads allocate row
-/// buffers constantly, and musl's allocator (used by the static Linux build)
-/// serializes them on a lock, making Parquet scans slower as threads are
-/// added.
-#[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();

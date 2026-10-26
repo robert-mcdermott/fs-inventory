@@ -25,6 +25,7 @@ flate2.workspace = true
 globset.workspace = true
 humantime.workspace = true
 itoa.workspace = true
+libmimalloc-sys.workspace = true
 mimalloc.workspace = true
 parquet.workspace = true
 rustix = { workspace = true, features = ["process", "system"] }
