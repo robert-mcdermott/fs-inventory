@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- Checkpoints and `fs-inventory resume`. Every `--checkpoint-interval` (10 minutes by default; `0` disables them), a scan pauses as each crawl thread finishes its current directory, commits every open part file, and records the directories still to read in `checkpoint/` inside the scan directory. `fs-inventory resume SCAN_DIR` continues a scan that was interrupted, killed, or on a machine that went down. It deletes the parts written after the last checkpoint and reads their directories again, so the finished scan matches an uninterrupted one, with every row once. After Ctrl-C, a final checkpoint makes resuming exact. Resume can change threads, writers, memory, the stall timeout, the checkpoint interval, and progress; the manifest records each resume under `resumes`. A lock keeps two processes from writing one scan.
+
+### Changed
+
+- With checkpoints, the spill file and the `--detect-cycles` record of visited directories live in `checkpoint/` until the scan finishes, instead of being unlinked at once.
+- Each checkpoint commits the open part files, so long scans have more, smaller parts. Parts written after a resume are named `part-rN-wNN-NNNNNN`.
+
 ## [0.3.0] - 2026-10-25
 
 The first tagged release. Version numbers follow the milestones, so 0.3.0 completes milestone M3 and there is no 0.1.0 or 0.2.0 release.

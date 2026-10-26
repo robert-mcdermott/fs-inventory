@@ -106,7 +106,7 @@ A single directory can hold 10M+ entries. `getdents` is one sequential stream, b
 
 - **M1:** a large directory streams through one worker in batches. Memory stays bounded and other workers keep going.
 - **M3:** past 10,000 entries, the owning worker publishes each further batch of names as a **stat-chunk task**: a shared handle to the open directory plus the batch. Idle workers stat those batches in parallel while the owner keeps reading names. Totals merge under a lock, and the owner helps with batches until all are done, then writes the directory's row.
-- Rows from a chunk go to the part file of whichever worker stat'ed it. For resume (§6), a chunked directory counts as done only once its own row is committed; M4 has to discard or redo chunk rows of directories that weren't.
+- Rows from a chunk go to the part file of whichever worker stat'ed it. Checkpoints (§6.1) wait for a huge directory to finish, with every paused worker helping, so no checkpoint holds part of one.
 
 ### 3.4 Traversal policy defaults
 
@@ -200,7 +200,7 @@ scan-2026-10-25T0130Z/
   errors/part-w00-000002.parquet
   rollup/part-000000.parquet          (after `fs-inventory rollup`)
   rollup_ages/part-000000.parquet
-  checkpoints/ckpt-000042.bin.zst     (M4: resume state; deleted on success unless --keep-checkpoints)
+  checkpoint/state                    (resume state: settings, parts, queued directories; removed when the scan finishes)
 ```
 
 Every format is sharded the same way, so a billion-entry scan becomes many part files of bounded size rather than one huge file. DuckDB reads a glob of parts as a single table (`read_parquet('scan/entries/*.parquet')`, `read_csv('scan/entries/*.csv')`, `read_json('scan/entries/*.jsonl')`), and so can ingestion jobs that load parts in parallel.
@@ -266,18 +266,20 @@ Repeated scans can sit side by side (`scans/scan_date=2026-10-25/…`), so DuckD
 | Overly long paths or names | Growable buffers and an `openat` chain (§3.5). |
 | autofs triggers | `AT_NO_AUTOMOUNT`, and no mount crossing by default. |
 
-### 6.1 Checkpoint and resume (M4)
+### 6.1 Checkpoint and resume (M4) ✅
 
-At 10,000 entries/s, a billion entries take about 28 hours. At 100,000/s, about 3 hours. Long crawls need resume. The invariants are designed in from M1, even though resume itself ships in M4.
+At 10,000 entries/s, a billion entries take about 28 hours. At 100,000/s, about 3 hours. Long crawls need resume.
 
-1. **Rows are directory-atomic.** A directory's rows (including its own row) are released to a writer only when the directory completes. Huge directories go to their own `bigdir-*` part (§3.3).
-2. **Periodic consistent checkpoints** (default every 10 minutes): the coordinator pauses workers at directory boundaries and drains the channel, and writers commit their current parts. It then writes the checkpoint atomically: the list of committed parts, the pending directory queue (paths, ids, and parent stat), the `dir_id` counter, running totals, and any huge directories still in progress along with the children they have already queued. The pause is bounded because huge directories don't block it; they are recorded as in progress.
+As built (details in [docs/architecture.md](docs/architecture.md) §6.5):
+
+1. **Consistent checkpoints by pausing at directory boundaries.** Every `--checkpoint-interval` (default 10 minutes), workers pause as they finish their current directory, helping with huge-directory batches meanwhile. With every worker paused, every row delivered to a sink belongs to a finished directory. The output sends every sink's rows, waits for the writers, and commits every open part. Then `checkpoint/state` is written atomically: the scan's settings, the committed parts, the queued directories, the spill file's position, the visited log's length, the `dir_id` counter, and the totals. This replaced the planned `bigdir-*` parts: a checkpoint never holds part of a directory.
+2. **A stalled worker skips checkpoints** after 30 seconds instead of blocking the crawl. One abandoned by `--stall-timeout` is excluded, and its sink keeps only rows up to its last finished directory.
 3. **`fs-inventory resume <scan-dir>`:**
-   1. Delete every part not listed in the last checkpoint, including leftover `.tmp` files.
-   2. Reload the queue and counters.
-   3. Re-crawl the in-progress huge directories. Their already-queued children are skipped so they don't appear twice.
+   1. Locks the scan, so it can't run alongside the original process.
+   2. Deletes every part the checkpoint doesn't list, including leftover `.tmp` files.
+   3. Continues from the saved queue and counters with the saved settings, naming new parts `part-rN-wNN-...`.
 
-   At most one checkpoint interval of work is redone, and no row is duplicated.
+   At most one checkpoint interval of work is redone, and no row is duplicated. Ctrl-C writes a final, exact checkpoint, so resuming after it redoes nothing.
 
 ### 6.2 Privileges
 
@@ -314,7 +316,7 @@ fs-inventory scan [OPTIONS] <ROOT>...
       --progress auto|plain|json|none    --progress-interval <DUR>
       --max-memory <SIZE>
 
-fs-inventory resume  <SCAN_DIR>
+fs-inventory resume  <SCAN_DIR> [--threads N] [--checkpoint-interval DUR] ...
 fs-inventory rollup  <SCAN_DIR> [--age-buckets LIST] [--age-depth N]
 fs-inventory convert <SCAN_DIR> --to csv|jsonl
 fs-inventory verify  <SCAN_DIR>     Check manifest, parts, and row counts
@@ -417,7 +419,7 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 | **M1: Core walker + CSV/JSONL** ✅ | Work-stealing scheduler, Linux statx/getdents backend, generic backend (macOS), names module, directory aggregates, errors table, excludes, `--max-depth`, mount and snapshot policy, progress, graceful signals, stdout and directory output with rolling parts and the commit protocol, manifest, benchmark kit. Directory-atomic batching from day one. | Torture tree passes in a Linux container, the oracle diff is exact, there are zero panics under fault injection, and DuckDB 2.0 loads the output |
 | **M2: Parquet** ✅ | Arrow builders, Parquet writer pool, key-value metadata, `--columns`, `sql/` macros and example queries, `verify`, `schema` (also generates `docs/schema.md`), mimalloc | Output size per entry measured on 1.24M real entries (§5.2), and DuckDB 2.0 loads Parquet, CSV, and JSON Lines scans. A 100M-entry scan has not been run yet; that happens on the Linux server. |
 | **M3: Scale** (features done) | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, `--fields`, `--detect-cycles`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat. The features are in and tested on a laptop and in a Linux container; the large scan and default tuning happen on the Linux server. |
-| **M4: Resume** | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run |
+| **M4: Resume** ✅ | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run: tested by resuming from every checkpoint of a walk, and by `kill -9` at several points of real scans |
 | **M5: Platform and extras** | `diff` between two scans (§11), macOS `getattrlistbulk` backend (if benchmarks justify it), `--guess-encoding`, symlink targets, statx attributes, `--resolve-ids`, `convert`, release packaging (static binaries, .deb/.rpm, Homebrew), documentation site | Release 1.0 |
 
 ### Future ideas (post-1.0)

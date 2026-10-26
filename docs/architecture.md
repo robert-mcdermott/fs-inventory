@@ -1,6 +1,6 @@
 # Architecture
 
-This document explains how fs-inventory 0.3.0 is built and why. It is for engineers who maintain or extend the code, and for administrators who want to know what the tool does to their file systems before they run it. For how to use it, see the [user guide](user-guide.md). For every column, see the [schema reference](schema.md). [PLAN.md](../PLAN.md) holds the original design and the roadmap; this document describes the code as it is.
+This document explains how fs-inventory 0.4.0 is built and why. It is for engineers who maintain or extend the code, and for administrators who want to know what the tool does to their file systems before they run it. For how to use it, see the [user guide](user-guide.md). For every column, see the [schema reference](schema.md). [PLAN.md](../PLAN.md) holds the original design and the roadmap; this document describes the code as it is.
 
 ## 1. Overview
 
@@ -100,7 +100,7 @@ Every entry is processed inside `catch_unwind`. A bug triggered by one strange e
 
 ### 2.6 Stopping
 
-The walk stops early when its `stop` flag is set. That happens on the first SIGINT or SIGTERM, or when output fails (section 5.6). Workers check the flag between directories, so each finishes the directory it is reading. The directories still queued are left unread, and the walk reports itself incomplete.
+The walk stops early when its `stop` flag is set. That happens on the first SIGINT or SIGTERM, or when output fails (section 5.6). Workers check the flag between directories, so each finishes the directory it is reading. The directories still queued are left unread, and the walk reports itself incomplete. As they exit, workers move their queued directories to the global injector, so the walk can return them as the state a resume continues from (section 6.5).
 
 ## 3. Platform backends
 
@@ -212,15 +212,16 @@ The manifest (`output/manifest.rs`) records:
 - totals: entries by kind, directories read, bytes, errors, vanished, revisits, spilled;
 - errors grouped by operation and errno;
 - stalled directories;
+- each resume, if any (`resumes`);
 - every committed part, with its row count and size.
 
 Its `status` is one of:
 
 | Status | Meaning |
 |---|---|
-| `running` | Written at the start. Still present after a crash. |
+| `running` | Written at the start. Still present after a crash, when `resume` continues from the last checkpoint. |
 | `complete` | Every directory was visited. Per-entry errors may still have occurred. |
-| `interrupted` | Stopped by a signal or a closed stdout. Queued directories were not read. |
+| `interrupted` | Stopped by a signal or a closed stdout. Queued directories were not read; `resume` reads them. |
 | `incomplete` | Finished, except directories given up on after `--stall-timeout` (listed in `stalled`). |
 | `failed` | Output couldn't be written. The parts listed are valid but partial. |
 
@@ -263,7 +264,7 @@ If a batch of a huge directory hangs, the reading worker waits for it without ma
 
 Every queued directory holds memory: about the size of a `DirTask` plus its path. A broad tree can queue millions. The walker tracks the total in `queued_bytes`. When adding a directory would push it past the queue budget (1 GiB by default), the directory goes to a spill file instead (`crates/fs-inventory-core/src/spill.rs`):
 
-- The spill file is created next to the output (or in the temporary directory when writing to stdout) and unlinked immediately, so it never outlives the process, even after a crash.
+- With checkpoints, the spill file is `checkpoint/spill` in the scan directory, so a checkpoint can refer to it (section 6.5); the scan removes it when it finishes. Without checkpoints, it's created next to the output (or in the temporary directory when writing to stdout) and unlinked immediately, so it never outlives the process, even after a crash.
 - Records are length-prefixed and read first in, first out.
 - Workers read spilled directories back only when they find no other work: nothing in their own deque, no huge-directory batches, and nothing to steal.
 - If the spill file can't be written, the directory stays in memory. If it can't be read back, the lost directories are reported as an `internal` error and counted as done, so the walk still finishes.
@@ -280,7 +281,45 @@ The rest is headroom for everything else. It is a soft budget: the allocator, op
 
 ### 6.4 Signals and file descriptors
 
-The first SIGINT or SIGTERM sets the stop flag. Workers finish their current directories, the writers drain and commit, and the manifest is written with status `interrupted`. A second signal exits immediately with code 130. At startup, `scan` raises the open-file limit, since every crawl thread holds a directory open.
+The first SIGINT or SIGTERM sets the stop flag. Workers finish their current directories, the writers drain and commit, a final checkpoint is written, and the manifest is written with status `interrupted`. A second signal exits immediately with code 130. At startup, `scan` raises the open-file limit, since every crawl thread holds a directory open.
+
+### 6.5 Checkpoints and resume
+
+A billion-entry scan can run for a day, so it has to survive being killed. The design rests on one property: when every worker is between directories, every row delivered to a sink belongs to a finished directory, and every directory not yet finished is in a queue. A checkpoint waits for that moment, makes the rows durable, and records the queue.
+
+**Taking a checkpoint.** The walker's calling thread, which is also the watchdog, starts one every `--checkpoint-interval` (10 minutes by default; `crates/fs-inventory-core/src/walker.rs`):
+
+1. It sets a pause flag. Each worker checks it before taking its next directory, moves its own deque to the global injector, adds its counts to the shared totals, and waits.
+2. Paused workers keep helping with huge-directory batches (section 2.4), since the worker reading a huge directory can't pause until its batches are done. While a paused worker runs a batch, it doesn't count as paused.
+3. Once every live worker is paused, the walker takes a `WalkState`: every directory in the injector, the spill file's position (a `SpillMark`: what's been read, what's been written, how many are waiting), the visited log's length for `--detect-cycles`, the `dir_id` counter, the totals, the error counts, and the directories given up on so far.
+4. It hands the state to a `Checkpointer`, then releases the workers.
+
+The pause is short: each worker only has to finish one directory, and very large directories are shared among all the paused workers. If a busy worker makes no progress for `checkpoint_patience` (30 seconds), as when it's stuck on a hung NFS server, the walker gives up on this checkpoint, tells the checkpointer, and tries again next interval. A worker abandoned by `--stall-timeout` doesn't block checkpoints. Its directory already has its `stall` row, and the state lists the worker so the output keeps only its sink's rows up to the last directory boundary.
+
+**Making rows durable.** The scan's checkpointer (`crates/fs-inventory/src/scan.rs`) calls `Output::checkpoint` (`crates/fs-inventory/src/output/mod.rs`):
+
+1. Every sink sends its buffered rows. With workers paused, they're whole directories. The sinks of abandoned workers are salvaged (section 6.2).
+2. It waits until the writers have written every chunk sent. An in-flight counter goes up when a sink sends a chunk and down when a writer has written it.
+3. It sends each writer a commit request on that writer's own control channel. The writer commits its open parts (fsync and rename) and replies with every part it has committed.
+4. It fsyncs the table directories.
+
+The checkpointer then writes `checkpoint/state` (`crates/fs-inventory/src/checkpoint.rs`). The file holds a JSON header with the scan's settings, every committed part, and the totals by kind, followed by the walker state, zstd-compressed. It's written as `state.tmp`, fsynced, and renamed, so it's always either the previous checkpoint or the new one. The first checkpoint is taken before any directory is read, so even a scan killed in its first minutes can be resumed. Each checkpoint also rewrites the manifest's part list.
+
+**Resuming.** `fs-inventory resume` (`crates/fs-inventory/src/resume.rs`):
+
+1. Takes the scan's lock (`checkpoint/lock`, an exclusive `flock` held for the whole run), so it can't run while the original process is still alive.
+2. Reads the checkpoint and checks that it belongs to the manifest's scan.
+3. Deletes every part file the checkpoint doesn't list, including `.tmp` files, and any rollup. Those parts hold rows of directories that finished after the checkpoint. Those directories are either in the checkpoint's queue or below a directory that is, so they're read again.
+4. Runs the same code as `scan`, starting from the state instead of the roots. The `dir_id` counter, totals, and error counts continue from the checkpoint. The spill file is truncated to the mark and read from its position, and the visited log is truncated to its recorded length. New parts are named `part-rN-wNN-...` for run N, so they never collide with an earlier run's.
+
+Every row ends up in the scan exactly once. Rows of directories finished before the checkpoint are in listed parts. Every other directory is read again, and whatever it wrote before the crash was deleted. After a graceful stop, the walk returns its remaining state once every worker has finished its directory, and the scan writes a final checkpoint after the output commits its parts, so a resume redoes nothing.
+
+The scan's settings live in the checkpoint, not on the command line, so a resume writes exactly what the original would have: the roots as exact bytes, the format, compression, columns, fields, excludes (including the contents of `--exclude-from` files), and the traversal policy. Only settings that don't change the output can be changed on resume: threads, writers, memory, stall timeout, checkpoint interval, and progress. When the scan finishes, the checkpoint directory is removed.
+
+**Limits.**
+- Directories given up on with `--stall-timeout` stay given up on; resume doesn't retry them.
+- Device numbers can change when a file system is remounted, so a resume should run on the same host without remounting in between.
+- A checkpoint records every directory queued in memory, so on very broad trees each checkpoint can be large. The spill file and the visited log only grow, until the scan finishes.
 
 ## 7. Post-processing commands
 
@@ -353,6 +392,10 @@ Tests are in each crate's `tests/` directory and in unit tests next to the code.
   - Property tests check that `to_text` borrows exactly when the text equals the bytes.
   - Linux-only tests create names that aren't valid UTF-8 (Latin-1, Shift-JIS, stray bytes), which macOS's APFS refuses.
   - Another Linux-only test checks that the `fstatat` fallback reads the same metadata as `statx`.
+- **Checkpoints and resume:**
+  - Walker tests record the rows committed at every checkpoint of a slowed-down walk, then resume a new walk from each one. Committed rows plus resumed rows must be the whole tree exactly once, with consistent `dir_id` links and directory totals. Variants cover the spill file, `--detect-cycles`, a 12,000-entry directory (no checkpoint holds part of it), a stalled worker (the checkpoint is skipped), and an abandoned one (its `stall` row is kept, and the directory isn't reread).
+  - CLI tests kill scans with `kill -9` at several points, during the scan and during resumes, and resume them. The result must equal an uninterrupted scan row for row, and `verify` must pass. Other tests interrupt with SIGINT and check that the resume starts with every row already written, delete parts written after the checkpoint, cover JSON Lines output, and refuse to resume a scan another process is still writing.
+  - A hook in debug builds, `FS_INVENTORY_DEBUG_STAT_DELAY_US`, slows every stat so these tests can stop scans partway through a small tree.
 - **DuckDB:** a test loads CSV output into DuckDB when the `duckdb` command is available.
 - **Schema sync:** tests keep `docs/schema.md` and the SQL macros in step with the schema (section 7.3).
 

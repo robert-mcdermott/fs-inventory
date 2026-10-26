@@ -4,7 +4,7 @@ A high-performance, crash-resilient file system inventory tool and Rust library.
 
 `fs-inventory` crawls a POSIX file system in parallel and records the metadata of every file and directory, ready for analysis in tools like DuckDB. It is built for file systems with hundreds of millions to billions of entries, decades of history, and names in any language or legacy encoding.
 
-> **Status:** release 0.3.0. Scans write Parquet (the default), CSV, or JSON Lines, and `rollup` adds subtree totals and file-age histograms. Large-scale benchmarks are still to come. See the [changelog](CHANGELOG.md) for what each release contains and [PLAN.md](PLAN.md) for the roadmap.
+> **Status:** release 0.4.0. Scans write Parquet (the default), CSV, or JSON Lines, and `rollup` adds subtree totals and file-age histograms. Large-scale benchmarks are still to come. See the [changelog](CHANGELOG.md) for what each release contains and [PLAN.md](PLAN.md) for the roadmap.
 
 ## Features
 
@@ -17,6 +17,7 @@ A high-performance, crash-resilient file system inventory tool and Rust library.
 - **Read-only:** never follows symlinks, never reads file contents, doesn't trigger automounts, and on Linux doesn't update directory access times when it has permission.
 - **Paths of any length:** paths longer than the 4,096-byte system limit are opened one directory at a time.
 - **Safe output:** part files appear only once complete and synced to disk, and Ctrl-C finishes the directories in progress and writes the manifest before exiting.
+- **Resumable:** a scan takes a checkpoint every 10 minutes. After Ctrl-C, `kill -9`, or a crash, `fs-inventory resume` continues it, and the result matches an uninterrupted scan, with every row exactly once.
 - **Runs on any Linux:** the static build has no library dependencies and runs on any distribution with kernel 3.2 or later, including RHEL 7.
 
 ## Install
@@ -67,6 +68,12 @@ On a network file system, find a good thread count first (it writes nothing):
 
 ```bash
 fs-inventory probe /nfs/projects --threads 16,32,64,128,256
+```
+
+If a scan is interrupted or killed, continue it from its last checkpoint:
+
+```bash
+fs-inventory resume /scratch/inventory/projects-2026-10-25
 ```
 
 Only treat a scan as complete when its `manifest.json` has `"status": "complete"`, or when `fs-inventory verify` exits with code 0.
