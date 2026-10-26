@@ -56,7 +56,7 @@ def run(command, stdout_path=None):
             stdout.close()
     # ru_maxrss is KiB on Linux and bytes on macOS.
     rss_kib = usage.ru_maxrss // 1024 if sys.platform == "darwin" else usage.ru_maxrss
-    code = os.waitstatus_to_exitcode(status)
+    code = -os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status)
     if code not in (0, 1):
         print(f"  warning: exit {code}: {stderr.strip()[:500]}", file=sys.stderr)
     return seconds, rss_kib, code
@@ -69,7 +69,7 @@ def count_lines(path):
 
 def find_command(root):
     """A find invocation that reads every entry's metadata, like a scan does."""
-    probe = subprocess.run(["find", "--version"], capture_output=True)
+    probe = subprocess.run(["find", "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if probe.returncode == 0 and b"GNU" in probe.stdout:
         return ["find", root, "-printf", "%i %s %T@ %p\\n"]
     return ["find", root, "-ls"]

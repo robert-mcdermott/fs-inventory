@@ -114,7 +114,7 @@ The walker only uses the `Backend` trait (`crates/fs-inventory-core/src/backend/
 | `read_names` | Append the next batch of names, never `.` or `..` |
 | `stat_at` | Stat a name relative to an open directory, without following symlinks or triggering automounts |
 
-An open directory (`Backend::Dir`) must be shareable across threads, because huge directories are stat'ed by several workers at once. Tests wrap the native backend to inject failures, trace calls, or hang (section 9).
+An open directory (`Backend::Dir`) must be shareable across threads, because huge directories are stat'ed by several workers at once. Tests wrap the native backend to inject failures, trace calls, or hang (section 9), and scale tests replace it with a generated tree (section 3.4).
 
 ### 3.1 Linux
 
@@ -133,6 +133,15 @@ An open directory (`Backend::Dir`) must be shareable across threads, because hug
 ### 3.3 Long paths
 
 Paths can exceed `PATH_MAX` (4,096 bytes), and `open` then fails with `ENAMETOOLONG`. `DirOpener` retries by walking the path one component at a time with `openat`, applying the caller's flags only to the final component. Paths are stored in full regardless of length, and `name_flags` marks them with `long_path`.
+
+### 3.4 Generated trees
+
+`crates/fs-inventory-core/src/backend/synthetic.rs` serves a tree that exists only as arithmetic, for scale tests and benchmarks. The hidden option `scan --synthetic SPEC` uses it in place of the native backend at each root, and the roots needn't exist. The spec is `100M`, or `entries=100M,files=32,fanout=8,huge=1M,seed=0`. The checkpoint stores it, so `resume` continues the same tree, and the manifest's `options.synthetic` marks the scan as generated.
+
+- **Exact size:** each directory has a budget, the number of entries below it. A hash of the directory decides how many of them are its own files and how many subdirectories share the rest, unevenly. Files are about `files` per directory, now and then up to 32 times that, and `huge` one time in four when at least twice `huge` entries are below. Subdirectories are about `fanout`. The budgets add up, so each root's tree has exactly `entries` entries, the root included.
+- **Nothing stored:** opening a directory follows its path down from the root, recomputing each level's split, so a billion-entry tree costs no memory. Names begin with the entry's index among its siblings (`17_results_v2.csv`), so `open_dir` and `stat_at` find an entry from its name and reject names the tree doesn't have.
+- **Like a real tree:** with the defaults, directories average about 30 entries. A billion-entry tree is about 12 levels deep on average and 30 at most, and has about 80 directories of a million files. File sizes are log-uniform from a byte to 2 GiB. Each directory in the top two levels has its own owner, which its subtree inherits. Times cluster within 60 days of a time per directory, between 2015 and 2025. There are symlinks, FIFOs, sockets, hard links, and sparse files. About one name in a thousand has invalid UTF-8, a comma, quote, tab, newline, or DEL, or Unicode in both normalization forms.
+- **Inode numbers** are entries' positions in a depth-first numbering of the tree, from 2. They are unique and, as on most file systems, close together within a directory. They also make an exact test: a scan wrote every entry exactly once if and only if its inode numbers are exactly 2 to `entries` + 1.
 
 ## 4. File names
 
@@ -155,7 +164,7 @@ Sinks send rows at directory boundaries. At each `end_dir`, the sink records a m
 
 | Setting | Value |
 |---|---|
-| Sink budget for all threads together | `SINK_BUDGET_BYTES`, 64 MiB (less with `--max-memory`) |
+| Sink budget for all threads together | `SINK_BUDGET_BYTES`, 64 MiB (usually less with `--max-memory`) |
 | One thread's share | budget ÷ crawl threads, clamped to 64 KiB through 1 MiB |
 | Mid-directory send | when one directory's rows reach 4 × the share (`MAX_BUFFER_FACTOR`) |
 | Error rows | sent at a directory boundary once 256 are buffered |
@@ -269,15 +278,16 @@ Every queued directory holds memory: about the size of a `DirTask` plus its path
 - Workers read spilled directories back only when they find no other work: nothing in their own deque, no huge-directory batches, and nothing to steal.
 - If the spill file can't be written, the directory stays in memory. If it can't be read back, the lost directories are reported as an `internal` error and counted as done, so the walk still finishes.
 
-`--max-memory` sets one soft budget and divides it (`MemoryBudgets` in `scan.rs`):
+Scale tests with generated trees (section 9) show memory staying flat as the tree grows, and growing with threads. Much of it is memory the allocator keeps rather than data the scan holds: with two Parquet writers on macOS, the live heap peaked at 160 MB with one crawl thread and 270 MB with 64, while resident memory went from 400 MB to 1.8 GB. A sink's Arrow buffers are allocated on its crawl thread and freed on a writer thread, and mimalloc by default waits a second before returning freed memory to the system. Without a budget, that's left alone, because returning memory at once costs CPU time: on Linux, peak memory was about 750 MB with 16 crawl threads, 1.7 GB with 64, and 2.3 to 3.2 GB with 256 (two Parquet writers, each extra writer about 100 MB more), constant from early in the scan to the end.
 
-| Use | Share |
-|---|---|
-| Queued directories | 1/2 |
-| Sink buffers | 1/8, at most 64 MiB |
-| In-progress Parquet row groups | 1/4, divided among writers, each between 8 MiB and 128 MiB |
+`--max-memory` budgets all of it (`MemoryBudgets` in `scan.rs`):
 
-The rest is headroom for everything else. It is a soft budget: the allocator, open directory buffers, and in-flight chunks aren't counted.
+1. **Allocator:** `alloc::release_memory_promptly` sets mimalloc's purge delay to 0 and turns off eager arena commits, so freed memory goes back to the system at once. On Linux, that cut peak memory by 40 to 50%, for 5 to 8% more CPU time on scans the CPU limits.
+2. **Fixed costs first:** 64 MiB for the process, 32 MiB per Parquet writer, and the crawl threads. Their cost was measured with 16 to 256 threads and grows with the square root of the thread count, as each thread holds less when more share the work: about √threads × (40 MiB + 48 × each thread's row buffer share). Without `--writers`, the writer count is cut to what fits in a quarter of the budget (40 MiB each).
+3. **The rest,** of seven eighths of the budget (peaks varied by up to a tenth between identical scans): half for queued directories (at least 16 MiB), a quarter for row buffers, priced as in step 2, so each thread's share shrinks as threads are added (to no less than 64 KiB), and a quarter for in-progress row groups (8 to 128 MiB per writer).
+4. **A warning** at the start when the fixed costs and the smallest buffers don't fit, with the budget they need.
+
+Measured on Linux, scans with budgets of 512 MiB, 1 GiB, and 2 GiB and 16, 64, and 256 crawl threads either stayed under the budget or warned with an estimate above what they used. Long scans stayed flat: 256 threads under a 2 GiB budget used 1.0 to 1.15 GB throughout 300 million entries. Shares below 256 KiB, which only tight budgets with many threads reach, cost up to 40% more CPU time; `--detect-cycles` and `rollup --age-depth` memory isn't budgeted.
 
 ### 6.4 Signals and file descriptors
 
@@ -365,7 +375,7 @@ The rollup tables are checked the same way when present. `verify` exits 0 when e
 ## 8. Performance notes
 
 - **Thread count:** on network file systems, each stat waits on a round trip, so throughput is roughly concurrency divided by latency (Little's law). With 0.5 ms metadata calls, 64 stats in flight can sustain about 128,000 per second until the server saturates. Network file systems want many more threads (64–256) than local disks. `probe` measures this on the actual storage.
-- **Allocator:** the binary uses mimalloc (`crates/fs-inventory/src/main.rs`). Crawl threads allocate row buffers constantly, and musl's allocator serialized them on a lock, so the static Linux build got slower as threads were added.
+- **Allocator:** the binary uses mimalloc (`crates/fs-inventory/src/alloc.rs`). Crawl threads allocate row buffers constantly, and musl's allocator serialized them on a lock, so the static Linux build got slower as threads were added. mimalloc's default of returning freed memory a second late is kept for speed, except under `--max-memory` (section 6.3).
 - **System calls:** on Linux, rustix makes system calls directly, so the musl and glibc builds stat files the same way. The remaining per-entry libc dependency, reading the clock, was removed (section 6.2).
 - **Parquet size:** about 25 bytes per entry with the default zstd level 3, measured on 1.24 million real entries with 126-byte average paths. A billion-entry scan is about 25 GB. Uncompressed CSV of the same data was 446 bytes per entry.
 - **Writer count:** writers do the CPU-heavy encoding. They start only when output backs up, so they cost nothing on scans the crawl limits, and `--writers` caps them.
@@ -396,6 +406,11 @@ Tests are in each crate's `tests/` directory and in unit tests next to the code.
   - Walker tests record the rows committed at every checkpoint of a slowed-down walk, then resume a new walk from each one. Committed rows plus resumed rows must be the whole tree exactly once, with consistent `dir_id` links and directory totals. Variants cover the spill file, `--detect-cycles`, a 12,000-entry directory (no checkpoint holds part of it), a stalled worker (the checkpoint is skipped), and an abandoned one (its `stall` row is kept, and the directory isn't reread).
   - CLI tests kill scans with `kill -9` at several points, during the scan and during resumes, and resume them. The result must equal an uninterrupted scan row for row, and `verify` must pass. Other tests interrupt with SIGINT and check that the resume starts with every row already written, delete parts written after the checkpoint, cover JSON Lines output, and refuse to resume a scan another process is still writing.
   - A hook in debug builds, `FS_INVENTORY_DEBUG_STAT_DELAY_US`, slows every stat so these tests can stop scans partway through a small tree.
+- **Generated trees** (section 3.4):
+  - Unit tests check that trees have exactly the requested entries, are the same every time for the same options, vary like real ones, and resolve every name they list and no other.
+  - `tests/synthetic.rs` scans generated trees and checks their inode numbers, so every entry must appear exactly once, including after `kill -9` and `resume`.
+  - Another test runs 120 scans of random shapes, sizes, and thread counts (1 to 256), a third of them interrupted at a random moment. Every one must exit promptly with the right code.
+- **Scale:** `bench/scale.py` scans generated trees of any size, records memory and throughput every second, and can kill and resume the scan. A billion-entry scan, and a 200-million-entry scan killed halfway and resumed with every entry exactly once, are recorded in `PLAN.md` (section 9.2).
 - **DuckDB:** a test loads CSV output into DuckDB when the `duckdb` command is available.
 - **Schema sync:** tests keep `docs/schema.md` and the SQL macros in step with the schema (section 7.3).
 

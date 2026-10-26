@@ -95,7 +95,7 @@ The documentation is also a website, with search: **<https://robert-mcdermott.gi
 
 ## Benchmarking
 
-[bench/](bench/README.md) has a synthetic tree generator and a runner that sweeps thread counts and compares against `find`, for use on real storage.
+[bench/](bench/README.md) has a turnkey benchmark for a server's storage that writes a report to send back, scale tests on generated trees of any size, a tree generator, and a runner that sweeps thread counts and compares against `find`.
 
 ## Project layout
 

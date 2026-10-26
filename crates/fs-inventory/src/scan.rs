@@ -17,7 +17,8 @@ use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use fs_inventory_core::backend::{BackendOptions, NativeBackend};
+use fs_inventory_core::backend::synthetic::{SyntheticBackend, SyntheticOptions};
+use fs_inventory_core::backend::{Backend, BackendOptions, NativeBackend};
 use fs_inventory_core::model::{EntryKind, Fields, errno_name};
 use fs_inventory_core::names::{self, Controls};
 use fs_inventory_core::walker::{
@@ -45,6 +46,29 @@ use crate::output::{
 use crate::parse::{Compression, parse_compression};
 use crate::progress::{self, Reporter, Snapshot, Style};
 
+/// What a scan holds besides its budgeted buffers, measured on Linux with
+/// generated trees and the allocator returning freed memory at once, as it
+/// does under `--max-memory`: the process itself, and each Parquet writer's
+/// encoders.
+const BASE_MEMORY: usize = 64 << 20;
+const WRITER_MEMORY: usize = 32 << 20;
+/// The smallest in-progress row group, and queue of waiting directories.
+const MIN_ROW_GROUP: usize = 8 << 20;
+const MIN_QUEUE: usize = 16 << 20;
+/// The share of a budget planned for: peak memory varied by up to a tenth
+/// between identical scans.
+const PLANNED: f64 = 0.875;
+
+/// Memory the crawl threads hold, given each one's row buffer share:
+/// batches on their way to the writers, and what the allocator keeps.
+/// Measured with 16 to 256 threads and shares of 64 KiB to 1 MiB, it grows
+/// with the square root of the thread count, since each thread holds less
+/// when more of them share the work.
+fn thread_memory(threads: usize, share: usize) -> usize {
+    let per_root = (40 << 20) as f64 + 48.0 * share as f64;
+    (per_root * (threads as f64).sqrt()) as usize
+}
+
 /// How `--max-memory` is divided.
 struct MemoryBudgets {
     /// Directories waiting to be read; more wait in a spill file.
@@ -53,24 +77,50 @@ struct MemoryBudgets {
     sinks: usize,
     /// In-progress Parquet row groups, across all writers.
     row_groups: usize,
+    /// With a budget too small for the crawl threads and writers, about
+    /// the budget they need.
+    shortfall: Option<usize>,
 }
 
 impl MemoryBudgets {
-    /// Half for queued directories, an eighth for row buffers, and the rest
-    /// for row groups; without a limit, the defaults.
-    fn new(max_memory: Option<u64>) -> Self {
-        match max_memory.map(|m| usize::try_from(m).unwrap_or(usize::MAX)) {
-            None => Self {
+    /// Without a limit, the defaults. With one, what the threads and writers
+    /// hold regardless comes first. Of the rest, half is for queued
+    /// directories, a quarter for the crawl threads' row buffers (at what
+    /// they really cost), and a quarter for Parquet row groups.
+    fn new(max_memory: Option<u64>, threads: usize, parquet_writers: usize) -> Self {
+        let Some(m) = max_memory.map(|m| usize::try_from(m).unwrap_or(usize::MAX)) else {
+            return Self {
                 queue: 1 << 30,
                 sinks: crate::output::SINK_BUDGET_BYTES,
                 row_groups: usize::MAX,
-            },
-            Some(m) => Self {
-                queue: m / 2,
-                sinks: (m / 8).min(crate::output::SINK_BUDGET_BYTES),
-                row_groups: m / 4,
-            },
+                shortfall: None,
+            };
+        };
+        let planned = (m as f64 * PLANNED) as usize;
+        let fixed = BASE_MEMORY + parquet_writers * WRITER_MEMORY + thread_memory(threads, 0);
+        let rest = planned.saturating_sub(fixed);
+        // The row buffer share that costs a quarter of the rest.
+        let per_byte = thread_memory(threads, 1 << 20) - thread_memory(threads, 0);
+        let share = ((rest / 4) as f64 / per_byte as f64 * f64::from(1 << 20)) as usize;
+        let least = BASE_MEMORY
+            + parquet_writers * (WRITER_MEMORY + MIN_ROW_GROUP)
+            + thread_memory(threads, crate::output::MIN_FLUSH_BYTES)
+            + MIN_QUEUE;
+        Self {
+            queue: (rest / 2).max(MIN_QUEUE),
+            sinks: share
+                .saturating_mul(threads)
+                .min(crate::output::SINK_BUDGET_BYTES),
+            row_groups: rest / 4,
+            shortfall: (least > planned).then(|| (least as f64 / PLANNED) as usize),
         }
+    }
+
+    /// The most Parquet writers whose fixed memory fits in a quarter of
+    /// `max_memory`.
+    fn writers_within(max_memory: u64) -> usize {
+        let quarter = usize::try_from(max_memory / 4).unwrap_or(usize::MAX);
+        (quarter / (WRITER_MEMORY + MIN_ROW_GROUP)).max(1)
     }
 
     /// The row group limit for each of `writers` writers.
@@ -145,6 +195,9 @@ pub struct ScanSettings {
     csv_raw_controls: bool,
     time_unit: TimeUnit,
     time_format: TimeFormat,
+    /// `--synthetic`: the generated tree scanned instead of the file system.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    synthetic: Option<String>,
 }
 
 impl ScanSettings {
@@ -185,6 +238,7 @@ impl ScanSettings {
             csv_raw_controls: args.encoding.csv_raw_controls,
             time_unit: args.encoding.time_unit,
             time_format: args.encoding.time_format,
+            synthetic: args.synthetic.map(|tree| tree.to_string()),
         };
         // Check everything now, before creating any output.
         settings.selection()?;
@@ -211,6 +265,14 @@ impl ScanSettings {
     fn fields(&self) -> Result<Fields, SetupError> {
         Fields::parse(&self.fields.join(",")).map_err(SetupError::usage)
     }
+
+    fn synthetic(&self) -> Result<Option<SyntheticOptions>, SetupError> {
+        self.synthetic
+            .as_deref()
+            .map(SyntheticOptions::parse)
+            .transpose()
+            .map_err(SetupError::usage)
+    }
 }
 
 /// Settings that only affect how a scan runs. `resume` starts from the
@@ -229,10 +291,18 @@ impl RunSettings {
     fn from_args(args: &ScanArgs) -> Self {
         Self {
             threads: args.traversal.threads,
-            writers: args
-                .traversal
-                .writers
-                .map_or_else(default_writers, usize::from),
+            writers: args.traversal.writers.map_or_else(
+                || {
+                    let writers = default_writers();
+                    match args.robustness.max_memory {
+                        Some(m) if args.output.format == Format::Parquet => {
+                            writers.min(MemoryBudgets::writers_within(m))
+                        }
+                        _ => writers,
+                    }
+                },
+                usize::from,
+            ),
             max_memory: args.robustness.max_memory,
             stall_timeout: args.robustness.stall_timeout,
             checkpoint_interval: match args.robustness.checkpoint_interval {
@@ -290,14 +360,38 @@ pub fn execute(
     let selection = settings.selection()?;
     let fields = settings.fields()?;
     let compression = settings.compression()?;
+    let synthetic = settings.synthetic()?;
     let roots = settings.roots()?;
     let excludes = build_excludes(&settings.excludes)?;
-    let budgets = MemoryBudgets::new(runtime.max_memory);
     let writers = runtime.writers.max(1);
     let scan_dir = match &destination {
         Destination::Dir(dir) => Some(dir.clone()),
         Destination::Stdout => None,
     };
+    // Parquet writers hold encoders; text writers hold next to nothing.
+    let parquet_writers = match (&scan_dir, settings.format) {
+        (Some(_), Format::Parquet) => writers,
+        (None, Format::Parquet) => 1,
+        _ => 0,
+    };
+    let budgets = MemoryBudgets::new(
+        runtime.max_memory,
+        usize::from(runtime.threads),
+        parquet_writers,
+    );
+    if let (Some(max), Some(least)) = (runtime.max_memory, budgets.shortfall) {
+        let (who, fewer) = match parquet_writers {
+            0 => (String::new(), "--threads"),
+            1 => (" and 1 writer".into(), "--threads"),
+            n => (format!(" and {n} writers"), "--threads or --writers"),
+        };
+        eprintln!(
+            "fs-inventory: {} crawl threads{who} need about {}, more than --max-memory {}; fewer {fewer} need less",
+            runtime.threads,
+            progress::format_bytes(least as u64),
+            progress::format_bytes(max),
+        );
+    }
     let checkpointing = runtime.checkpoint_interval.is_some() && scan_dir.is_some();
 
     let mut skip_dirs = Vec::new();
@@ -336,6 +430,10 @@ pub fn execute(
         }
     };
 
+    if runtime.max_memory.is_some() {
+        // A memory budget trades some speed for memory.
+        crate::alloc::release_memory_promptly();
+    }
     raise_fd_limit();
     let signaled = Arc::new(AtomicBool::new(false));
     let stop = Arc::new(AtomicBool::new(false));
@@ -502,6 +600,11 @@ pub fn execute(
         Style::None if progress_options.progress == Progress::Auto => Style::Plain,
         other => other,
     };
+    if let Some(tree) = synthetic
+        && summary_style != Style::None
+    {
+        eprintln!("fs-inventory: scanning a generated tree ({tree}), not the file system");
+    }
     if let Some((header, state)) = &resume
         && summary_style != Style::None
     {
@@ -520,11 +623,11 @@ pub fn execute(
         base_entries,
     );
 
-    let backend = scan_backend(BackendOptions {
+    let backend_options = BackendOptions {
         statx_dont_sync: settings.statx_dont_sync,
         fields,
         ..BackendOptions::default()
-    });
+    };
     let walk_options = WalkOptions {
         threads: usize::from(runtime.threads),
         cross_mounts: settings.cross_mounts,
@@ -574,15 +677,18 @@ pub fn execute(
         manifest: &mut manifest,
         warned: false,
     };
-    let result = walker::walk_from(
+    let walk = Walk {
         start,
-        walk_options,
-        Arc::new(backend),
-        |_| output.sink(),
-        Arc::clone(&counters),
-        Arc::clone(&stop),
-        checkpointing.then_some(&mut checkpointer as &mut dyn Checkpointer),
-    )
+        options: walk_options,
+        output: &output,
+        counters: &counters,
+        stop: &stop,
+        checkpointer: checkpointing.then_some(&mut checkpointer as &mut dyn Checkpointer),
+    };
+    let result = match synthetic {
+        Some(tree) => walk.run(SyntheticBackend::new(tree, &roots)),
+        None => walk.run(NativeBackend::new(backend_options)),
+    }
     .map_err(|e| SetupError::fatal(format!("cannot open the checkpoint files: {e}")))?;
     let header = checkpointer.header;
     let report = output.finish();
@@ -724,15 +830,31 @@ impl Checkpointer for ScanCheckpointer<'_> {
     }
 }
 
-/// The file system backend. Debug builds can slow it down for tests.
-#[cfg(debug_assertions)]
-fn scan_backend(options: BackendOptions) -> crate::debug::Delayed<NativeBackend> {
-    crate::debug::Delayed::from_env(NativeBackend::new(options))
+/// Everything a walk needs but the backend, which is chosen at run time.
+struct Walk<'a> {
+    start: Start<'a>,
+    options: WalkOptions,
+    output: &'a Output,
+    counters: &'a Arc<Counters>,
+    stop: &'a Arc<AtomicBool>,
+    checkpointer: Option<&'a mut dyn Checkpointer>,
 }
 
-#[cfg(not(debug_assertions))]
-fn scan_backend(options: BackendOptions) -> NativeBackend {
-    NativeBackend::new(options)
+impl Walk<'_> {
+    /// Walks with `backend`. Debug builds can slow it down for tests.
+    fn run<B: Backend + 'static>(self, backend: B) -> io::Result<WalkResult> {
+        #[cfg(debug_assertions)]
+        let backend = crate::debug::Delayed::from_env(backend);
+        walker::walk_from(
+            self.start,
+            self.options,
+            Arc::new(backend),
+            |_| self.output.sink(),
+            Arc::clone(self.counters),
+            Arc::clone(self.stop),
+            self.checkpointer,
+        )
+    }
 }
 
 /// Options that parse but do nothing yet. Accepting them silently would be
@@ -938,6 +1060,10 @@ fn manifest_options(args: &ScanArgs, writers: usize) -> BTreeMap<String, serde_j
         ("row_group_rows", json!(args.output.row_group_rows)),
     ])
     .into_iter()
+    .chain(
+        args.synthetic
+            .map(|tree| ("synthetic", json!(tree.to_string()))),
+    )
     .map(|(key, value)| (key.to_string(), value))
     .collect()
 }
@@ -1037,6 +1163,33 @@ fn new_scan_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_budgets_count_threads_and_writers() {
+        let unlimited = MemoryBudgets::new(None, 64, 8);
+        assert_eq!(unlimited.sinks, crate::output::SINK_BUDGET_BYTES);
+        assert!(unlimited.shortfall.is_none());
+
+        // Everything planned fits in the budget.
+        let budget = 2 << 30;
+        let roomy = MemoryBudgets::new(Some(budget as u64), 64, 4);
+        assert!(roomy.shortfall.is_none());
+        let planned = BASE_MEMORY
+            + 4 * WRITER_MEMORY
+            + thread_memory(64, roomy.sinks / 64)
+            + roomy.queue
+            + roomy.row_groups;
+        assert!(planned <= budget, "{planned}");
+
+        // More threads mean smaller row buffers, then a warning.
+        let more = MemoryBudgets::new(Some(budget as u64), 256, 4);
+        assert!(more.sinks / 256 < roomy.sinks / 64);
+        let tight = MemoryBudgets::new(Some(512 << 20), 256, 2);
+        assert!(tight.shortfall.is_some_and(|need| need > 512 << 20));
+
+        assert_eq!(MemoryBudgets::writers_within(512 << 20), 3);
+        assert_eq!(MemoryBudgets::writers_within(64 << 20), 1);
+    }
 
     #[test]
     fn roots_are_normalized() {

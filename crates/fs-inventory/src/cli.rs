@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use fs_inventory_core::backend::synthetic::SyntheticOptions;
 use serde::{Deserialize, Serialize};
 
 use crate::parse::{Compression, parse_compression, parse_duration, parse_size};
@@ -64,6 +65,13 @@ pub struct ScanArgs {
 
     #[command(flatten)]
     pub progress: ProgressOptions,
+
+    /// Scan a generated tree at each ROOT instead of the file system, for
+    /// benchmarks and scale tests: `100M`, or
+    /// `entries=100M,files=32,fanout=8,huge=1M,seed=0`. The roots needn't
+    /// exist.
+    #[arg(long, hide = true, value_name = "SPEC", value_parser = SyntheticOptions::parse)]
+    pub synthetic: Option<SyntheticOptions>,
 }
 
 #[derive(Debug, Args)]
@@ -208,9 +216,12 @@ pub struct RobustnessOptions {
     #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
     pub stall_timeout: Option<Duration>,
 
-    /// Soft memory budget. Half holds directories waiting to be read (more
-    /// wait in a spill file next to the output), and the rest holds output
-    /// buffers and Parquet row groups [default: queue up to 1 GiB in memory].
+    /// Memory budget for the scan. What the crawl threads and Parquet writers
+    /// need comes first (with only as many writers as fit, unless --writers
+    /// is given); directories waiting to be read (more wait in a spill file
+    /// next to the output), row buffers, and row groups share the rest.
+    /// Freed memory goes back to the system at once, for a little more CPU
+    /// time [default: no limit; queue up to 1 GiB in memory].
     #[arg(long, value_parser = parse_size, value_name = "SIZE")]
     pub max_memory: Option<u64>,
 }
@@ -272,7 +283,7 @@ pub struct ResumeArgs {
     #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
     pub stall_timeout: Option<Duration>,
 
-    /// Soft memory budget [default: as the scan ran].
+    /// Memory budget for the scan [default: as the scan ran].
     #[arg(long, value_parser = parse_size, value_name = "SIZE")]
     pub max_memory: Option<u64>,
 

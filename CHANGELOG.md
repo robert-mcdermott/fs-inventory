@@ -9,6 +9,17 @@ All notable changes to this project are documented in this file. The format foll
 - Release binaries: each release has static Linux binaries (x86_64 and ARM) and macOS binaries (Apple silicon and Intel), with a `SHA256SUMS` file. Pushing a version tag builds them and drafts the release.
 - A documentation website, <https://robert-mcdermott.github.io/fs-inventory/>, generated from the repository's Markdown: the user guide, schema, architecture, and changelog, with navigation, search across every page, copy buttons, and dark mode. Publishing a release rebuilds it from that release's docs, and CI fails a pull request that breaks a link between pages or sections.
 - `install.sh` installs a release with `curl ... | sh`: it verifies the SHA-256 checksum and the binary's version before installing to `~/.local/bin` (or `--install-dir`), and never uses `sudo` or changes `PATH`.
+- Generated trees for scale tests: the hidden option `scan --synthetic 100M` scans a deterministic tree computed in memory instead of the file system, with exactly the requested number of entries and the variety of a real tree, including names that aren't valid UTF-8. A billion-entry tree costs no disk space, and `resume` continues it. The manifest's `options.synthetic` marks such scans.
+- `bench/scale.py` scans a generated tree of any size, records memory and throughput every second, can kill and resume the scan, and checks that every entry was written exactly once.
+- `bench/server.py` benchmarks a server's storage in one run of about 15 minutes, and writes a report to send back. It covers the CPU ceiling, `find`, `probe`, and time-boxed scans at several thread counts. On NFS, it also records RPCs per entry. An optional kill-and-resume test runs on a smaller tree.
+
+### Changed
+
+- `--max-memory` budgets the whole scan. It first sets aside what the crawl threads and Parquet writers need (memory grows with threads, measured at about 1.7 GB with 64 threads and 3 GB with 256 without a budget), uses only as many writers as fit unless `--writers` is given, and shrinks row buffers as threads are added. It also has the allocator return freed memory at once, which cut peak memory by 40 to 50% on Linux for 5 to 8% more CPU time. A budget too small for the threads gets a warning with the budget they need. Scans without `--max-memory` run exactly as before.
+
+### Fixed
+
+- The benchmark scripts run on Python 3.6 and later, as RHEL 8's system Python is; `run.py` needed 3.9.
 
 ## [0.4.0] - 2026-10-25
 

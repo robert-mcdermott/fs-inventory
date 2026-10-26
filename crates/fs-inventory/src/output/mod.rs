@@ -52,7 +52,7 @@ use crate::parse::Compression;
 /// the thread count.
 pub const SINK_BUDGET_BYTES: usize = 64 << 20;
 /// Bounds on one worker's share.
-const MIN_FLUSH_BYTES: usize = 64 << 10;
+pub const MIN_FLUSH_BYTES: usize = 64 << 10;
 const MAX_FLUSH_BYTES: usize = 1 << 20;
 /// A worker sends mid-directory once its buffer reaches this multiple of its
 /// share, so very large directories don't hold unbounded memory.
