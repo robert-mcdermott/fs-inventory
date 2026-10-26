@@ -76,12 +76,17 @@ fn run_resume(args: &ResumeArgs) -> Result<Exit, SetupError> {
             )));
         }
     };
-    let (header, state) = checkpoint::read(&dir)
+    let (mut header, state) = checkpoint::read(&dir)
         .map_err(|e| SetupError::fatal(format!("cannot read the checkpoint in {shown}: {e}")))?;
     if manifest["scan_id"].as_str() != Some(header.scan_id.as_str()) {
         return Err(SetupError::fatal(format!(
             "the checkpoint in {shown} belongs to a different scan"
         )));
+    }
+    // Every resume records itself in the manifest as it starts, so the
+    // manifest also lists resumes killed before their first checkpoint.
+    if let Ok(resumes) = serde_json::from_value(manifest["resumes"].clone()) {
+        header.resumes = resumes;
     }
     discard_uncheckpointed(&dir, &header)
         .map_err(|e| SetupError::fatal(format!("cannot clean up {shown}: {e}")))?;

@@ -227,7 +227,9 @@ fn killed_scans_resume_to_the_same_inventory() {
     let manifest = manifest(&scan);
     assert_eq!(manifest["status"], "complete");
     assert_eq!(manifest["totals"]["entries"], 2449);
-    assert!(manifest["resumes"].as_array().unwrap().len() >= 2);
+    // Every resume is recorded, including those killed before they took a
+    // checkpoint.
+    assert_eq!(manifest["resumes"].as_array().unwrap().len(), 3);
     assert!(!scan.join("checkpoint").exists());
     let out = run(&["verify", scan_arg]);
     assert_eq!(out.status.code(), Some(0), "{}", text(&out));
@@ -293,11 +295,14 @@ fn resume_has_nothing_to_do_for_finished_or_uncheckpointed_scans() {
         root.to_str().unwrap(),
         "-o",
         unprotected.to_str().unwrap(),
+        "-t",
+        "1",
         "--checkpoint-interval",
         "0",
     ]);
     wait_until(|| unprotected.join("manifest.json").exists());
     kill_after(child, Duration::from_millis(300));
+    assert_eq!(manifest(&unprotected)["status"], "running");
     assert!(!unprotected.join("checkpoint").exists());
     let out = run(&["resume", unprotected.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(2), "{}", text(&out));
