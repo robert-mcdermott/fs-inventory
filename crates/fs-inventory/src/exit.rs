@@ -13,7 +13,7 @@ pub enum Exit {
     CompletedWithErrors = 1,
     /// Invalid arguments or configuration.
     Usage = 2,
-    /// The crawl was interrupted or abandoned stalled subtrees; it can be resumed.
+    /// The crawl was interrupted or abandoned stalled subtrees.
     Incomplete = 3,
     /// A fatal error; no usable output was produced.
     Fatal = 4,
