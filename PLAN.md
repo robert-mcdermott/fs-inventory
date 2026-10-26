@@ -429,7 +429,7 @@ Development happens on a macOS laptop, so tests are split by where they can run:
 | **M2: Parquet** ✅ | Arrow builders, Parquet writer pool, key-value metadata, `--columns`, `sql/` macros and example queries, `verify`, `schema` (also generates `docs/schema.md`), mimalloc | Output size per entry measured on 1.24M real entries (§5.2), and DuckDB 2.0 loads Parquet, CSV, and JSON Lines scans. A 100M-entry scan of a generated tree ran on the laptop (§9.2); scans of real storage at that scale happen on the Linux server. |
 | **M3: Scale** (features done) | Chunked stats for huge directories, stall watchdog, PATH_MAX chains, queue spill, `--max-memory`, `rollup`, `probe`, `--fields`, `--detect-cycles`, tuned defaults from real-file-system benchmarks | A 1B-entry synthetic or real scan completes, and memory stays flat: met with a generated billion-entry tree on the laptop (§9.2). Default tuning from real storage happens on the Linux server. |
 | **M4: Resume** ✅ | Periodic checkpoints, `resume`, `kill -9` test suite | Resume produces output identical to an uninterrupted run: tested by resuming from every checkpoint of a walk, and by `kill -9` at several points of real scans |
-| **M5: Platform and extras** | `diff` between two scans (§11), `convert` ✅, `--symlink-targets` ✅ (schema version 3), `--resolve-ids` ✅ (decision 10) (all in 0.6.0), static release binaries and `install.sh` ✅, documentation site ✅, scale tests and the `--max-memory` budget ✅ (0.5.0), then hardening and a final review of the CLI and schema | Release 1.0 |
+| **M5: Platform and extras** | `diff` between two scans ✅ (DuckDB macros, decision 13), `convert` ✅, `--symlink-targets` ✅ (schema version 3), `--resolve-ids` ✅ (decision 10) (all in 0.6.0), static release binaries and `install.sh` ✅, documentation site ✅, scale tests and the `--max-memory` budget ✅ (0.5.0), then hardening and a final review of the CLI and schema | Release 1.0 |
 
 ### Future ideas (post-1.0)
 
@@ -450,7 +450,7 @@ fs-inventory will feed a separate file inventory and analytics web application: 
 - **Schema stability:** `fs_inventory.schema_version` is in every part file and in the manifest. Adding a nullable column is a minor change; renaming, removing, or retyping one bumps the major schema version.
 - **Ingest only complete scans:** `manifest.json` has a unique `scan_id`, the roots, start and end times, and a `status`. Ingestion takes a scan only when `status` is `complete` (or `incomplete`, if it accepts partial data) and records the `scan_id` it loaded.
 - **Parallel loading:** sharded part files let ingestion load parts concurrently, and each part is self-describing.
-- **Incremental updates:** the app's database is refreshed from successive scans. The stable identity of an entry across scans is its exact path bytes (`coalesce(path_raw, encode(path))`). `(dev, ino)` changes across NFS clients and remounts, so it is only a rename hint. A `diff` subcommand (moved up to M5) emits new, deleted, and changed entries between two scans so the app can apply deltas instead of reloading billions of rows.
+- **Incremental updates:** the app's database is refreshed from successive scans. The stable identity of an entry across scans is its exact path bytes (`coalesce(path_raw, encode(path))`). `(dev, ino)` changes across NFS clients and remounts, so it is only a rename hint. The `fs_diff` DuckDB macro (decision 13) returns the added, removed, and changed entries between two scans, with the rows before and after, so the app can apply deltas instead of reloading billions of rows.
 - **Heat maps:** `rollup` (§4.5) produces per-directory recursive age histograms after each scan, so the app reads a small table instead of aggregating every file.
 - **Orchestration:** documented exit codes and `--progress json` let a scheduler run scans and track them.
 
@@ -472,6 +472,7 @@ fs-inventory will feed a separate file inventory and analytics web application: 
 | 10 | User and group names | **Decided:** opt-in `--resolve-ids`, off by default. Each crawl thread collects the IDs it sees, and when the scan ends each unique ID is looked up once with `getent`, which reaches LDAP and sssd even from the static binary. The names go in `users` and `groups` tables next to the entries; entry rows keep numeric IDs only. |
 | 11 | Guessing legacy encodings | **Decided:** dropped (`--guess-encoding`). Guesses are unreliable on short names, and the exact bytes are kept. |
 | 12 | Parked until after 1.0 | File attributes, `.deb` and `.rpm` packages, a Homebrew tap, and a macOS `getattrlistbulk` backend (§10, future ideas). |
+| 13 | Comparing two scans | **Decided:** `fs_diff` and `fs_diff_summary` DuckDB macros instead of a `diff` subcommand. DuckDB already joins two scans in parallel and spills to disk, the result can be queried or written anywhere DuckDB writes, and the binary stays a scanner. Entries match by exact path bytes; `atime` and `dev` are ignored by default. |
 
 ---
 

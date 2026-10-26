@@ -50,6 +50,16 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      # The DuckDB macro tests (fs_diff, loading CSV) run here and are
+      # skipped where there's no DuckDB.
+      - name: Install the DuckDB CLI
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p "$RUNNER_TEMP/duckdb"
+          curl -fsSL https://github.com/duckdb/duckdb/releases/download/v2.0.0/duckdb-cli-linux-amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/duckdb"
+          echo "$RUNNER_TEMP/duckdb" >> "$GITHUB_PATH"
+          echo "FS_INVENTORY_REQUIRE_DUCKDB=1" >> "$GITHUB_ENV"
       - run: cargo test --workspace --all-features --locked
 
   msrv:

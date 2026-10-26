@@ -333,7 +333,14 @@ When loading scans into another system:
 
 - **Load only scans whose `status` is `complete`.** Accept `incomplete` too only if partial data is useful to you; the `stalled` list in the manifest says which directories are missing.
 - **Record the `scan_id`** (a UUIDv7, unique per scan) to avoid loading a scan twice. Every Parquet part carries the same ID in its metadata, so a part can't be mixed up with another scan's.
-- **Check `schema_version`.** It's 2 in this release, and changes only when the output format changes in a way that would break readers. `tool_version` records the fs-inventory version.
+- **Check `schema_version`.** It's 3 in this release, and changes when columns are added or change. `tool_version` records the fs-inventory version.
+- **Load only what changed.** `fs_diff` in the DuckDB macros compares two scans of the same roots and returns one row per entry that was added, removed, or changed, with the row before and after. Instead of reloading every row each night, apply those changes: insert or replace the `new` row of each added or changed entry, and delete each removed one, matching entries by their exact path bytes, `coalesce(path_raw, encode(path))`:
+
+  ```bash
+  duckdb -cmd ".read sql/fs_inventory.sql" -c "COPY (FROM fs_diff('/scratch/inventory/projects-2026-10-25', '/scratch/inventory/projects-2026-10-26')) TO 'changes.parquet'"
+  ```
+
+  Compare scans made with the same options; a column one scan read and the other skipped (`--fields`) shows as a change everywhere.
 - **Keep old scans side by side** to see change over time: growth, deleted files, and new files ([7.5](#75-recipes)).
 
 ### 4.8 Streaming to another program
@@ -920,6 +927,8 @@ SELECT count(*) FROM read_parquet('/scratch/inventory/projects-2026-10-25/entrie
 | `fs_errors(scan_dir)` | The `errors` table of a Parquet scan. It fails with "No files found" if the scan had no errors. |
 | `fs_users(scan_dir)`, `fs_groups(scan_dir)` | The `users` and `groups` tables of a Parquet scan made with `--resolve-ids` |
 | `fs_entries_named(scan_dir)` | `fs_entries` plus `user_name` and `group_name`, for a Parquet scan made with `--resolve-ids` |
+| `fs_diff(old_dir, new_dir)` | What changed between two Parquet scans: one row per added, removed, or changed entry, with `changes` listing the columns that differ and the rows before and after as `old` and `new` structs ([7.5](#75-recipes)) |
+| `fs_diff_summary(old_dir, new_dir)` | `fs_diff` counted by change and kind, with the net change in size |
 | `fs_rollup(scan_dir)` | Subtree totals, after `fs-inventory rollup` |
 | `fs_rollup_ages(scan_dir)` | Age histograms, after `fs-inventory rollup` |
 | `fs_entries_csv(scan_dir)`, `fs_errors_csv(scan_dir)`, `fs_users_csv(scan_dir)`, `fs_groups_csv(scan_dir)` | CSV scans, compressed or not |
@@ -1305,32 +1314,41 @@ USING sum(files) ORDER BY path;
 
 Listing the labels in `IN (...)` keeps the columns in age order. Only buckets with files have rows, so empty cells are `NULL`. `a.time` can also be `ctime` or `atime`.
 
-**Comparing two scans:** files added, deleted, and changed between two scans of the same tree.
+**Comparing two scans.** `fs_diff` matches the entries of two scans of the same roots by their exact path bytes:
 
 ```sql
-CREATE TEMP VIEW old AS SELECT * FROM fs_entries('/scratch/inventory/projects-2026-10-25') WHERE kind = 'file';
-CREATE TEMP VIEW new AS SELECT * FROM fs_entries('/scratch/inventory/projects-2026-11-01') WHERE kind = 'file';
+SET VARIABLE old = '/scratch/inventory/projects-2026-10-25';
+SET VARIABLE new = '/scratch/inventory/projects-2026-11-01';
 
-SELECT CASE WHEN old.path IS NULL THEN 'added' WHEN new.path IS NULL THEN 'deleted' ELSE 'changed' END AS change,
-       count(*) AS files,
-       format_bytes(sum(coalesce(new.size, 0) - coalesce(old.size, 0))::BIGINT) AS size_change
-FROM old FULL JOIN new USING (path)
-WHERE old.path IS NULL OR new.path IS NULL OR old.size <> new.size OR old.mtime <> new.mtime
-GROUP BY ALL ORDER BY change;
+SELECT * FROM fs_diff_summary(getvariable('old'), getvariable('new'));
 ```
 
+An illustration:
+
 ```
-┌─────────┬───────┬─────────────┐
-│ change  │ files │ size_change │
-│ varchar │ int64 │   varchar   │
-├─────────┼───────┼─────────────┤
-│ added   │     2 │ 5.0 GiB     │
-│ changed │     1 │ 30.0 KiB    │
-│ deleted │    15 │ -9.0 GiB    │
-└─────────┴───────┴─────────────┘
+┌─────────┬─────────┬─────────┬──────────────┐
+│ change  │  kind   │ entries │ size_change  │
+│ varchar │ varchar │  int64  │    int64     │
+├─────────┼─────────┼─────────┼──────────────┤
+│ added   │ file    │       2 │   5368709120 │
+│ changed │ dir     │       3 │         NULL │
+│ changed │ file    │       1 │        30720 │
+│ removed │ file    │      15 │  -9663676416 │
+└─────────┴─────────┴─────────┴──────────────┘
 ```
 
-Replace the `SELECT` with `SELECT path, old.size, new.size, old.mtime, new.mtime` to list the files themselves. Joining on `path` treats a renamed file as one deletion plus one addition.
+To list the entries themselves, with what changed:
+
+```sql
+SELECT change, changes, path, old.size AS old_size, new.size AS new_size, new.mtime
+FROM fs_diff(getvariable('old'), getvariable('new'))
+ORDER BY path;
+```
+
+- **What counts as a change:** any difference in the columns describing an entry: kind, size, allocation, permissions, owner, link count, inode, times, directory totals, mount point, symlink target, or error. `changes` lists them, such as `[size, mtime, ctime]`. A new `ino` means the file was replaced, as editors that save by renaming do.
+- **Left out by default:** `atime`, which reading a file updates, and `dev`, which can change when a file system is remounted. `fs_diff(old, new, ignore := [])` counts every difference, and `ignore := ['atime', 'dev', 'ctime']` leaves out more.
+- **Renames** show as one removal and one addition, since entries are matched by path.
+- **Large scans:** DuckDB joins the two scans in parallel and spills to disk when memory runs out; two 10-million-entry scans take seconds on a laptop. For billion-entry scans, point `SET temp_directory` at a disk with room.
 
 **Several scans as one table.** A glob can cover many scans; `filename = true` adds each row's file name, which identifies its scan:
 

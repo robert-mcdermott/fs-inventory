@@ -325,6 +325,11 @@ fn csv_rows_stay_on_one_line_and_load_in_duckdb() {
 
     let duckdb = Command::new("duckdb").arg("-version").output();
     if !duckdb.is_ok_and(|o| o.status.success()) {
+        // CI installs DuckDB and sets this, so the check can't be skipped there.
+        assert!(
+            std::env::var_os("FS_INVENTORY_REQUIRE_DUCKDB").is_none(),
+            "duckdb is required but not installed"
+        );
         eprintln!("duckdb not found; skipping the DuckDB load check");
         return;
     }

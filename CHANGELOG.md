@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 
 ## [Unreleased]
 
+### Added
+
+- `fs_diff` and `fs_diff_summary` DuckDB macros compare two Parquet scans of the same roots: one row per added, removed, or changed entry, with the columns that changed and the rows before and after, or the counts and net size change by kind. Entries are matched by their exact path bytes; `atime` and `dev` are ignored unless `ignore := []` is given. They work on version 2 scans too.
+
 ## [0.6.0] - 2026-10-26
 
 Re-export Parquet scans as CSV or JSON Lines with `convert`, record symlink targets, and look up user and group names.
