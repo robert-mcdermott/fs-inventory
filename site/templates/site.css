@@ -409,7 +409,6 @@ a.icon-btn { text-decoration: none; }
   color: var(--accent-ink);
   background: none;
   padding: 0;
-  overflow-wrap: anywhere;
 }
 @media (prefers-reduced-motion: reduce) { .path { transition: none; } .path:hover { transform: none; } }
 
@@ -477,8 +476,9 @@ a.icon-btn { text-decoration: none; }
   border-radius: 5px;
   background: var(--inline-code-bg);
   color: var(--ink);
-  overflow-wrap: anywhere;
 }
+/* Pieces of inline code that never wrap inside (see code_html in build.py). */
+.nobr { white-space: nowrap; }
 .badge {
   display: inline-block;
   vertical-align: 0.12em;

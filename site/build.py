@@ -98,7 +98,32 @@ def slugify(text: str, seen: dict) -> str:
 
 
 def strip_tags(s: str) -> str:
+    # The pieces of inline code join up again without spaces.
+    s = re.sub(r'<span class="nobr">([^<]*)</span>|<wbr>', r"\1", s)
     return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", s))).strip()
+
+
+# Where inline code may wrap besides its spaces: after a slash, comma, or
+# opening parenthesis.
+CODE_BREAK = re.compile(r"(?<=[/,(])")
+
+
+def code_html(text: str) -> str:
+    """Inline code that wraps only at those places, never inside a name such
+    as `--max-depth` or `FS_INVENTORY_INSTALL_DIR`. Browsers would otherwise
+    break it at a hyphen, and narrow table columns to break it anywhere."""
+    words = []
+    for word in text.split(" "):
+        pieces: list[str] = []
+        for piece in CODE_BREAK.split(word):
+            # No piece as short as the "/" that starts a path or the ")"
+            # that ends a call.
+            if pieces and (len(piece) < 3 or len(pieces[-1]) < 3):
+                pieces[-1] += piece
+            elif piece:
+                pieces.append(piece)
+        words.append("<wbr>".join(f'<span class="nobr">{html.escape(p)}</span>' for p in pieces))
+    return " ".join(words)
 
 
 def markdown_body(page: Page, source_dir: Path) -> str:
@@ -117,6 +142,9 @@ class Renderer:
     def __init__(self, ref: str):
         self.ref = ref
         self.md = MarkdownIt("commonmark", {"html": True}).enable(["table", "strikethrough"])
+        self.md.add_render_rule(
+            "code_inline", lambda _, tokens, idx, *rest: f"<code>{code_html(tokens[idx].content)}</code>"
+        )
         self.ids: dict[str, set[str]] = {}
         self.links: list[tuple[str, str]] = []  # (page, href) to check
 
@@ -322,7 +350,11 @@ def main() -> None:
     renderer = Renderer(ref)
     head = (TEMPLATES / "head.html").read_text()
     shell = (TEMPLATES / "page.html").read_text()
-    hero = (TEMPLATES / "hero.html").read_text()
+    hero = re.sub(
+        r"<code>(.*?)</code>",
+        lambda m: f"<code>{code_html(html.unescape(m.group(1)))}</code>",
+        (TEMPLATES / "hero.html").read_text(),
+    )
     search_index = []
     pages_html = {}
     for page in PAGES:
