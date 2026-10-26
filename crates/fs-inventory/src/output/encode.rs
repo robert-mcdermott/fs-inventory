@@ -430,7 +430,10 @@ fn json_string(out: &mut Vec<u8>, value: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
+
     use fs_inventory_core::model::{DirTotals, Op, Stat};
+    use proptest::prelude::*;
 
     fn options(format: TextFormat) -> EncodeOptions {
         EncodeOptions {
@@ -660,5 +663,170 @@ mod tests {
         );
         let parsed: String = serde_json::from_slice(&out).unwrap();
         assert_eq!(parsed, "q\"b\\n\nt\tc\u{1}\u{1f}é");
+    }
+    /// Splits one RFC 4180 record, which must be all of `row`, into its
+    /// fields; `None` if it's malformed.
+    fn csv_record(row: &str) -> Option<Vec<String>> {
+        let mut fields = Vec::new();
+        let mut chars = row.chars().peekable();
+        loop {
+            let mut field = String::new();
+            if chars.peek() == Some(&'"') {
+                chars.next();
+                loop {
+                    match chars.next()? {
+                        '"' if chars.peek() == Some(&'"') => {
+                            chars.next();
+                            field.push('"');
+                        }
+                        '"' => break,
+                        c => field.push(c),
+                    }
+                }
+            } else {
+                while let Some(&c) = chars.peek() {
+                    if matches!(c, ',' | '\n' | '"' | '\r') {
+                        break;
+                    }
+                    field.push(c);
+                    chars.next();
+                }
+            }
+            fields.push(field);
+            match chars.next()? {
+                ',' => {}
+                '\n' => return chars.next().is_none().then_some(fields),
+                _ => return None,
+            }
+        }
+    }
+
+    /// Bytes of a name: anything but `/` and NUL, weighted toward the bytes
+    /// the encoders treat specially.
+    fn name_bytes() -> impl Strategy<Value = Vec<u8>> {
+        let byte = prop_oneof![
+            any::<u8>(),
+            prop::sample::select(&b",\"\\\n\r\t\x01\x1f\x7f\x80\xc3\xa9\xe9\xff"[..]),
+        ];
+        prop::collection::vec(
+            byte.prop_filter("no / or NUL", |b| *b != b'/' && *b != 0),
+            1..40,
+        )
+    }
+
+    /// Encodes a symlink at `/d/<name>` pointing to `target`, and returns
+    /// each column's value.
+    fn row_values(
+        format: TextFormat,
+        csv_raw_controls: bool,
+        raw_paths_always: bool,
+        name: &[u8],
+        target: &[u8],
+    ) -> BTreeMap<String, Option<String>> {
+        let mut path = b"/d/".to_vec();
+        path.extend_from_slice(name);
+        let stat = Stat {
+            mode: 0o120777,
+            ..file_stat()
+        };
+        let entry = Entry {
+            path: &path,
+            parent_path: b"/d",
+            name,
+            depth: 1,
+            dir_id: None,
+            parent_id: 7,
+            stat: &stat,
+            is_mount_point: false,
+            totals: None,
+            error: None,
+            symlink_target: Some(target),
+        };
+        let encoder = Encoder::new(EncodeOptions {
+            csv_raw_controls,
+            raw_paths_always,
+            ..options(format)
+        });
+        let mut out = Vec::new();
+        encoder.entry(&entry, &mut out);
+        let row = String::from_utf8(out).expect("rows are UTF-8");
+        assert!(row.ends_with('\n'), "{row:?}");
+        let columns = encoder.entry_columns();
+        match format {
+            TextFormat::Csv => {
+                if !csv_raw_controls {
+                    assert_eq!(row.matches(['\n', '\r']).count(), 1, "{row:?}");
+                }
+                let fields = csv_record(&row).unwrap_or_else(|| panic!("bad CSV: {row:?}"));
+                assert_eq!(fields.len(), columns.len(), "{row:?}");
+                columns
+                    .iter()
+                    .zip(fields)
+                    .map(|(c, f)| (c.to_string(), (!f.is_empty()).then_some(f)))
+                    .collect()
+            }
+            TextFormat::Jsonl => {
+                assert_eq!(row.matches('\n').count(), 1, "{row:?}");
+                let value: serde_json::Value = serde_json::from_str(&row).unwrap();
+                let object = value.as_object().unwrap();
+                let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+                let mut columns = columns;
+                keys.sort_unstable();
+                columns.sort_unstable();
+                assert_eq!(keys, columns);
+                object
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().map(String::from)))
+                    .collect()
+            }
+        }
+    }
+
+    /// The exact bytes a text column and its Base64 column describe.
+    fn exact(values: &BTreeMap<String, Option<String>>, text: &str, b64: &str) -> Vec<u8> {
+        match &values[b64] {
+            Some(encoded) => BASE64.decode(encoded).unwrap(),
+            None => values[text].clone().unwrap_or_default().into_bytes(),
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn csv_fields_round_trip(value in "\\PC*|[,\"\n\r a]*") {
+            let mut out = Vec::new();
+            csv_field(&mut out, &value);
+            out.push(b'\n');
+            let fields = csv_record(std::str::from_utf8(&out).unwrap());
+            prop_assert_eq!(fields, Some(vec![value]));
+        }
+
+        #[test]
+        fn json_strings_round_trip(value in any::<String>()) {
+            let mut out = Vec::new();
+            json_string(&mut out, &value);
+            let parsed: String = serde_json::from_slice(&out).unwrap();
+            prop_assert_eq!(parsed, value);
+        }
+
+        #[test]
+        fn rows_keep_exact_bytes(
+            name in name_bytes(),
+            target in name_bytes(),
+            csv_raw_controls in any::<bool>(),
+            raw_paths_always in any::<bool>(),
+        ) {
+            for format in [TextFormat::Csv, TextFormat::Jsonl] {
+                let values = row_values(format, csv_raw_controls, raw_paths_always, &name, &target);
+                let mut path = b"/d/".to_vec();
+                path.extend_from_slice(&name);
+                prop_assert_eq!(exact(&values, "path", "path_b64"), path);
+                prop_assert_eq!(exact(&values, "symlink_target", "symlink_target_b64"), target.clone());
+                prop_assert_eq!(values["kind"].as_deref(), Some("symlink"));
+                if raw_paths_always {
+                    prop_assert!(values["path_b64"].is_some());
+                    prop_assert!(values["symlink_target_b64"].is_some());
+                }
+            }
+        }
     }
 }

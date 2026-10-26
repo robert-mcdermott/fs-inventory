@@ -878,3 +878,103 @@ fn skipped_fields_are_null() {
     let out = scan(&root, &tmp.path().join("bad"), &["--fields", "sizes"]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+/// GNU `find`, an independent walker, lists the same entries with the same
+/// metadata, including names that aren't valid UTF-8.
+#[cfg(target_os = "linux")]
+#[test]
+fn gnu_find_agrees_exactly() {
+    let (tmp, root, _) = tree();
+    let out_dir = tmp.path().join("scan");
+    let out = scan(&root, &out_dir, &["-f", "jsonl", "--time-unit", "ns"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // `%T+` is the mtime as `2026-10-25+01:30:00.1234567890`, in UTC.
+    let find = Command::new("find")
+        .arg(&root)
+        .args(["-printf", "%p\\0%y %i %s %T+ %m %n %U %G\\0"])
+        .env("TZ", "UTC")
+        .output()
+        .unwrap();
+    assert!(find.status.success());
+
+    type Fact = (String, u64, i64, String, u32, u64, u32, u32);
+    let mut expected: BTreeMap<Vec<u8>, Fact> = BTreeMap::new();
+    let mut fields = find.stdout.split(|&b| b == 0);
+    while let (Some(path), Some(facts)) = (fields.next(), fields.next()) {
+        let facts = std::str::from_utf8(facts).unwrap();
+        let f: Vec<&str> = facts.split(' ').collect();
+        let kind = match f[0] {
+            "f" => "file",
+            "d" => "dir",
+            "l" => "symlink",
+            "p" => "fifo",
+            "s" => "socket",
+            "c" => "char",
+            "b" => "block",
+            other => panic!("unexpected type {other}"),
+        };
+        let fact = (
+            kind.to_string(),
+            f[1].parse().unwrap(),
+            f[2].parse().unwrap(),
+            format!(
+                "{}Z",
+                f[3].replace('+', "T")
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+            ),
+            u32::from_str_radix(f[4], 8).unwrap(),
+            f[5].parse().unwrap(),
+            f[6].parse().unwrap(),
+            f[7].parse().unwrap(),
+        );
+        assert!(expected.insert(path.to_vec(), fact).is_none());
+    }
+    assert!(expected.len() > 2000, "{} entries", expected.len());
+
+    let rows = read_jsonl(&out_dir, "entries");
+    let actual: BTreeMap<Vec<u8>, Fact> = rows
+        .iter()
+        .map(|(path, row)| {
+            let mode = u32::try_from(row["mode"].as_u64().unwrap()).unwrap();
+            let fact = (
+                row["kind"].as_str().unwrap().to_string(),
+                row["ino"].as_u64().unwrap(),
+                row["size"].as_i64().unwrap(),
+                row["mtime"]
+                    .as_str()
+                    .unwrap()
+                    .trim_end_matches('Z')
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+                    .to_string()
+                    + "Z",
+                mode & 0o7777,
+                row["nlink"].as_u64().unwrap(),
+                u32::try_from(row["uid"].as_u64().unwrap()).unwrap(),
+                u32::try_from(row["gid"].as_u64().unwrap()).unwrap(),
+            );
+            (path.clone(), fact)
+        })
+        .collect();
+    let missing: Vec<_> = expected
+        .keys()
+        .filter(|p| !actual.contains_key(*p))
+        .collect();
+    let extra: Vec<_> = actual
+        .keys()
+        .filter(|p| !expected.contains_key(*p))
+        .collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "missing {missing:?}, extra {extra:?}"
+    );
+    for (path, fact) in &expected {
+        assert_eq!(&actual[path], fact, "{:?}", String::from_utf8_lossy(path));
+    }
+}

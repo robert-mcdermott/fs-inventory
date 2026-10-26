@@ -441,9 +441,9 @@ fs-inventory scan /data/projects -o /scratch/inventory/projects-csv -f csv --com
 ```
 
 - **Text compression:** CSV and JSON Lines can be compressed with `zstd` or `gzip`, or left uncompressed (the default).
-- **Timestamps:** written as ISO-8601 UTC text by default; `--time-format epoch` writes seconds since 1970 instead.
+- **Timestamps:** written as ISO-8601 UTC text by default; `--time-format epoch` writes seconds since 1970 instead, for tools that want numbers. The DuckDB macros read ISO times. In JSON Lines, epoch times are JSON numbers, which most readers parse as doubles, keeping about a quarter of a microsecond: use ISO times or Parquet when nanoseconds matter.
 - **Fewer columns:** `--columns` keeps only the columns you list, in any format.
-- **Loading into DuckDB:** the `fs_entries_csv` and `fs_entries_jsonl` macros read these scans with the right column types ([7.2](#72-the-macros)).
+- **Loading into DuckDB:** the `fs_entries_csv` and `fs_entries_jsonl` macros read these scans, with ISO times, with the right column types ([7.2](#72-the-macros)).
 
 Text output is several times larger than Parquet and slower to query. Parquet with zstd takes about 25 bytes per entry; a billion-entry scan is about 25 GB.
 
